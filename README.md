@@ -10,6 +10,18 @@ Themis é uma plataforma de engenharia jurídica local-first desenvolvida como p
 
 ---
 
+## Hermes Agent Desktop
+
+O **Themis** é executado como plugin do **Hermes Desktop**, a aplicação nativa do [Hermes Agent](https://github.com/NousResearch/hermes-agent), desenvolvido pela **Nous Research**.
+
+Antes de instalar o Themis, instale o Hermes Desktop para Windows.
+
+**Download oficial:**
+[https://hermes-agent.nousresearch.com/desktop](https://hermes-agent.nousresearch.com/desktop)
+
+O instalador do Hermes Desktop inclui o ambiente necessário para utilizar tanto a interface gráfica quanto os comandos `hermes` usados na instalação e configuração do Themis.
+
+
 ## Instalação
 
 A instalação é realizada pelo gerenciador de plugins do Hermes:
