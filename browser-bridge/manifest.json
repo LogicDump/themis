@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Themis Bridge",
+  "version": "1.2.3",
+  "description": "Ponte de sincronização direta entre a Pasta Digital do e-SAJ/TJSP e o Themis via Hermes Plugin API",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Themis Bridge"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1aTfZ2BOETYMsm9fF6vYp3RCsfvgkGfKA9Q94+BsWkSteUq4vqYVYwUvKJVx3zo/yVKx7aQHfupzeUzUv0WXkNmKuHpZQHZk9RTccy5iVBbhXC1j6CAyRaeWHUmFbiUafbd0G3D9NYrZg60Ec/63ifG05E12UN5kauNU5XuAqBIGHwqwTG5JzoEJ8L2sbdcDHSp8UUOxybTyV/fYzVqjDG163/nD3b/FoWoAMQoUa/AmzMlBJdwTsBbvXacCQuky5Zfh+zkfODkvuKj5NBTR9wgz5xyPuCKbse0WS2nGkT/NJgBo/nWVTvr1Q2eALipjskIDzxUtqIfBmT3GXZ3fmQIDAQAB",
+  "permissions": [
+    "storage",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://esaj.tjsp.jus.br/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://esaj.tjsp.jus.br/pastadigital/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "bulk_download_selection.js",
+        "injected.js"
+      ],
+      "matches": [
+        "https://esaj.tjsp.jus.br/*"
+      ]
+    }
+  ]
+}

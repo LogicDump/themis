@@ -1,0 +1,9 @@
+{
+  "name": "themis_browser_bridge",
+  "description": "Themis Browser Bridge Native Messaging Host",
+  "path": "themis_bridge_host.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://ihlmgonioeefmhbgchhalccbimcfngcd/"
+  ]
+}

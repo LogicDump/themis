@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "themis_version": "1.0.0",
+  "source": {
+    "provider": "Hugging Face",
+    "repository": "srigf/themis-embeddinggemma-300m-onnx-int8",
+    "revision": "21c18bde7134255900b90d771036f93261a268f5"
+  },
+  "models": [
+    {
+      "name": "EmbeddingGemma 300M ONNX (INT8)",
+      "version": "embeddinggemma-300m-onnx-int8",
+      "description": "Modelo ONNX local INT8 para busca semântica e indexação vetorial de resumos de movimentações.",
+      "url": "https://huggingface.co/srigf/themis-embeddinggemma-300m-onnx-int8/resolve/21c18bde7134255900b90d771036f93261a268f5/model_int8.onnx",
+      "destination": "models/embeddinggemma-300m-onnx/model_int8.onnx",
+      "sha256": "1b477e4439d33c26fa925f17fa5901d524daf9487a9f39b38e6d84ba7301f0ea",
+      "size_bytes": 310016659,
+      "bundled": false
+    },
+    {
+      "name": "EmbeddingGemma Tokenizer",
+      "version": "embeddinggemma-300m-tokenizer-v1",
+      "description": "Tokenizer HuggingFace Tokenizers para o EmbeddingGemma.",
+      "url": "https://huggingface.co/srigf/themis-embeddinggemma-300m-onnx-int8/resolve/21c18bde7134255900b90d771036f93261a268f5/tokenizer.json",
+      "destination": "models/embeddinggemma-300m-onnx/tokenizer.json",
+      "sha256": "6852f8d561078cc0cebe70ca03c5bfdd0d60a45f9d2e0e1e4cc05b68e9ec329e",
+      "size_bytes": 33385008,
+      "bundled": false
+    }
+  ]
+}

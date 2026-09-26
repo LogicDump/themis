@@ -1,0 +1,16 @@
+name: themis
+version: 1.0.0
+description: "Plataforma jurídica de eventos, prazos, audiências e processos"
+author: "Themis"
+requires_hermes: ">=0.21.3"
+capabilities:
+  - llm.provider_override
+  - llm.model_override
+python_dependencies:
+  - "numpy>=2,<3"
+  - "onnxruntime>=1.20,<2"
+  - "tokenizers>=0.21,<1"
+  - "pypdf>=5,<7"
+  - "pypdfium2>=4.30,<5"
+  - "Pillow>=11,<13"
+  - "faster-paddle>=1.0,<2"

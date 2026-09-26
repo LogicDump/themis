@@ -1,0 +1,43 @@
+/* ==========================================================================
+   Themis Typography — Inter & RobotoMono WOFF2 Variable Fonts
+   ========================================================================== */
+
+/* Inter Variable — Normal (100–900) */
+@font-face {
+    font-family: "Inter";
+    src: url("/api/plugins/themis/assets/fonts/InterVariable.woff2") format("woff2-variations"),
+         url("/api/plugins/themis/assets/fonts/InterVariable.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 100 900;
+    font-display: swap;
+}
+
+/* Inter Variable — Italic (100–900) */
+@font-face {
+    font-family: "Inter";
+    src: url("/api/plugins/themis/assets/fonts/InterVariable-Italic.woff2") format("woff2-variations"),
+         url("/api/plugins/themis/assets/fonts/InterVariable-Italic.woff2") format("woff2");
+    font-style: italic;
+    font-weight: 100 900;
+    font-display: swap;
+}
+
+/* RobotoMono Variable — Normal (100–900) */
+@font-face {
+    font-family: "RobotoMono";
+    src: url("/api/plugins/themis/assets/fonts/RobotoMonoVariable.woff2") format("woff2-variations"),
+         url("/api/plugins/themis/assets/fonts/RobotoMonoVariable.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 100 900;
+    font-display: swap;
+}
+
+/* RobotoMono Variable — Italic (100–900) */
+@font-face {
+    font-family: "RobotoMono";
+    src: url("/api/plugins/themis/assets/fonts/RobotoMonoVariable-Italic.woff2") format("woff2-variations"),
+         url("/api/plugins/themis/assets/fonts/RobotoMonoVariable-Italic.woff2") format("woff2");
+    font-style: italic;
+    font-weight: 100 900;
+    font-display: swap;
+}

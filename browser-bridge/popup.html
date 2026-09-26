@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Themis Bridge</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      width: 320px;
+      margin: 0;
+      padding: 16px;
+      color: #24292f;
+      background: #ffffff;
+    }
+    h3 {
+      margin: 0 0 12px 0;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-box {
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      word-break: break-all;
+    }
+    .status-online {
+      background: #dafbe1;
+      border: 1px solid #4ac26b;
+      color: #116329;
+    }
+    .status-offline {
+      background: #ffebe9;
+      border: 1px solid #ff8182;
+      color: #cf222e;
+    }
+    label {
+      font-size: 12px;
+      font-weight: 600;
+      display: block;
+      margin-bottom: 4px;
+    }
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      font-size: 12px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      font-family: monospace;
+    }
+    button {
+      width: 100%;
+      padding: 8px 12px;
+      background: #0969da;
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 12px;
+      cursor: pointer;
+      margin-bottom: 6px;
+    }
+    button:hover {
+      background: #0858b9;
+    }
+    button.secondary {
+      background: #f6f8fa;
+      color: #24292f;
+      border: 1px solid #d0d7de;
+    }
+    button.secondary:hover {
+      background: #eaeef2;
+    }
+    .info-text {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #57606a;
+      line-height: 1.4;
+    }
+    .endpoint-badge {
+      font-size: 11px;
+      color: #57606a;
+      font-family: monospace;
+      margin-bottom: 8px;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h3>⚖️ Themis Bridge</h3>
+  <div id="status-container" class="status-box status-offline">
+    <span id="status-text">Descobrindo endpoint do Hermes...</span>
+  </div>
+
+  <span id="endpoint-display" class="endpoint-badge">Endpoint: Aguardando discovery...</span>
+
+  <label for="pairing-token">Token de Pairing do Themis:</label>
+  <input type="text" id="pairing-token" placeholder="Token do Themis Bridge">
+
+  <button id="save-token-btn">Salvar & Emparelhar</button>
+  <button id="rediscover-btn" class="secondary">Redescobrir Backend Hermes</button>
+
+  <div class="info-text">
+    Descoberta dinâmica via Hermes Desktop Ledger. Na Pasta Digital do e-SAJ, use o botão <strong>"Enviar ao Themis"</strong> para ingestão automática.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
