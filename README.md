@@ -15,7 +15,7 @@ Themis é uma plataforma de engenharia jurídica local-first desenvolvida como p
 A instalação é realizada pelo gerenciador de plugins do Hermes:
 
 ```bash
-hermes plugins install sergiorighi/themis
+hermes plugins install LogicDump/themis
 hermes plugins enable themis
 hermes themis setup
 ```
