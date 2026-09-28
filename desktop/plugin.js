@@ -25964,7 +25964,14 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 				setError(null);
 				setLoading(false);
 				firstLoad = false;
-				if (procs.length > 0 && !selectedPidRef.current) setSelectedPid(procs[0].process_id || procs[0].id);
+				const currentPid = selectedPidRef.current;
+				const currentPidExists = currentPid && procs.some((process) => (process.process_id || process.id) === currentPid);
+				if (currentPid && !currentPidExists) {
+					ctx.storage.remove("workspace.process.selectedId");
+					setSelectedPid(procs.length > 0 ? (procs[0].process_id || procs[0].id) : "");
+				} else if (!currentPid && procs.length > 0) {
+					setSelectedPid(procs[0].process_id || procs[0].id);
+				}
 				if (treeChanged && selectedPidRef.current && procs.some((process) => (process.process_id || process.id) === selectedPidRef.current)) setProcessRefreshRevision((previous) => previous + 1);
 			}).catch((err) => {
 				if (!isMounted) return;
@@ -28124,6 +28131,17 @@ function ThemisShell({ ctx }) {
 		})]
 	});
 }
+var themisDesktopPluginsRoot = await window.hermesDesktop.desktopPluginsRoot();
+var themisPathSep = themisDesktopPluginsRoot.includes("\\") ? "\\" : "/";
+var themisHermesRoot = themisDesktopPluginsRoot.replace(/[\\/]desktop-plugins[\\/]?$/, "");
+var themisFontsCss = [
+	themisHermesRoot,
+	"plugins",
+	"themis",
+	"assets",
+	"fonts",
+	"fonts.css"
+].join(themisPathSep);
 var themisTheme = {
 	name: "themis",
 	label: "Themis",
@@ -28186,7 +28204,7 @@ var themisTheme = {
 	typography: {
 		fontSans: "\"Inter\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, system-ui, sans-serif",
 		fontMono: "\"RobotoMono\", \"SF Mono\", Menlo, Consolas, \"Liberation Mono\", monospace",
-		fontUrl: "/api/plugins/themis/assets/fonts/fonts.css"
+		fontUrl: themisFontsCss
 	}
 };
 var plugin_default = {
