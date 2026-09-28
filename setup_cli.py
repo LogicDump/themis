@@ -13,8 +13,19 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.request import urlopen
 
-from core.process_storage import connect_catalog
-from core.runtime_paths import themis_data_root
+# Hermes loads directory plugins under a package namespace (for example
+# hermes_plugins.themis) and does not add the plugin root to sys.path.
+# Prefer package-relative imports; keep a standalone fallback for local tools.
+try:
+    from .core.process_storage import connect_catalog
+    from .core.runtime_paths import themis_data_root
+except (ImportError, ValueError):
+    _PLUGIN_ROOT = Path(__file__).resolve().parent
+    _plugin_root_str = str(_PLUGIN_ROOT)
+    if _plugin_root_str not in sys.path:
+        sys.path.insert(0, _plugin_root_str)
+    from core.process_storage import connect_catalog
+    from core.runtime_paths import themis_data_root
 
 
 class ThemisSetupError(RuntimeError):
