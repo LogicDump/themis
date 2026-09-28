@@ -7,6 +7,14 @@ import importlib.util
 import sys
 from pathlib import Path
 
+# Hermes loads directory plugins under a package namespace and does not add
+# the plugin root to sys.path. Keep the plugin root importable for legacy
+# absolute imports while package-relative imports are preferred.
+_PLUGIN_ROOT = Path(__file__).resolve().parent
+_plugin_root_str = str(_PLUGIN_ROOT)
+if _plugin_root_str not in sys.path:
+    sys.path.insert(0, _plugin_root_str)
+
 
 def _bridge_module():
     """Load the bridge once under a process-wide name shared with the dashboard."""
@@ -27,6 +35,9 @@ def _bridge_module():
 
 def _load_setup_cli():
     """Load the setup CLI helpers across package and standalone import roots."""
+    _plugin_root_str = str(_PLUGIN_ROOT)
+    if _plugin_root_str not in sys.path:
+        sys.path.insert(0, _plugin_root_str)
     try:
         from plugins.themis.setup_cli import register_cli, run_themis_setup
         return register_cli, run_themis_setup
@@ -68,6 +79,27 @@ def register(ctx):
             description="Themis — Plataforma jurídica unificada para Hermes. Execute: hermes themis setup",
         )
     except Exception as exc:
-        # CLI registration failure should not prevent runtime tools/bridge from loading
+        # Keep the plugin runtime available, but never make the CLI failure silent.
         import logging
-        logging.getLogger(__name__).warning("Falha ao registrar comandos CLI do Themis: %s", exc)
+        logging.getLogger(__name__).warning(
+            "Falha ao registrar comandos CLI do Themis: %s", exc, exc_info=True
+        )
+
+        def _broken_cli_parser(subparser):
+            subparser.set_defaults(_themis_cli_load_error=str(exc))
+
+        def _broken_cli_handler(args):
+            message = (
+                "Themis foi carregado, mas o comando CLI não pôde ser inicializado: "
+                f"{getattr(args, '_themis_cli_load_error', exc)}"
+            )
+            print(message, file=sys.stderr)
+            raise SystemExit(2)
+
+        ctx.register_cli_command(
+            name="themis",
+            help="Comandos da plataforma jurídica Themis (falha de inicialização)",
+            setup_fn=_broken_cli_parser,
+            handler_fn=_broken_cli_handler,
+            description="Themis — falha ao inicializar a interface CLI. Consulte o log do Hermes.",
+        )
