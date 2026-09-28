@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import secrets
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -229,6 +230,81 @@ def _setup_native_messaging_host(plugin_root: Path, log_fn: Callable[[str], None
         return False
 
 
+def _ensure_windows_plugin_permissions(
+    plugin_root: Path,
+    log_fn: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """Repair/validate the installed plugin ACL on Windows.
+
+    Hermes discovers the backend from <HERMES_HOME>/plugins/themis. A Windows
+    clone/publication can occasionally leave that tree unreadable (WinError 5),
+    which makes Hermes skip the plugin backend and ctx.rest() return 404.
+    Setup normalizes inheritance, grants the current user Modify on the plugin
+    tree, then verifies the backend files can actually be read.
+    """
+    if sys.platform != "win32":
+        return {"checked": False, "repaired": False}
+
+    plugin_root = plugin_root.resolve()
+    if not plugin_root.is_dir():
+        raise ThemisSetupError(f"Diretório do plugin não encontrado: {plugin_root}")
+
+    username = os.environ.get("USERNAME", "").strip()
+    domain = os.environ.get("USERDOMAIN", "").strip()
+    principal = f"{domain}\\{username}" if domain and username else username
+    if not principal:
+        raise ThemisSetupError("Não foi possível identificar o usuário atual do Windows para validar as permissões.")
+
+    commands = [
+        ["icacls", str(plugin_root), "/inheritance:e", "/T", "/C", "/Q"],
+        ["icacls", str(plugin_root), "/grant:r", f"{principal}:(OI)(CI)M", "/T", "/C", "/Q"],
+    ]
+
+    changed = False
+    for command in commands:
+        try:
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ThemisSetupError(
+                f"Falha ao validar/reparar permissões de {plugin_root}: {exc}"
+            ) from exc
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise ThemisSetupError(
+                "O Windows recusou o ajuste automático das permissões do plugin "
+                f"({detail or f'icacls retornou {proc.returncode}'}). "
+                "Execute o terminal como Administrador uma única vez e rode novamente "
+                "'hermes themis setup'."
+            )
+        changed = True
+
+    critical_paths = [
+        plugin_root / "plugin.yaml",
+        plugin_root / "dashboard" / "manifest.json",
+        plugin_root / "dashboard" / "plugin_api.py",
+        plugin_root / "desktop" / "plugin.js",
+    ]
+    for path in critical_paths:
+        try:
+            if not path.is_file():
+                raise OSError(f"arquivo ausente: {path}")
+            with path.open("rb") as stream:
+                stream.read(1)
+        except OSError as exc:
+            raise ThemisSetupError(
+                f"Plugin instalado, mas ainda não está legível após o reparo de ACL: {path} ({exc})"
+            ) from exc
+
+    log_fn("  [OK] Permissões do plugin verificadas/reparadas para o usuário atual.")
+    return {"checked": True, "repaired": changed, "principal": principal}
+
+
 def run_themis_setup(
     args: argparse.Namespace | None = None,
     *,
@@ -244,6 +320,9 @@ def run_themis_setup(
     plugin_root = Path(__file__).resolve().parent
 
     log_fn(f"[Themis] Inicializando ambiente em: {data_root}")
+
+    # 0. Windows: garantir que o Hermes consiga reler o próprio plugin após a instalação.
+    permissions_result = _ensure_windows_plugin_permissions(plugin_root, log_fn=log_fn)
 
     # 1. Diretórios operacionais essenciais
     for subdir in (
@@ -305,6 +384,7 @@ def run_themis_setup(
     return {
         "status": "ready",
         "data_root": str(data_root),
+        "permissions": permissions_result,
         "models": models_result,
     }
 
