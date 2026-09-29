@@ -58,14 +58,21 @@ def test_cpc_business_counts_only_calendar_business_days_and_holiday():
 
 
 def test_cpp_counts_intermediate_weekend_as_continuous_days():
-    result = calc("CPP", "CRIMINAL", trigger="2026-03-06", term=3,
-                  calendar=(calendar_day(date(2026, 3, 9), "BUSINESS_DAY"),))
+    days = (
+        calendar_day(date(2026, 3, 6), "BUSINESS_DAY"),
+        calendar_day(date(2026, 3, 7), "HOLIDAY"),
+        calendar_day(date(2026, 3, 8), "HOLIDAY"),
+        calendar_day(date(2026, 3, 9), "BUSINESS_DAY"),
+    )
+    result = calc("CPP", "CRIMINAL", trigger="2026-03-05", term=3, calendar=days)
     assert result.status == "CALCULATED"
-    assert [x["date"] for x in result.counted_days] == ["2026-03-07", "2026-03-08", "2026-03-09"]
+    assert [x["date"] for x in result.counted_days] == ["2026-03-06", "2026-03-07", "2026-03-08"]
+    assert result.due_date == "2026-03-09"
 
 
 def test_cpp_expiry_adjustment_uses_supplied_calendar_only():
-    days = (calendar_day(date(2026, 3, 7), "HOLIDAY"), calendar_day(date(2026, 3, 8), "RECESS"),
+    days = (calendar_day(date(2026, 3, 3), "BUSINESS_DAY"),
+            calendar_day(date(2026, 3, 7), "HOLIDAY"), calendar_day(date(2026, 3, 8), "RECESS"),
             calendar_day(date(2026, 3, 9), "BUSINESS_DAY"))
     result = calc("CPP", "CRIMINAL", trigger="2026-03-02", term=5, calendar=days)
     assert result.status == "CALCULATED" and result.due_date == "2026-03-09"
@@ -95,18 +102,27 @@ def test_cpc_suspension_policy_skips_recess_days():
 
 
 def test_cpp_recess_without_exception_resolution_requires_review():
-    result = calc("CPP", "CRIMINAL", trigger="2026-12-19", term=3,
-                  calendar=(calendar_day(date(2026, 12, 23), "BUSINESS_DAY"),))
+    days = (
+        calendar_day(date(2026, 12, 19), "HOLIDAY"),
+        calendar_day(date(2026, 12, 20), "HOLIDAY"),
+        calendar_day(date(2026, 12, 21), "BUSINESS_DAY"),
+    )
+    result = calc("CPP", "CRIMINAL", trigger="2026-12-18", term=3, calendar=days)
     assert result.status == "REVIEW_REQUIRED"
     assert result.reason["code"] == "SUSPENSION_EXCEPTION_UNRESOLVED"
 
 
 def test_cpp_recess_with_structured_exception_counts_dates():
-    result = calc("CPP", "CRIMINAL", trigger="2026-12-19", term=3,
-                  calendar=(calendar_day(date(2026, 12, 22), "BUSINESS_DAY"),),
+    days = (
+        calendar_day(date(2026, 12, 19), "HOLIDAY"),
+        calendar_day(date(2026, 12, 20), "HOLIDAY"),
+        calendar_day(date(2026, 12, 21), "BUSINESS_DAY"),
+        calendar_day(date(2026, 12, 23), "BUSINESS_DAY"),
+    )
+    result = calc("CPP", "CRIMINAL", trigger="2026-12-18", term=3, calendar=days,
                   exceptions={"CPP_ART_798A_RECESS": "INCISO_I"})
     assert result.status == "CALCULATED"
-    assert [x["date"] for x in result.counted_days] == ["2026-12-20", "2026-12-21", "2026-12-22"]
+    assert [x["date"] for x in result.counted_days] == ["2026-12-21", "2026-12-22", "2026-12-23"]
     assert any(x["exception"] == "INCISO_I" and not x["suspended"] for x in result.applied_suspensions)
 
 
@@ -131,6 +147,38 @@ def test_business_days_structured_term_unit_selects_business_policy():
     result = calc("CPC", "CIVIL", trigger="2026-03-02", term=2, term_unit="BUSINESS_DAYS",
                   calendar=calendar_between("2026-03-03", "2026-03-04"))
     assert result.status == "CALCULATED" and result.counting_policy_id == "CPC_BUSINESS_DAYS"
+
+
+def test_djen_derives_publication_and_start_from_available_on_for_cpp():
+    fact = CommunicationFact(
+        "pe_available", "PUBLICATION", "DJEN_PUBLICATION",
+        available_on="2026-03-05",
+        provenance={"fixture": True},
+    )
+    days = (
+        calendar_day(date(2026, 3, 6), "BUSINESS_DAY"),
+        calendar_day(date(2026, 3, 7), "HOLIDAY"),
+        calendar_day(date(2026, 3, 8), "HOLIDAY"),
+        calendar_day(date(2026, 3, 9), "BUSINESS_DAY"),
+        calendar_day(date(2026, 3, 11), "BUSINESS_DAY"),
+    )
+    result = calculate_deadline(DeadlineCalculationInput(
+        legal_context=ctx("CRIMINAL", "CPP"),
+        resolved_rule_id="JUDICIAL_EXPLICIT_TERM",
+        term_value=3,
+        term_unit="DAYS",
+        counting_policy_id=None,
+        communication_policy_id="DJEN_PUBLICATION",
+        communication_fact=fact,
+        calendar_entries=days,
+        relevant_date="2026-03-05",
+        resolved_rule_provenance={"source_event_id": "pe_order_synthetic"},
+    ))
+    assert result.status == "CALCULATED"
+    assert result.trigger_date == "2026-03-06"
+    assert result.trigger_resolution_method == "DERIVED_FROM_AVAILABLE_ON_NEXT_BUSINESS_DAY"
+    assert result.counting_start_date == "2026-03-09"
+    assert [x["date"] for x in result.counted_days] == ["2026-03-09", "2026-03-10", "2026-03-11"]
 
 
 def test_calendar_coverage_missing_and_communication_trigger_missing():

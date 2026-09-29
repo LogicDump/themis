@@ -201,8 +201,19 @@ def _resolve_counting_policy(rule: Mapping[str, Any], inp: DeadlineCalculationIn
     return policy
 
 
+def _next_business_day(calendar: Mapping[date, Any], day: date, *, purpose: str) -> date:
+    current = day + timedelta(days=1)
+    while True:
+        entry = calendar.get(current)
+        if entry is None:
+            raise _Stop("UNRESOLVED", "CALENDAR_COVERAGE_MISSING", {"date": current.isoformat(), "purpose": purpose})
+        if _record(entry).get("status") == "BUSINESS_DAY":
+            return current
+        current += timedelta(days=1)
+
+
 def _communication_trigger(inp: DeadlineCalculationInput, context: LegalContext,
-                           policies: Mapping[str, CommunicationPolicy]) -> tuple[date, CommunicationPolicy, dict[str, Any]]:
+                           policies: Mapping[str, CommunicationPolicy], calendar: Mapping[date, Any]) -> tuple[date, date | None, CommunicationPolicy, dict[str, Any], str]:
     if not inp.communication_policy_id or not inp.communication_fact:
         raise _Stop("UNRESOLVED", "COMMUNICATION_TRIGGER_MISSING")
     policy = policies.get(inp.communication_policy_id)
@@ -218,12 +229,29 @@ def _communication_trigger(inp: DeadlineCalculationInput, context: LegalContext,
         raise _Stop("REVIEW_REQUIRED", "COMMUNICATION_FACT_METHOD_MISMATCH", {"policy_id": policy.policy_id})
     field_name = policy.trigger_date_field
     value = fact.get(field_name) if field_name else None
-    if not value:
+    resolution_method = "DECLARED_COMMUNICATION_DATE"
+    if value:
+        trigger = _date(value)
+    elif policy.fallback_trigger_date_field and policy.trigger_derivation == "NEXT_BUSINESS_DAY_AFTER_FALLBACK":
+        fallback = fact.get(policy.fallback_trigger_date_field)
+        if not fallback:
+            raise _Stop("UNRESOLVED", "COMMUNICATION_TRIGGER_MISSING", {
+                "policy_id": policy.policy_id,
+                "required_field": field_name,
+                "fallback_field": policy.fallback_trigger_date_field,
+            })
+        trigger = _next_business_day(calendar, _date(fallback), purpose="COMMUNICATION_PUBLICATION_DATE")
+        resolution_method = "DERIVED_FROM_AVAILABLE_ON_NEXT_BUSINESS_DAY"
+    else:
         raise _Stop("UNRESOLVED", "COMMUNICATION_TRIGGER_MISSING", {"policy_id": policy.policy_id, "required_field": field_name})
-    trigger = _date(value)
     if not _in_effect(policy, trigger, from_field="effective_from", to_field="effective_to"):
         raise _Stop("REVIEW_REQUIRED", "COMMUNICATION_POLICY_OUTSIDE_EFFECTIVE_PERIOD", {"policy_id": policy.policy_id})
-    return trigger, policy, fact
+    counting_start = None
+    if policy.counting_start_adjustment == "NEXT_BUSINESS_DAY_AFTER_TRIGGER":
+        counting_start = _next_business_day(calendar, trigger, purpose="COMMUNICATION_COUNTING_START")
+    elif policy.counting_start_adjustment not in (None, "NONE"):
+        raise _Stop("REVIEW_REQUIRED", "UNSUPPORTED_COMMUNICATION_START_ADJUSTMENT", {"value": policy.counting_start_adjustment})
+    return trigger, counting_start, policy, fact, resolution_method
 
 
 def calculate_deadline(
@@ -247,6 +275,8 @@ def calculate_deadline(
     communication: CommunicationPolicy | None = None
     communication_fact: dict[str, Any] = {}
     trigger: date | None = None
+    trigger_resolution_method: str | None = None
+    communication_counting_start: date | None = None
     counting_start: date | None = None
     due: date | None = None
     legal_basis: dict[str, Any] = {}
@@ -284,13 +314,15 @@ def calculate_deadline(
                 raise _Stop("REVIEW_REQUIRED", "TERM_CONFLICTS_WITH_RULE", {"rule_term_value": rule_term, "input_term_value": calculation.term_value})
         policies = _policy_map(counting_policies, "policy_id")
         counting = _resolve_counting_policy(rule, calculation, ctx, policies)
-        communication_map = _policy_map(communication_policies, "policy_id")
-        trigger, communication, communication_fact = _communication_trigger(calculation, ctx, communication_map)
-        calendar, calendar_version, calendar_provenance = _calendar_index(calculation.calendar_entries, ctx)
         if counting.include_start is None or counting.include_end is None:
             raise _Stop("REVIEW_REQUIRED", "COUNTING_BOUNDARY_UNSPECIFIED", {"policy_id": counting.policy_id})
         if counting.include_end is not True:
             raise _Stop("REVIEW_REQUIRED", "COUNTING_END_BOUNDARY_UNSUPPORTED", {"policy_id": counting.policy_id, "include_end": counting.include_end})
+        calendar, calendar_version, calendar_provenance = _calendar_index(calculation.calendar_entries, ctx)
+        communication_map = _policy_map(communication_policies, "policy_id")
+        trigger, communication_counting_start, communication, communication_fact, trigger_resolution_method = _communication_trigger(
+            calculation, ctx, communication_map, calendar
+        )
         suspensions = _policy_map(suspension_policies, "policy_id")
         active_suspensions: list[SuspensionPolicy] = []
         exception_resolutions = dict(calculation.applicable_suspension_exceptions)
@@ -301,13 +333,18 @@ def calculate_deadline(
             if suspension.base_regime != ctx.base_regime:
                 continue
             active_suspensions.append(suspension)
-        current = trigger if counting.include_start else trigger + timedelta(days=1)
+        current = communication_counting_start if communication_counting_start is not None else (trigger if counting.include_start else trigger + timedelta(days=1))
         counting_start = current
         trace.append({"step": "TRIGGER", "date": trigger.isoformat(), "source_event_id": communication_fact.get("source_event_id"),
-                      "source_field": communication.trigger_date_field, "method": "DECLARED_COMMUNICATION_POLICY"})
+                      "source_field": communication.trigger_date_field, "method": trigger_resolution_method})
         trace.append({"step": "COUNTING_POLICY", "policy_id": counting.policy_id, "version": counting.policy_version,
                       "day_mode": counting.day_mode, "include_start": counting.include_start, "include_end": counting.include_end})
-        if not counting.include_start:
+        if communication_counting_start is not None:
+            excluded.append({"date": trigger.isoformat(), "reason": "COMMUNICATION_START_RULE",
+                             "source": communication.policy_id, "policy_id": communication.policy_id})
+            trace.append({"date": trigger.isoformat(), "action": "EXCLUDED", "reason": "COMMUNICATION_START_RULE",
+                          "source": communication.policy_id, "counting_start": communication_counting_start.isoformat()})
+        elif not counting.include_start:
             excluded.append({"date": trigger.isoformat(), "reason": "START_DATE",
                              "source": counting.policy_id, "policy_id": counting.policy_id})
             trace.append({"date": trigger.isoformat(), "action": "EXCLUDED", "reason": "START_DATE",
@@ -419,7 +456,7 @@ def calculate_deadline(
         communication_policy_id=communication.policy_id if communication else calculation.communication_policy_id,
         communication_event_id=communication_fact.get("source_event_id") or None,
         trigger_date=trigger.isoformat() if trigger else None,
-        trigger_resolution_method="DECLARED_COMMUNICATION_POLICY" if trigger else None,
+        trigger_resolution_method=trigger_resolution_method if trigger else None,
         counting_start_date=counting_start.isoformat() if counting_start else None,
         due_date=due.isoformat() if due else None, counted_days=tuple(counted), excluded_days=tuple(excluded),
         applied_suspensions=tuple(applied), calendar_version=calendar_version,

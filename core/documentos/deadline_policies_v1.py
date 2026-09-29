@@ -51,6 +51,9 @@ class CommunicationPolicy:
     authority: str
     verified_at: str
     trigger_date_field: str | None = None
+    fallback_trigger_date_field: str | None = None
+    trigger_derivation: str | None = None
+    counting_start_adjustment: str | None = None
 
     def applies(self, *, regime: str, requires_personal_notice: bool) -> bool:
         regime_ok = "*" in self.applicable_regimes or regime in self.applicable_regimes
@@ -99,6 +102,7 @@ _JEC = "https://www.planalto.gov.br/ccivil_03/leis/l9099.htm"
 _JEC_AMENDMENT = "https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13728.htm"
 _RES455 = "https://atos.cnj.jus.br/atos/detalhar/4509"
 _RES569 = "https://atos.cnj.jus.br/atos/detalhar/5691"
+_LEI_11419 = "https://www.planalto.gov.br/ccivil_03/_ato2004-2006/2006/lei/l11419.htm"
 
 SUSPENSION_POLICIES: tuple[SuspensionPolicy, ...] = (
     SuspensionPolicy("CPC_ART_220_GENERAL", "1.0.0", "CIVIL", "CPC", "12-20", "01-20", True, (),
@@ -141,9 +145,10 @@ COMMUNICATION_POLICIES: tuple[CommunicationPolicy, ...] = (
         "Somente quando a lei não exigir vista ou intimação pessoal",
         True,
         {"statute": "Resolução CNJ 455/2022", "article": "11", "paragraph": "§ 3º",
-         "amended_by": "Resolução CNJ 569/2024", "cpc_reference": "art. 224, §§ 1º e 2º"},
-        "2024-08-15", None, (_RES455, _RES569), "Conselho Nacional de Justiça", _VERIFIED,
-        "published_on"),
+         "amended_by": "Resolução CNJ 569/2024", "cpc_reference": "art. 224, §§ 1º e 2º",
+         "electronic_publication": {"statute": "Lei 11.419/2006", "article": "4º", "paragraphs": ["§ 3º", "§ 4º"]}},
+        "2024-08-15", None, (_RES455, _RES569, _LEI_11419), "Conselho Nacional de Justiça", _VERIFIED,
+        "published_on", "available_on", "NEXT_BUSINESS_DAY_AFTER_FALLBACK", "NEXT_BUSINESS_DAY_AFTER_TRIGGER"),
 )
 
 # Declarative regime defaults used only for express judicial terms without an

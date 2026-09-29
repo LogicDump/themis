@@ -37,7 +37,8 @@ def test_djen_is_conditional_and_excludes_personal_notice():
     assert policy.policy_id == "DJEN_PUBLICATION"
     assert policy.applies(regime="CPC", requires_personal_notice=False)
     assert not policy.applies(regime="CPC", requires_personal_notice=True)
-    assert all("atos.cnj.jus.br" in source for source in policy.official_source)
+    assert any("atos.cnj.jus.br" in source for source in policy.official_source)
+    assert any("planalto.gov.br" in source for source in policy.official_source)
 
 
 def test_all_material_rules_validate_and_point_to_pack_policy():
