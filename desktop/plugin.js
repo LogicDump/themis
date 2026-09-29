@@ -28031,7 +28031,7 @@ function ThemisShell({ ctx }) {
 		]
 	});
 	return jsxs("div", {
-		className: "flex h-full w-full flex-col overflow-hidden bg-background text-foreground",
+		className: "flex h-full w-full flex-col overflow-hidden bg-background text-foreground select-text",
 		onKeyDownCapture: handleThemisPageNavigation,
 		children: [jsxs("header", {
 			className: "flex h-7 shrink-0 select-none items-stretch justify-between border-b border-border/40 bg-(--ui-sidebar-surface-background,var(--muted)) px-2",
