@@ -17,6 +17,7 @@ from typing import Any
 from core.documentos.movement_summary_store_v1 import source_pages, source_text_and_hash
 
 MIGRATION_VERSION = "deadline-instruction-store-v1"
+MIGRATION_V2 = "deadline-instruction-store-v2-process-event"
 ID_NAMESPACE = uuid.UUID("f9abf7bb-c7d8-4e53-bf16-6e87e4a4df64")
 EXTRACTION_METHOD = "DETERMINISTIC_V1"
 
@@ -165,10 +166,75 @@ def migrate_connection(db: sqlite3.Connection) -> dict[str, Any]:
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
     db.executescript(SCHEMA)
+    columns = {str(row[1]) for row in db.execute("PRAGMA table_info(deadline_instructions)")}
+    if "source_event_id" not in columns:
+        # SQLite has no DROP NOT NULL; rebuild transactionally while preserving
+        # all V1 columns and rows. movement_id remains populated for old rows.
+        from core.documentos.process_event_store_v1 import materialize_process_events
+        old_processes = [str(row[0]) for row in db.execute("SELECT DISTINCT process_id FROM deadline_instructions")]
+        for old_process_id in old_processes:
+            materialize_process_events(db, old_process_id)
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute("PRAGMA legacy_alter_table=ON")
+        db.execute("ALTER TABLE deadline_instructions RENAME TO deadline_instructions_v1_backup")
+        db.executescript("""
+        CREATE TABLE deadline_instructions(
+          instruction_id TEXT PRIMARY KEY, process_id TEXT NOT NULL, movement_id TEXT,
+          source_event_id TEXT NOT NULL, source_entity TEXT NOT NULL, source_id TEXT NOT NULL,
+          action_text TEXT, recipient_text TEXT, term_value INTEGER, term_unit TEXT NOT NULL,
+          counting_qualifier TEXT, trigger_text TEXT, trigger_status TEXT NOT NULL,
+          source_excerpt TEXT NOT NULL, source_refs_json TEXT NOT NULL, source_hash TEXT NOT NULL,
+          extraction_method TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(process_id,instruction_id),
+          FOREIGN KEY(movement_id) REFERENCES movements(movement_id) ON DELETE CASCADE,
+          FOREIGN KEY(source_event_id) REFERENCES process_events(event_id)
+        );
+        INSERT INTO deadline_instructions SELECT instruction_id,process_id,movement_id,
+          (SELECT event_id FROM process_events e WHERE e.process_id=old.process_id AND e.source_entity='MOVEMENT' AND e.source_id=old.movement_id),
+          'MOVEMENT',movement_id,action_text,recipient_text,term_value,term_unit,counting_qualifier,trigger_text,
+          trigger_status,source_excerpt,source_refs_json,source_hash,extraction_method,status,created_at,updated_at
+          FROM deadline_instructions_v1_backup old
+          WHERE EXISTS(SELECT 1 FROM process_events e WHERE e.process_id=old.process_id AND e.source_entity='MOVEMENT' AND e.source_id=old.movement_id);
+        DROP TABLE deadline_instructions_v1_backup;
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_instructions_process ON deadline_instructions(process_id,status,trigger_status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_instructions_movement ON deadline_instructions(movement_id,instruction_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_instructions_event ON deadline_instructions(source_event_id)")
+        db.execute("PRAGMA legacy_alter_table=OFF")
+        db.execute("PRAGMA foreign_keys=ON")
     applied = db.execute("SELECT 1 FROM schema_migrations WHERE version=?", (MIGRATION_VERSION,)).fetchone()
     db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)", (MIGRATION_VERSION, _now()))
+    db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)", (MIGRATION_V2, _now()))
     db.commit()
     return {"migration_version": MIGRATION_VERSION, "already_applied": bool(applied)}
+
+
+def create_from_event(db: sqlite3.Connection, *, process_id: str, source_event_id: str,
+                      source_entity: str, source_id: str, source_excerpt: str,
+                      source_refs: Any, source_hash: str, action_text: str | None = None,
+                      recipient_text: str | None = None, term_value: int | None = None,
+                      term_unit: str = "UNSPECIFIED", counting_qualifier: str | None = None,
+                      trigger_text: str | None = None, trigger_status: str = "UNSPECIFIED",
+                      status: str = "AMBIGUOUS") -> str:
+    """Persist an instruction only when its generic event anchor is valid."""
+    event = db.execute("SELECT process_id,source_entity,source_id FROM process_events WHERE event_id=?", (source_event_id,)).fetchone()
+    if not event or event["process_id"] != process_id or event["source_entity"] != source_entity or event["source_id"] != source_id:
+        raise ValueError("source_event_id não corresponde à origem no processo")
+    if source_entity not in {"MOVEMENT", "PUBLICATION"}:
+        raise ValueError("source_entity inválida para instrução")
+    movement_id = source_id if source_entity == "MOVEMENT" else None
+    seed = "\x00".join((process_id, source_event_id, source_excerpt, action_text or "", str(term_value), term_unit))
+    instruction_id = "di_" + uuid.uuid5(ID_NAMESPACE, seed).hex
+    now = _now()
+    db.execute("""INSERT INTO deadline_instructions(
+      instruction_id,process_id,movement_id,source_event_id,source_entity,source_id,action_text,recipient_text,
+      term_value,term_unit,counting_qualifier,trigger_text,trigger_status,source_excerpt,source_refs_json,
+      source_hash,extraction_method,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instruction_id) DO NOTHING""",
+      (instruction_id,process_id,movement_id,source_event_id,source_entity,source_id,action_text,recipient_text,
+       term_value,term_unit,counting_qualifier,trigger_text,trigger_status,source_excerpt,_json(source_refs),
+       source_hash,"DETERMINISTIC_V1",status,now,now))
+    return instruction_id
 
 
 def _source_for_movement(db: sqlite3.Connection, movement_id: str) -> tuple[str, str, list[dict[str, Any]]] | None:
@@ -266,6 +332,8 @@ def extract_for_movement(db: sqlite3.Connection, movement_id: str) -> list[dict[
 
 def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, Any]:
     migrate_connection(db)
+    from core.documentos.process_event_store_v1 import materialize_process_events
+    materialize_process_events(db, process_id)
     movement_rows = db.execute("SELECT movement_id FROM movements WHERE process_id=? ORDER BY sequence", (process_id,)).fetchall()
     desired = [item for row in movement_rows for item in extract_for_movement(db, row["movement_id"])]
     now = _now()
@@ -273,13 +341,15 @@ def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, An
     for item in desired:
         old = existing.get(item["instruction_id"])
         values = (
-            item["instruction_id"], item["process_id"], item["movement_id"], item["action_text"], item["recipient_text"], item["term_value"], item["term_unit"], item["counting_qualifier"], item["trigger_text"], item["trigger_status"], item["source_excerpt"], item["source_refs_json"], item["source_hash"], item["extraction_method"], item["status"], old["created_at"] if old else now, now,
+            item["instruction_id"], item["process_id"], item["movement_id"],
+            db.execute("SELECT event_id FROM process_events WHERE process_id=? AND source_entity='MOVEMENT' AND source_id=?", (process_id,item["movement_id"])).fetchone()[0],
+            "MOVEMENT", item["movement_id"], item["action_text"], item["recipient_text"], item["term_value"], item["term_unit"], item["counting_qualifier"], item["trigger_text"], item["trigger_status"], item["source_excerpt"], item["source_refs_json"], item["source_hash"], item["extraction_method"], item["status"], old["created_at"] if old else now, now,
         )
         db.execute("""INSERT INTO deadline_instructions(
-          instruction_id, process_id, movement_id, action_text, recipient_text, term_value, term_unit,
+          instruction_id, process_id, movement_id, source_event_id, source_entity, source_id, action_text, recipient_text, term_value, term_unit,
           counting_qualifier, trigger_text, trigger_status, source_excerpt, source_refs_json, source_hash,
           extraction_method, status, created_at, updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(instruction_id) DO UPDATE SET
           process_id=excluded.process_id, movement_id=excluded.movement_id, action_text=excluded.action_text,
           recipient_text=excluded.recipient_text, term_value=excluded.term_value, term_unit=excluded.term_unit,

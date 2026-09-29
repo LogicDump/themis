@@ -18,6 +18,7 @@ from typing import Any
 from core.documentos.deadline_instruction_store_v1 import list_instructions
 
 MIGRATION_VERSION = "deadline-obligation-store-v1"
+MIGRATION_V2 = "deadline-obligation-store-v2-rule-resolution"
 ID_NAMESPACE = uuid.UUID("2e6bdc8c-01c9-43f4-9dbd-319f07e2b3c1")
 
 SCHEMA = """
@@ -59,6 +60,15 @@ def _now() -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def validate_recipient_participants(db: sqlite3.Connection, process_id: str, participant_ids: list[str]) -> list[str]:
+    """Reject IDs that are not participants in this exact process package."""
+    normalized = sorted({str(value) for value in participant_ids if str(value).strip()})
+    for participant_id in normalized:
+        if not db.execute("SELECT 1 FROM process_participants WHERE process_id=? AND participant_id=?", (process_id, participant_id)).fetchone():
+            raise ValueError("recipient_participant_id não pertence ao processo")
+    return normalized
 
 
 def _norm(value: Any) -> str:
@@ -134,8 +144,21 @@ def migrate_connection(db: sqlite3.Connection) -> dict[str, Any]:
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
     db.executescript(SCHEMA)
+    columns = {str(row[1]) for row in db.execute("PRAGMA table_info(deadline_obligations)")}
+    additions = {
+        "antecedent_source_event_id": "TEXT", "recipient_role": "TEXT",
+        "recipient_participant_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "recipient_resolution_method": "TEXT", "candidate_rule_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "model_preferred_rule_id": "TEXT", "resolved_rule_id": "TEXT",
+        "review_required": "INTEGER NOT NULL DEFAULT 1", "provenance_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, declaration in additions.items():
+        if name not in columns:
+            db.execute(f"ALTER TABLE deadline_obligations ADD COLUMN {name} {declaration}")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_obligations_antecedent_event ON deadline_obligations(antecedent_source_event_id)")
     applied = db.execute("SELECT 1 FROM schema_migrations WHERE version=?", (MIGRATION_VERSION,)).fetchone()
     db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)", (MIGRATION_VERSION, _now()))
+    db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)", (MIGRATION_V2, _now()))
     db.commit()
     return {"migration_version": MIGRATION_VERSION, "already_applied": bool(applied)}
 
@@ -182,6 +205,15 @@ def _build_obligation(process_id: str, origin: dict[str, Any], supporting: list[
         "trigger_text": origin.get("trigger_text"),
         "trigger_status": origin["trigger_status"],
         "origin_movement_id": origin["movement_id"],
+        "antecedent_source_event_id": origin.get("source_event_id"),
+        "recipient_role": None,
+        "recipient_participant_ids_json": "[]",
+        "recipient_resolution_method": None,
+        "candidate_rule_ids_json": "[]",
+        "model_preferred_rule_id": None,
+        "resolved_rule_id": None,
+        "review_required": 1,
+        "provenance_json": _json({"source_event_id": origin.get("source_event_id"), "source_entity": origin.get("source_entity"), "source_id": origin.get("source_id"), "source_hash": origin.get("source_hash"), "source_refs": source_refs}),
         "source_refs_json": _json(source_refs),
         "source_hash": origin["source_hash"],
         "status": status,
@@ -215,8 +247,10 @@ def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, An
             """INSERT INTO deadline_obligations(
               obligation_id, process_id, originating_instruction_id, supporting_instruction_ids_json, origin_role,
               action_text, recipient_text, term_value, term_unit, counting_qualifier, trigger_text, trigger_status,
-              origin_movement_id, source_refs_json, source_hash, status, created_at, updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              origin_movement_id, source_refs_json, source_hash, status, created_at, updated_at,
+              antecedent_source_event_id, recipient_role, recipient_participant_ids_json, recipient_resolution_method,
+              candidate_rule_ids_json, model_preferred_rule_id, resolved_rule_id, review_required, provenance_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(obligation_id) DO UPDATE SET
               process_id=excluded.process_id, originating_instruction_id=excluded.originating_instruction_id,
               supporting_instruction_ids_json=excluded.supporting_instruction_ids_json, origin_role=excluded.origin_role,
@@ -224,8 +258,9 @@ def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, An
               term_unit=excluded.term_unit, counting_qualifier=excluded.counting_qualifier, trigger_text=excluded.trigger_text,
               trigger_status=excluded.trigger_status, origin_movement_id=excluded.origin_movement_id,
               source_refs_json=excluded.source_refs_json, source_hash=excluded.source_hash, status=excluded.status,
-              updated_at=excluded.updated_at""",
-            values,
+              updated_at=excluded.updated_at, antecedent_source_event_id=excluded.antecedent_source_event_id,
+              provenance_json=excluded.provenance_json""",
+            values + (item["antecedent_source_event_id"], item["recipient_role"], item["recipient_participant_ids_json"], item["recipient_resolution_method"], item["candidate_rule_ids_json"], item["model_preferred_rule_id"], item["resolved_rule_id"], item["review_required"], item["provenance_json"]),
         )
     desired_ids = {item["obligation_id"] for item in desired}
     stale = [obligation_id for obligation_id in existing if obligation_id not in desired_ids]
@@ -264,5 +299,8 @@ def list_obligations(db: sqlite3.Connection, process_id: str, *, status: str | N
         value = dict(row)
         value["supporting_instruction_ids"] = json.loads(value.pop("supporting_instruction_ids_json"))
         value["source_refs"] = json.loads(value.pop("source_refs_json"))
+        value["recipient_participant_ids"] = json.loads(value.pop("recipient_participant_ids_json", "[]") or "[]")
+        value["candidate_rule_ids"] = json.loads(value.pop("candidate_rule_ids_json", "[]") or "[]")
+        value["provenance"] = json.loads(value.pop("provenance_json", "{}") or "{}")
         result.append(value)
     return result

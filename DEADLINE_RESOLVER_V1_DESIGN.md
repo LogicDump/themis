@@ -388,6 +388,12 @@ O catálogo de regras é versionado, declarativo e auditável, estruturado para 
 
 ### 8.1. Estrutura Canônica do Catálogo
 
+**Nota de implementação da Fase 1:** o módulo inicial publica o contrato versionado
+do catálogo sem ativar regras materiais. Os exemplos abaixo dependem de confirmação
+jurídica e de fonte oficial/versionada por regra; até essa verificação, o catálogo
+permanece vazio e o resolver retorna `UNRESOLVED` quando não houver candidato
+validado. Esta limitação evita tratar exemplos conceituais como regra vigente.
+
 Cada regra deve carregar provenance jurídico verificável, no mínimo: `effective_from`, `effective_to`, `jurisdiction_scope`, `authority`, `official_source`, `verified_at`, `rule_version` e fundamento legal estruturado. Alteração legislativa ou administrativa cria nova versão/intervalo de vigência; não se sobrescreve silenciosamente a regra histórica.
 
 ```json
