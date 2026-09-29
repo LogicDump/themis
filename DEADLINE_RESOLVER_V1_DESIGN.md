@@ -759,8 +759,8 @@ Fase 1: Schemas e Core Store (Não-destrutivo)
 └── 1.4. Implementar deadline_rule_resolver_v1.py determinístico (precedência, vigência, rito e hard constraints)
 
 Fase 2: Motor Determinístico de Prazos
-├── 2.1. Implementar cpc_deadline_calculator_v1.py (regras DJEN, D+1, CPC 219/220/224)
-└── 2.2. Implementar calendário base (feriados nacionais e tabela de comarcas TJSP)
+├── 2.1. Implementar deadline_engine_v1.py, genérico e orientado a policies declarativas
+└── 2.2. Fornecer CourtCalendar versionado como dependência; integração TJSP fica fora deste corte
 
 Fase 3: Especialista Local & Resolução de Antecedente
 ├── 3.1. Implementar procedural_antecedent_resolver_v1.py (grafo de atos e resolução de polo)
@@ -772,3 +772,40 @@ Fase 4: Validação Golden & UI
 ├── 4.2. Validar projeção em LegalEventProjection e endpoint /api/legal_events
 └── 4.3. Homologação visual na aba EVENTOS do Themis Desktop
 ```
+
+## 15. CONTRATO IMPLEMENTADO DO DEADLINE ENGINE V1
+
+O motor único `core/documentos/deadline_engine_v1.py` recebe um `LegalContext`,
+uma `LegalRule` resolvida, duração/unidade estruturadas, identificadores de
+`CountingPolicy` e `CommunicationPolicy`, um `CommunicationFact` e entradas
+`CourtCalendar` já materializadas. A mesma entrada e os mesmos catálogos
+produzem o mesmo resultado. O módulo não lê armazenamento, rede ou calendário
+externo, não persiste cálculos e não cria horário de vencimento.
+
+O `CommunicationPolicy` declara `trigger_date_field`; DJEN usa o fato
+`published_on`. O motor só lê o campo declarado, exige compatibilidade do tipo
+de evento/método e respeita a condição de não aplicação quando a lei exige
+intimação pessoal. Ausência do fato ou da data declarada resulta em
+`COMMUNICATION_TRIGGER_MISSING`.
+
+Prazos judiciais explícitos sem qualifier estruturado usam a associação
+declarativa regime → policy em `deadline_policies_v1.py`. Qualifiers
+estruturados `BUSINESS_DAYS` e `CONTINUOUS_DAYS` selecionam policy compatível
+somente para a regra de ordem judicial que permite override. Regras materiais
+usam sua própria `counting_policy_id`. A unidade `DAYS` não escolhe modalidade.
+
+`BUSINESS` classifica cada data exclusivamente pela cobertura fornecida do
+calendário; `CONTINUOUS` avança datas consecutivas. Policies de suspensão são
+avaliadas separadamente do calendário. Decisões de exceção são códigos
+estruturados fornecidos pelo chamador; se uma exceção legal exigir decisão e
+ela não vier resolvida, o resultado é `REVIEW_REQUIRED`. Cobertura ausente ao
+classificar uma data necessária produz `UNRESOLVED` com
+`CALENDAR_COVERAGE_MISSING`.
+
+`DeadlineCalculationResult` preserva estado, regra/versão, regime, policy e
+versão, fato/evento de comunicação, trigger, início, `due_date`, datas
+contadas/excluídas, suspensões aplicadas, versão/provenance do calendário,
+trace determinístico, base legal e provenance. A policy `LAW_9099` continua
+com limites de inclusão indefinidos; por isso o resultado exige revisão e não
+herda comportamento do CPC. O calendário é exclusivamente uma entrada: este
+corte não integra fonte externa nem persiste em `deadlines`.

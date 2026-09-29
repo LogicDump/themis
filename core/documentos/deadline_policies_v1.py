@@ -50,6 +50,7 @@ class CommunicationPolicy:
     official_source: tuple[str, ...]
     authority: str
     verified_at: str
+    trigger_date_field: str | None = None
 
     def applies(self, *, regime: str, requires_personal_notice: bool) -> bool:
         regime_ok = "*" in self.applicable_regimes or regime in self.applicable_regimes
@@ -104,9 +105,9 @@ SUSPENSION_POLICIES: tuple[SuspensionPolicy, ...] = (
         {"statute": "Lei 13.105/2015", "article": "220", "paragraph": None}, "2016-03-18", None, _CPC,
         "Presidência da República", _VERIFIED),
     SuspensionPolicy("CPP_ART_798A_RECESS", "1.0.0", "CRIMINAL", "CPP", "12-20", "01-20", True,
-        ({"exception": "réus presos nos processos vinculados a essas prisões", "basis": "inciso I"},
-         {"exception": "procedimentos da Lei Maria da Penha", "basis": "inciso II"},
-         {"exception": "medida urgente por despacho fundamentado", "basis": "inciso III"}),
+        ({"exception_id": "INCISO_I", "exception": "réus presos nos processos vinculados a essas prisões", "basis": "inciso I"},
+         {"exception_id": "INCISO_II", "exception": "procedimentos da Lei Maria da Penha", "basis": "inciso II"},
+         {"exception_id": "INCISO_III", "exception": "medida urgente por despacho fundamentado", "basis": "inciso III"}),
         {"statute": "Lei 14.365/2022", "article": "798-A", "paragraph": None}, "2022-06-03", None,
         f"{_CPP} | https://www.planalto.gov.br/ccivil_03/_ato2019-2022/2022/lei/l14365.htm",
         "Presidência da República", _VERIFIED),
@@ -141,7 +142,22 @@ COMMUNICATION_POLICIES: tuple[CommunicationPolicy, ...] = (
         True,
         {"statute": "Resolução CNJ 455/2022", "article": "11", "paragraph": "§ 3º",
          "amended_by": "Resolução CNJ 569/2024", "cpc_reference": "art. 224, §§ 1º e 2º"},
-        "2024-08-15", None, (_RES455, _RES569), "Conselho Nacional de Justiça", _VERIFIED),
+        "2024-08-15", None, (_RES455, _RES569), "Conselho Nacional de Justiça", _VERIFIED,
+        "published_on"),
+)
+
+# Declarative regime defaults used only for express judicial terms without an
+# explicit structured counting qualifier. Order is retained for auditability.
+REGIME_COUNTING_POLICY_IDS: tuple[tuple[str, str], ...] = (
+    ("CPC", "CPC_BUSINESS_DAYS"),
+    ("CPP", "CPP_CONTINUOUS_DAYS"),
+    ("CLT", "CLT_BUSINESS_DAYS"),
+    ("LAW_9099", "LAW_9099_BUSINESS_DAYS"),
+)
+
+COUNTING_QUALIFIER_MODES: tuple[tuple[str, str], ...] = (
+    ("BUSINESS_DAYS", "BUSINESS"),
+    ("CONTINUOUS_DAYS", "CONTINUOUS"),
 )
 
 
