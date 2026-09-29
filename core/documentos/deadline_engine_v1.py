@@ -144,6 +144,13 @@ def _calendar_index(entries: Iterable[Any], context: LegalContext) -> tuple[dict
         "status": _record(e).get("status"), "scope": _record(e).get("scope"),
         "official_source": _record(e).get("official_source"),
         "verified_at": _record(e).get("verified_at"), "version": _record(e).get("version"),
+        "source_type": _record(e).get("source_type"), "authority": _record(e).get("authority"),
+        "act_number": _record(e).get("act_number"), "act_date": _record(e).get("act_date"),
+        "applicability": _record(e).get("applicability", "ALL"),
+        "proceeding_medium": _record(e).get("proceeding_medium"),
+        "notes": _record(e).get("notes"), "provenance": _record(e).get("provenance"),
+        "forum": _record(e).get("forum"), "unit": _record(e).get("unit"),
+        "system_id": _record(e).get("system_id"),
     } for e in scoped.values()), key=lambda x: x["date"]))
     return scoped, versions[0] if versions else None, list(provenance)
 

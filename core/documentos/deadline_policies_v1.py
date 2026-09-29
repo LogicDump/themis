@@ -90,6 +90,17 @@ class CourtCalendar:
     official_source: str
     verified_at: str
     version: str
+    source_type: str | None = None
+    authority: str | None = None
+    act_number: str | None = None
+    act_date: str | None = None
+    applicability: str = "ALL"
+    proceeding_medium: str | None = None
+    notes: str | None = None
+    provenance: dict[str, Any] | None = None
+    forum: str | None = None
+    unit: str | None = None
+    system_id: str | None = None
 
 
 _VERIFIED = "2026-09-29"

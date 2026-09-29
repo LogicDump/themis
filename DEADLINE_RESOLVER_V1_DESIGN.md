@@ -850,3 +850,64 @@ usuário. A integração lê somente `legal_context` estruturado na provenance d
 obrigação; sem os campos mínimos, persiste `UNRESOLVED` com
 `LEGAL_CONTEXT_MISSING` e não cria prazo operacional. A rematerialização da
 obrigação preserva essa provenance estruturada.
+
+## 17. CALENDÁRIO JUDICIAL MULTI-TRIBUNAL
+
+Aquisição específica de tribunal permanece fora do Deadline Engine:
+
+```text
+FETCH oficial HTTPS
+→ RawSourceSnapshot (bytes, fetched_at, source_url, content_hash, parser_version)
+→ PARSE/revisão estruturada
+→ NORMALIZE para CourtCalendar
+→ STORE (snapshots e versões imutáveis de eventos)
+→ COMPOSE para o processo e meio de tramitação
+→ DeadlineEngine genérico
+```
+
+`CourtCalendarProvider` define entrada por tribunal/jurisdição/comarca e faixa
+de datas e saída `tuple[CourtCalendar, ...]`. `court_calendar_store_v1.py`
+armazena snapshots locais e eventos com chave lógica por fonte/ato/data/escopo;
+retificações criam nova versão ligada à anterior, sem apagar proveniência. O
+compositor expõe `NATIONAL`, `STATE`, `COURT`, `COMARCA`, `FORUM`, `UNIT` e
+`SYSTEM`, e filtra `ALL`, `PHYSICAL` ou `ELECTRONIC` segundo o meio conhecido.
+
+Precedência publicada pelo compositor: status bloqueante (`SUSPENDED`,
+`RECESS`, `HOLIDAY`) vence `BUSINESS_DAY`; em empate de status, o escopo mais
+específico vence. Todos os candidatos e a regra usada ficam na provenance.
+Uma saída tem no máximo um estado por data. Datas sem fonte aplicável são
+retornadas em `missing_dates`; não são tratadas como úteis. Fins de semana são
+classificados apenas durante a composição, de modo determinístico, como
+`HOLIDAY`, com `source_type=DERIVED_WEEKEND` e fonte de algoritmo. Não são
+gravados como ato/evento oficial.
+
+Os providers TJSP/TJAM deste corte normalizam linhas oficiais explicitamente
+revisadas. Não fazem scraping heurístico de páginas dinâmicas ou interpretação
+de texto livre; o snapshot bruto acompanha os dados estruturados. A página
+TJSP distingue suspensões de processos físicos. Para Piracaia, o registro
+oficial de 31/08/2026 é `COMARCA/PHYSICAL`; não se aplica a processos
+eletrônicos. A Portaria TJAM Presidência 1320/2026 produz quatro eventos
+`COMARCA/ALL` em Parintins: 14/05, 29/06, 16/07 e 15/10/2026.
+Referências oficiais consultadas: [TJSP Suspensão de Prazos](https://www.tjsp.jus.br/CanaisComunicacao/SuspensaoPrazos),
+[TJSP Processos Físicos](https://www.tjsp.jus.br/CanaisComunicacao/Feriados/ProcessosFisicos),
+[TJAM Calendário Judicial](https://www.tjam.jus.br/index.php/menu/calendario-judicial) e
+[TJAM Atos Normativos](https://www.tjam.jus.br/index.php/transparencia/gestao/atos-normativos-e-legislacao-correlata).
+
+```text
+CourtCalendarProvider
+  ├── TJSP
+  ├── TJAM
+  └── future providers
+        ↓
+CourtCalendarStore
+        ↓
+CalendarComposer
+        ↓
+DeadlineEngine
+```
+
+**Tribunal-specific acquisition outside the engine.** Este corte não integra
+indisponibilidade SAJ/eproc, não declara cobertura diária completa, não
+preenche dias úteis por ausência de feriado e não se conecta ao runtime. Uma
+fonte local cobre apenas os eventos que ela documenta; cobertura faltante
+continua explícita para que o engine resulte em `CALENDAR_COVERAGE_MISSING`.

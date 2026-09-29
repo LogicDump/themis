@@ -1,0 +1,19 @@
+{
+  "source_url": "https://www.tjsp.jus.br/CanaisComunicacao/Feriados/ProcessosFisicos",
+  "fetched_at": "2026-09-29T19:47:33Z",
+  "parser_version": "tjsp-reviewed-records-v1",
+  "raw_excerpt": "PIRACAIA - antecipação do encerramento do expediente presencial, a partir das 15h55, no dia 31 de agosto de 2026, com suspensão dos prazos dos processos físicos na referida data. (DEJESP de 01/09/2026, pág. 16).",
+  "records": [
+    {
+      "date": "2026-08-31",
+      "status": "SUSPENDED",
+      "scope": "COMARCA",
+      "locality_unit": "Piracaia",
+      "applicability": "PHYSICAL",
+      "source_type": "OFFICIAL_COMMUNICATION",
+      "act_number": "DEJESP 01/09/2026 p.16",
+      "act_date": "2026-09-01",
+      "notes": "Suspensão dos prazos de processos físicos; encerramento do expediente presencial às 15h55. Não indica suspensão para processos eletrônicos."
+    }
+  ]
+}
