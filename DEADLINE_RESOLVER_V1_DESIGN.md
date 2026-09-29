@@ -494,6 +494,33 @@ Cada regra deve carregar provenance jurídico verificável, no mínimo: `effecti
 
 ---
 
+### 8.2. Contexto multirregime e políticas temporais separadas
+
+A resolução temporal recebe `LegalContext` estruturado (`legal_domain`, `base_regime`,
+`procedure_class`, lista ordenada `applicable_regimes`, `jurisdiction` e fase opcional).
+O contexto futuro poderá ser preenchido com provenance a partir de process metadata/capa;
+o usuário ativo do Themis não é fonte para determinar regime ou destinatário.
+
+```text
+LegalContext → Instruction → Specialist → candidate rules
+             → deterministic RuleResolver → resolved LegalRule
+             → CountingPolicy → CommunicationPolicy → CourtCalendar → Deadline
+```
+
+`LegalRule` guarda duração e referencia políticas separadas. `CountingPolicy` descreve
+modo de dias e convenções sem executar contagem; `CommunicationPolicy` identifica o
+tipo de evento de comunicação que poderá servir de marco, sem calcular termo inicial.
+`CourtCalendar` é uma dependência versionada e provenanceada, sem calendário material
+neste estágio. A ordem de `applicable_regimes` é declarativa: regime especial aparece
+antes do regime-base e prevalece sobre ele quando ambos são compatíveis. A precedência
+entre regras também é registrada no catálogo. Nenhuma camada desta fase produz `due_at`
+ou consulta calendário.
+
+Identidades previstas para policies incluem `CPC_BUSINESS_DAYS`, `CPP_CONTINUOUS_DAYS`,
+`CLT_BUSINESS_DAYS` e `LAW_9099_BUSINESS_DAYS`; são identificadores de contrato, não
+cadastro de conteúdo legal vigente. O Rule Pack segue vazio até cada regra e policy ter
+fundamento e fonte oficial verificados. Não há fallback universal para CPC.
+
 ## 9. SCHEMA DE DATASET GOLDEN PARA TREINAMENTO E BENCHMARK
 
 Para o fine-tuning e avaliação contínua do especialista local (SLM / Classificador), define-se o schema canônico de Golden Dataset:
