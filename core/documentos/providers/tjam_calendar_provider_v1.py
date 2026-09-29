@@ -21,8 +21,12 @@ class TjamCalendarProvider:
     def provide(self, request: CalendarProviderRequest,
                 records: tuple[Mapping[str, Any], ...]) -> tuple[CourtCalendar, ...]:
         validate_request("TJAM", request)
+        families = {"ACT" if r.get("act_number") else "CALENDAR" for r in records}
+        if len(families) > 1:
+            raise ValueError("TJAM: registros de fontes oficiais distintas exigem snapshots/lotes separados")
+        source_url = ACTS_SOURCE if families == {"ACT"} else OFFICIAL_SOURCE
         return normalize_records(provider_id=self.provider_id, authority=AUTHORITY,
-            source_url=ACTS_SOURCE if any(r.get("act_number") for r in records) else OFFICIAL_SOURCE,
+            source_url=source_url,
             verified_at="2026-09-29", version="tjam-reviewed-records-v1",
             request=request, records=tuple(records))
 

@@ -23,8 +23,13 @@ class TjspCalendarProvider:
         validate_request("TJSP", request)
         if not request.locality_unit:
             raise ValueError("TJSP exige comarca para filtrar calendário local")
+        families = {"PHYSICAL" if str(r.get("applicability", "ALL")).upper() == "PHYSICAL" else "GENERAL"
+                    for r in records}
+        if len(families) > 1:
+            raise ValueError("TJSP: registros de fontes oficiais distintas exigem snapshots/lotes separados")
+        source_url = PHYSICAL_SUSPENSIONS_SOURCE if families == {"PHYSICAL"} else OFFICIAL_SOURCE
         return normalize_records(provider_id=self.provider_id, authority=AUTHORITY,
-            source_url=PHYSICAL_SUSPENSIONS_SOURCE if any(r.get("applicability") == "PHYSICAL" for r in records) else OFFICIAL_SOURCE,
+            source_url=source_url,
             verified_at="2026-09-29", version="tjsp-reviewed-records-v1",
             request=request, records=tuple(records))
 

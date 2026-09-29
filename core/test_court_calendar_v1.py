@@ -16,8 +16,8 @@ from core.documentos.court_calendar_store_v1 import (
 )
 from core.documentos.deadline_engine_v1 import DeadlineCalculationInput, CommunicationFact, calculate_deadline
 from core.documentos.deadline_policies_v1 import CourtCalendar
-from core.documentos.providers.tjam_calendar_provider_v1 import parse_snapshot as parse_tjam
-from core.documentos.providers.tjsp_calendar_provider_v1 import parse_snapshot as parse_tjsp
+from core.documentos.providers.tjam_calendar_provider_v1 import TjamCalendarProvider, parse_snapshot as parse_tjam
+from core.documentos.providers.tjsp_calendar_provider_v1 import TjspCalendarProvider, parse_snapshot as parse_tjsp
 
 FIXTURES = Path(__file__).parent / "fixtures" / "court_calendars"
 
@@ -28,6 +28,24 @@ def fixture(name: str):
     snapshot = RawSourceSnapshot(value["source_url"], content, value["fetched_at"], value["parser_version"],
                                  hashlib.sha256(content).hexdigest())
     return value, snapshot
+
+
+def test_mixed_source_families_are_rejected_in_single_provider_batch():
+    tjsp_request = CalendarProviderRequest("TJSP", "SP", "Piracaia", "2026-08-31", "2026-09-01")
+    tjsp_records = (
+        {"date":"2026-08-31","status":"SUSPENDED","scope":"COMARCA","locality_unit":"Piracaia","applicability":"PHYSICAL"},
+        {"date":"2026-09-01","status":"HOLIDAY","scope":"COMARCA","locality_unit":"Piracaia","applicability":"ALL"},
+    )
+    with pytest.raises(ValueError, match="fontes oficiais distintas"):
+        TjspCalendarProvider().provide(tjsp_request, tjsp_records)
+
+    tjam_request = CalendarProviderRequest("TJAM", "AM", "Parintins", "2026-05-14", "2026-05-15")
+    tjam_records = (
+        {"date":"2026-05-14","status":"SUSPENDED","scope":"COMARCA","locality_unit":"Parintins","act_number":"Portaria X"},
+        {"date":"2026-05-15","status":"HOLIDAY","scope":"COURT"},
+    )
+    with pytest.raises(ValueError, match="fontes oficiais distintas"):
+        TjamCalendarProvider().provide(tjam_request, tjam_records)
 
 
 def test_provider_contract_is_tribunal_neutral():
