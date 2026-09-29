@@ -306,11 +306,14 @@ def submit_deadline_candidates(db: sqlite3.Connection, owner_type: str, owner_id
             if existing:
                 db.execute(
                     """UPDATE deadlines SET title=?,description=?,deadline_type=?,term=?,due_at=?,date_precision=?,
-                    status=?,priority=?,responsible=?,source_refs_json=?,provenance_json=?,extraction_run_id=?,updated_at=?
+                    timezone=?,status=?,priority=?,responsible=?,triggering_event=?,legal_basis=?,confidence=?,
+                    confirmation_status=?,source_refs_json=?,provenance_json=?,extraction_run_id=?,updated_at=?
                     WHERE deadline_id=?""",
                     (title, item.get("description"), item.get("deadline_type"), term, due_at, precision,
-                     item.get("status", "CANDIDATE"), item.get("priority"), item.get("responsible"),
-                     _list_json(refs), _json(item.get("provenance")), extraction_run_id, values[-2], deadline_id)
+                     item.get("timezone"), item.get("status", "CANDIDATE"), item.get("priority"), item.get("responsible"),
+                     item.get("triggering_event"), item.get("legal_basis"), item.get("confidence"),
+                     item.get("confirmation_status", "PENDING"), _list_json(refs), _json(item.get("provenance")),
+                     extraction_run_id, values[-2], deadline_id)
                 )
             else:
                 db.execute("""INSERT INTO deadlines(

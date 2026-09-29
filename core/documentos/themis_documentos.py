@@ -107,6 +107,8 @@ class Store:
         migrate_deadline_instructions(db)
         from core.documentos.deadline_obligation_store_v1 import migrate_connection as migrate_deadline_obligations
         migrate_deadline_obligations(db)
+        from core.documentos.deadline_calculation_store_v1 import migrate_connection as migrate_deadline_calculations
+        migrate_deadline_calculations(db)
         from core.documentos.participant_context_store_v1 import migrate_connection as migrate_participant_context
         migrate_participant_context(db)
         if process_id:

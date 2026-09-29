@@ -67,6 +67,7 @@ def _process_package_schema_is_current(target: Path) -> bool:
     """Check migration markers without taking a writer lock on a healthy package."""
     from core.documentos import (
         case_synthesis_store_v1,
+        deadline_calculation_store_v1,
         deadline_instruction_store_v1,
         deadline_obligation_store_v1,
         participant_context_store_v1,
@@ -88,6 +89,7 @@ def _process_package_schema_is_current(target: Path) -> bool:
         process_event_store_v1.MIGRATION_VERSION,
         deadline_instruction_store_v1.MIGRATION_VERSION,
         deadline_obligation_store_v1.MIGRATION_VERSION,
+        deadline_calculation_store_v1.MIGRATION_VERSION,
         participant_context_store_v1.MIGRATION_VERSION,
         publications_v1.MIGRATION,
     }
@@ -142,6 +144,8 @@ def bootstrap_database() -> dict:
             result["participant_context"] = migrate_participant_context(db)
             from core.documentos.publications_v1 import migrate_connection as migrate_publications
             result["publications"] = migrate_publications(db)
+            from core.documentos.deadline_calculation_store_v1 import migrate_connection as migrate_deadline_calculations
+            result["deadline_calculations"] = migrate_deadline_calculations(db)
             results[pid]=result
         finally:
             db.close()

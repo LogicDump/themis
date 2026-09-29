@@ -765,7 +765,7 @@ Fase 2: Motor Determinístico de Prazos
 Fase 3: Especialista Local & Resolução de Antecedente
 ├── 3.1. Implementar procedural_antecedent_resolver_v1.py (grafo de atos e resolução de polo)
 ├── 3.2. Implementar pipeline de inferência local (Prazo Resolver: classificação + ranking de regras)
-└── 3.3. Integrar com o fluxo de sincronização do DJEN (publications_v1.py -> ProcessEvent -> instrução -> obrigação -> deadline)
+└── 3.3. Integrar com o fluxo DJEN (Publication -> ProcessEvent -> Instruction -> Obligation -> Calculation -> deadlines)
 
 Fase 4: Validação Golden & UI
 ├── 4.1. Criar fixture golden com 50 casos canônicos (incluindo "Manifeste-se a parte contrária")
@@ -809,3 +809,44 @@ trace determinístico, base legal e provenance. A policy `LAW_9099` continua
 com limites de inclusão indefinidos; por isso o resultado exige revisão e não
 herda comportamento do CPC. O calendário é exclusivamente uma entrada: este
 corte não integra fonte externa nem persiste em `deadlines`.
+
+## 16. FASE 2B: PERSISTÊNCIA E PROJEÇÃO OPERACIONAL
+
+A cadeia canônica implementada para materialização é:
+
+```text
+Publication / ProcessEvent
+→ DeadlineInstruction
+→ DeadlineObligation
+→ DeadlineCalculation
+→ deadlines
+→ LegalEventProjection
+```
+
+`deadline_calculations` guarda o resultado integral do engine em
+`calculation_json`, além das colunas de consulta e das FKs para obrigação e
+evento de comunicação. `calculation_id` é UUIDv5 de obrigação, regra/versão,
+policies/versões, comunicação/evento, duração, trigger/início e versão do
+calendário. Repetições atualizam esse registro; versões de entrada diferentes
+mantêm cálculos auditáveis distintos.
+
+Somente resultado `CALCULATED` com `due_date` ISO de dia cria a projeção na
+tabela existente `deadlines`, com `owner_type=PROCESS`, `date_precision=DAY`
+e `due_at=YYYY-MM-DD`. A fingerprint operacional é estável por obrigação.
+Resultados `UNRESOLVED`/`REVIEW_REQUIRED` removem a projeção anterior da
+obrigação e permanecem no histórico de cálculos. `process_events` continua
+representando apenas fatos observados e não recebe eventos `DEADLINE`.
+
+Para publicações DJEN, `available_on` vindo da API permanece
+`OBSERVED`/`DJEN_API`. Se `published_on` estiver vazio, o engine deriva a data
+por `CommunicationPolicy` e calendário fornecido, registrando-a como
+`DERIVED`; o início da contagem também é `DERIVED`. O campo
+`publications.published_on` não é preenchido pelo cálculo. Quando a fonte já
+contém `published_on`, a policy usa essa data observada e a provenance mantém
+`OBSERVED`.
+
+Não há derivação de `LegalContext` a partir da classe textual ou da sessão do
+usuário. A integração lê somente `legal_context` estruturado na provenance da
+obrigação; sem os campos mínimos, persiste `UNRESOLVED` com
+`LEGAL_CONTEXT_MISSING` e não cria prazo operacional. A rematerialização da
+obrigação preserva essa provenance estruturada.

@@ -79,6 +79,15 @@ def test_cpp_expiry_adjustment_uses_supplied_calendar_only():
     assert any(x.get("purpose") == "EXPIRY_ADJUSTMENT" for x in result.excluded_days)
 
 
+def test_missing_calendar_during_expiry_adjustment_clears_provisional_due_date():
+    result = calc("CPP", "CRIMINAL", trigger="2026-03-02", term=5,
+                  calendar=(calendar_day(date(2026, 3, 3), "BUSINESS_DAY"),
+                            calendar_day(date(2026, 3, 7), "HOLIDAY")))
+    assert result.status == "UNRESOLVED"
+    assert result.reason["code"] == "CALENDAR_COVERAGE_MISSING"
+    assert result.due_date is None
+
+
 def test_clt_business_policy_is_independent_of_cpc_policy():
     result = calc("CLT", "LABOR", trigger="2026-03-02", term=2,
                   calendar=calendar_between("2026-03-03", "2026-03-04"))

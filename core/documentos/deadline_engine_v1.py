@@ -213,7 +213,7 @@ def _next_business_day(calendar: Mapping[date, Any], day: date, *, purpose: str)
 
 
 def _communication_trigger(inp: DeadlineCalculationInput, context: LegalContext,
-                           policies: Mapping[str, CommunicationPolicy], calendar: Mapping[date, Any]) -> tuple[date, date | None, CommunicationPolicy, dict[str, Any], str]:
+                           policies: Mapping[str, CommunicationPolicy], calendar: Mapping[date, Any]) -> tuple[date, date | None, CommunicationPolicy, dict[str, Any], str, str]:
     if not inp.communication_policy_id or not inp.communication_fact:
         raise _Stop("UNRESOLVED", "COMMUNICATION_TRIGGER_MISSING")
     policy = policies.get(inp.communication_policy_id)
@@ -230,6 +230,7 @@ def _communication_trigger(inp: DeadlineCalculationInput, context: LegalContext,
     field_name = policy.trigger_date_field
     value = fact.get(field_name) if field_name else None
     resolution_method = "DECLARED_COMMUNICATION_DATE"
+    resolved_field = field_name or ""
     if value:
         trigger = _date(value)
     elif policy.fallback_trigger_date_field and policy.trigger_derivation == "NEXT_BUSINESS_DAY_AFTER_FALLBACK":
@@ -242,6 +243,7 @@ def _communication_trigger(inp: DeadlineCalculationInput, context: LegalContext,
             })
         trigger = _next_business_day(calendar, _date(fallback), purpose="COMMUNICATION_PUBLICATION_DATE")
         resolution_method = "DERIVED_FROM_AVAILABLE_ON_NEXT_BUSINESS_DAY"
+        resolved_field = policy.fallback_trigger_date_field
     else:
         raise _Stop("UNRESOLVED", "COMMUNICATION_TRIGGER_MISSING", {"policy_id": policy.policy_id, "required_field": field_name})
     if not _in_effect(policy, trigger, from_field="effective_from", to_field="effective_to"):
@@ -251,7 +253,7 @@ def _communication_trigger(inp: DeadlineCalculationInput, context: LegalContext,
         counting_start = _next_business_day(calendar, trigger, purpose="COMMUNICATION_COUNTING_START")
     elif policy.counting_start_adjustment not in (None, "NONE"):
         raise _Stop("REVIEW_REQUIRED", "UNSUPPORTED_COMMUNICATION_START_ADJUSTMENT", {"value": policy.counting_start_adjustment})
-    return trigger, counting_start, policy, fact, resolution_method
+    return trigger, counting_start, policy, fact, resolution_method, resolved_field
 
 
 def calculate_deadline(
@@ -276,6 +278,7 @@ def calculate_deadline(
     communication_fact: dict[str, Any] = {}
     trigger: date | None = None
     trigger_resolution_method: str | None = None
+    trigger_source_field: str | None = None
     communication_counting_start: date | None = None
     counting_start: date | None = None
     due: date | None = None
@@ -320,7 +323,7 @@ def calculate_deadline(
             raise _Stop("REVIEW_REQUIRED", "COUNTING_END_BOUNDARY_UNSUPPORTED", {"policy_id": counting.policy_id, "include_end": counting.include_end})
         calendar, calendar_version, calendar_provenance = _calendar_index(calculation.calendar_entries, ctx)
         communication_map = _policy_map(communication_policies, "policy_id")
-        trigger, communication_counting_start, communication, communication_fact, trigger_resolution_method = _communication_trigger(
+        trigger, communication_counting_start, communication, communication_fact, trigger_resolution_method, trigger_source_field = _communication_trigger(
             calculation, ctx, communication_map, calendar
         )
         suspensions = _policy_map(suspension_policies, "policy_id")
@@ -336,7 +339,8 @@ def calculate_deadline(
         current = communication_counting_start if communication_counting_start is not None else (trigger if counting.include_start else trigger + timedelta(days=1))
         counting_start = current
         trace.append({"step": "TRIGGER", "date": trigger.isoformat(), "source_event_id": communication_fact.get("source_event_id"),
-                      "source_field": communication.trigger_date_field, "method": trigger_resolution_method})
+                      "source_field": trigger_source_field, "method": trigger_resolution_method,
+                      "policy_id": communication.policy_id, "policy_version": communication.policy_version})
         trace.append({"step": "COUNTING_POLICY", "policy_id": counting.policy_id, "version": counting.policy_version,
                       "day_mode": counting.day_mode, "include_start": counting.include_start, "include_end": counting.include_end})
         if communication_counting_start is not None:
@@ -422,6 +426,11 @@ def calculate_deadline(
                       "resolved_rule_provenance": dict(calculation.resolved_rule_provenance),
                       "communication_fact": communication_fact.get("provenance", {}),
                       "communication_source_refs": communication_fact.get("source_refs", []),
+                      "communication_trigger": {"date": trigger.isoformat(), "source_field": trigger_source_field,
+                                                  "epistemic_status": "OBSERVED" if trigger_resolution_method == "DECLARED_COMMUNICATION_DATE" else "DERIVED",
+                                                  "resolution_method": trigger_resolution_method},
+                      "counting_start": {"date": counting_start.isoformat(), "epistemic_status": "DERIVED",
+                                         "policy_id": communication.policy_id},
                       "communication": {"policy_id": communication.policy_id, "version": communication.policy_version,
                                          "authority": communication.authority, "official_source": list(communication.official_source)},
                       "policies": {"counting": {"policy_id": counting.policy_id, "version": counting.policy_version,
@@ -431,9 +440,11 @@ def calculate_deadline(
                                                    for s in active_suspensions]}}
     except _Stop as stop:
         status = stop.status
+        due = None
         reason = {"code": stop.code, **stop.detail}
     except (KeyError, TypeError, ValueError) as exc:
         status = "REVIEW_REQUIRED"
+        due = None
         reason = {"code": "INVALID_STRUCTURED_INPUT", "detail": str(exc)}
     rule_version = (str(rule.get("rule_version")) if rule and rule.get("rule_version") else calculation.rule_version)
     if rule and not legal_basis:

@@ -376,6 +376,15 @@ def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, An
     existing = {row["obligation_id"]: row for row in db.execute("SELECT * FROM deadline_obligations WHERE process_id=?", (process_id,)).fetchall()}
     for item in desired:
         old = existing.get(item["obligation_id"])
+        if old:
+            # Source facts are refreshed while resolver-owned structured
+            # context (including LegalContext) must survive rematerialization.
+            prior_provenance = json.loads(old["provenance_json"] or "{}")
+            current_provenance = json.loads(item["provenance_json"] or "{}")
+            if isinstance(prior_provenance, dict) and isinstance(current_provenance, dict):
+                prior_provenance.update(current_provenance)
+                current_provenance = prior_provenance
+                item["provenance_json"] = _json(current_provenance)
         values = (
             item["obligation_id"], item["process_id"], item["originating_instruction_id"], item["supporting_instruction_ids_json"], item["origin_role"],
             item["action_text"], item["recipient_text"], item["term_value"], item["term_unit"], item["counting_qualifier"], item["trigger_text"], item["trigger_status"],
