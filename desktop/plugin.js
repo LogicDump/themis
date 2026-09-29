@@ -24556,9 +24556,10 @@ function movementAnalysisJobMessage(job) {
 	const total = job?.total_eligible ?? job?.total ?? 0;
 	if (status === "PENDING") return "Geração de resumos iniciada; aguardando execução.";
 	if (status === "RUNNING") {
-		const batch = job.current_batch ? ` · lote ${job.current_batch.number} (${job.current_batch.size} Movements)` : "";
+		const batch = job.current_batch ? ` · lote ${job.current_batch.number}/${job.batch_count || "?"} (${job.current_batch.size} Movements)` : "";
+		const waiting = job.current_batch && Number(job.completed || 0) === 0 ? " · aguardando resposta do modelo" : "";
 		const updated = job.updated_at ? new Date(job.updated_at).toLocaleTimeString() : "agora";
-		return `Gerando resumos: ${job.completed || 0}/${total} concluídos · ${job.pending || 0} pendentes${batch} · atualizado ${updated}`;
+		return `Gerando resumos: ${job.completed || 0}/${total} concluídos · ${job.pending || 0} pendentes${batch}${waiting} · atualizado ${updated}`;
 	}
 	if (status === "COMPLETED") return `Geração de resumos concluída: ${job.completed || 0}/${total}.`;
 	if (status === "PARTIAL") return `Geração de resumos parcial: ${job.completed || 0} concluídos; ${job.pending || 0} pendentes. ${job.error || ""}`;
@@ -26563,6 +26564,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		setSelectedPid(pid);
 	};
 	const changeProcessSection = (section) => {
+		if (section === "pesquisa" && pipelineRunning) return;
 		if (activeSection === "autos") saveAutosReading();
 		autosRestoreKeyRef.current = "";
 		setActiveSection(section);
@@ -26753,7 +26755,9 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		"QUEUED",
 		"PROCESSING",
 		"INGESTING",
+		"VALIDATED",
 		"EXTRACTING",
+		"STRUCTURING",
 		"INDEXING",
 		"FINALIZING"
 	].includes(pipelineStatus);
@@ -26767,7 +26771,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 			jsx("style", { children: MARKDOWN_DOCUMENT_CSS }),
 			pipelineRunning || pipelineStatus === "ERROR" ? jsxs("div", {
 				role: pipelineStatus === "ERROR" ? "alert" : "status",
-				className: cn("shrink-0 rounded-md border px-3 py-2", pipelineStatus === "ERROR" ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-primary/20 bg-primary/5 text-foreground"),
+				className: cn("order-last shrink-0 rounded-md border px-3 py-2", pipelineStatus === "ERROR" ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-primary/20 bg-primary/5 text-foreground"),
 				children: [
 					jsxs("div", {
 						className: "flex items-center justify-between gap-3 text-xs font-medium",
@@ -26945,7 +26949,10 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 										children: selectedPid
 									})]
 								}), jsx(SegmentedControl, {
-									options: PROCESS_SECTIONS,
+									options: pipelineRunning ? PROCESS_SECTIONS.map((option) => option.id === "pesquisa" ? {
+										...option,
+										label: "Pesquisa · indexando"
+									} : option) : PROCESS_SECTIONS,
 									value: activeSection,
 									onChange: changeProcessSection
 								})]
@@ -27280,7 +27287,11 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 								}),
 								jsxs("div", {
 									className: activeSection === "pesquisa" ? "contents" : "hidden",
-									children: [jsx(PesquisaView, {
+									children: [pipelineRunning ? jsx(PanelEmpty, {
+										icon: "clock",
+										title: "Pesquisa disponível após a indexação",
+										description: pipelineProgress.message || "O índice de pesquisa deste processo ainda está sendo preparado."
+									}) : jsx(PesquisaView, {
 										key: selectedPid,
 										ctx,
 										processId: selectedPid,
