@@ -1,8 +1,8 @@
 # THEMIS — PRAZO RESOLVER V1: DESIGN CANÔNICO & PIPELINE TEMPORAL
 
-**Versão do Documento:** 1.1.0  
-**Data:** 2026-09-29  
-**Status:** DESIGN CANÔNICO / ESPECIFICAÇÃO DE ENGENHARIA  
+**Versão do Documento:** 1.1.0
+**Data:** 2026-09-29
+**Status:** DESIGN CANÔNICO / ESPECIFICAÇÃO DE ENGENHARIA
 **Escopo:** Pipeline Temporal, DJEN Publications, Resolução de Antecedente/Destinatário, Separação ML/Determinístico e Catálogo de Regras de Prazo.
 
 ---
@@ -61,7 +61,7 @@ A auditoria identificou os seguintes bloqueios técnicos na estrutura V1:
 
 1. **Acoplamento Rígido a `Movement` na Tabela `deadline_instructions`:**
    - A coluna `movement_id TEXT NOT NULL` e a constraint `FOREIGN KEY(movement_id) REFERENCES movements(movement_id) ON DELETE CASCADE` impedem fisicamente a inserção de qualquer determinação cuja fonte seja uma `PUBLICATION`.
-   
+
 2. **Extração Baseada Exclusivamente em Páginas de Documentos Locais:**
    - O extrator `extract_for_movement()` depende de `movement_summary_store_v1.source_text_and_hash()`, que lê `canonical_pages` e `pages` do PDF dos autos. Publicações do DJEN (que chegam como payloads JSON da API pública do CNJ contendo texto no atributo `texto`/`full_text`) não possuem páginas em `pages` e são ignoradas.
 
