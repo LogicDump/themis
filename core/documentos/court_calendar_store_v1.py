@@ -8,15 +8,18 @@ import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlparse, urlunparse
 
 from core.documentos.court_calendar_provider_v1 import RawSourceSnapshot
 
-MIGRATION_VERSION = "court-calendar-store-v1"
+MIGRATION_VERSION = "court-calendar-store-v1.1"
 _NAMESPACE = uuid.UUID("98343335-269a-440e-a997-3bb673459ead")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS court_calendar_snapshots(
   snapshot_id TEXT PRIMARY KEY,
   source_url TEXT NOT NULL,
+  source_endpoint TEXT NOT NULL DEFAULT '',
+  request_params_json TEXT NOT NULL DEFAULT '{}',
   fetched_at TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   parser_version TEXT NOT NULL,
@@ -71,6 +74,17 @@ def migrate_connection(db: sqlite3.Connection) -> dict[str, Any]:
     db.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
     was_applied = db.execute("SELECT 1 FROM schema_migrations WHERE version=?", (MIGRATION_VERSION,)).fetchone()
     db.executescript(_SCHEMA)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(court_calendar_snapshots)").fetchall()}
+    if "source_endpoint" not in columns:
+        db.execute("ALTER TABLE court_calendar_snapshots ADD COLUMN source_endpoint TEXT NOT NULL DEFAULT ''")
+    if "request_params_json" not in columns:
+        db.execute("ALTER TABLE court_calendar_snapshots ADD COLUMN request_params_json TEXT NOT NULL DEFAULT '{}'")
+    for row in db.execute("SELECT snapshot_id,source_url FROM court_calendar_snapshots WHERE source_endpoint='' ").fetchall():
+        parsed_url = urlparse(row[1])
+        endpoint = urlunparse(parsed_url._replace(query="", fragment=""))
+        db.execute("UPDATE court_calendar_snapshots SET source_endpoint=? WHERE snapshot_id=?", (endpoint, row[0]))
+    db.execute("""INSERT OR IGNORE INTO court_calendar_event_snapshots(event_version_id,snapshot_id)
+      SELECT event_version_id,snapshot_id FROM court_calendar_events""")
     db.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)", (MIGRATION_VERSION, _now()))
     db.commit()
     return {"migration_version": MIGRATION_VERSION, "already_applied": bool(was_applied)}
@@ -80,14 +94,26 @@ def store_snapshot(db: sqlite3.Connection, snapshot: RawSourceSnapshot, *, commi
     digest = hashlib.sha256(snapshot.content).hexdigest()
     if digest != snapshot.content_hash:
         raise ValueError("snapshot content hash inválido")
-    snapshot_id = "ccs_" + uuid.uuid5(_NAMESPACE, f"{snapshot.source_url}\0{digest}\0{snapshot.parser_version}").hex
+    params_json = _json(dict(snapshot.request_params))
+    snapshot_id = "ccs_" + uuid.uuid5(_NAMESPACE, f"{snapshot.source_url}\0{params_json}\0{digest}\0{snapshot.parser_version}").hex
     db.execute("""INSERT OR IGNORE INTO court_calendar_snapshots
-      (snapshot_id,source_url,fetched_at,content_hash,parser_version,content,created_at)
-      VALUES(?,?,?,?,?,?,?)""", (snapshot_id, snapshot.source_url, snapshot.fetched_at, digest,
-        snapshot.parser_version, sqlite3.Binary(snapshot.content), _now()))
+      (snapshot_id,source_url,source_endpoint,request_params_json,fetched_at,content_hash,parser_version,content,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?)""", (snapshot_id, snapshot.source_url, snapshot.source_endpoint,
+        params_json, snapshot.fetched_at, digest, snapshot.parser_version, sqlite3.Binary(snapshot.content), _now()))
     if commit:
         db.commit()
     return snapshot_id
+
+
+def get_snapshot(db: sqlite3.Connection, snapshot_id: str) -> RawSourceSnapshot:
+    row = db.execute("SELECT * FROM court_calendar_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone()
+    if not row:
+        raise ValueError("snapshot_id inexistente")
+    return RawSourceSnapshot(
+        source_url=row["source_url"], content=bytes(row["content"]), fetched_at=row["fetched_at"],
+        parser_version=row["parser_version"], content_hash=row["content_hash"],
+        request_params=json.loads(row["request_params_json"] or "{}"),
+    )
 
 
 def _record(value: Any) -> dict[str, Any]:
@@ -105,12 +131,14 @@ def store_calendar_events(db: sqlite3.Connection, events: Iterable[Any], *,
                           snapshot_id: str, commit: bool = True) -> tuple[str, ...]:
     if not db.execute("SELECT 1 FROM court_calendar_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone():
         raise ValueError("snapshot_id inexistente")
-    snapshot = db.execute("SELECT source_url FROM court_calendar_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone()
+    snapshot = db.execute("SELECT source_url,source_endpoint FROM court_calendar_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone()
     stored: list[str] = []
     for event in events:
         row = _record(event)
-        if row.get("official_source") != snapshot["source_url"]:
-            raise ValueError("official_source do evento diverge do snapshot associado")
+        event_source, snapshot_endpoint = urlparse(str(row.get("official_source") or "")), urlparse(snapshot["source_endpoint"])
+        if (event_source.scheme != "https" or not event_source.hostname or
+                event_source.hostname.lower() != str(snapshot_endpoint.hostname or "").lower()):
+            raise ValueError("fonte oficial do evento deve ser HTTPS no host do snapshot associado")
         logical_key = _logical_key(row)
         latest = db.execute("SELECT * FROM court_calendar_events WHERE logical_key=? ORDER BY version DESC LIMIT 1",
                             (logical_key,)).fetchone()
@@ -154,10 +182,12 @@ def load_events(db: sqlite3.Connection, *, jurisdiction: str | None = None,
     sql = "SELECT * FROM court_calendar_events" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY date,logical_key,version"
     output = []
     for row in db.execute(sql, args).fetchall():
-        snapshots = [dict(item) for item in db.execute("""SELECT s.snapshot_id,s.source_url,s.fetched_at,
-          s.content_hash,s.parser_version FROM court_calendar_event_snapshots x
+        snapshots = [dict(item) for item in db.execute("""SELECT s.snapshot_id,s.source_url,s.source_endpoint,
+          s.request_params_json,s.fetched_at,s.content_hash,s.parser_version FROM court_calendar_event_snapshots x
           JOIN court_calendar_snapshots s ON s.snapshot_id=x.snapshot_id
           WHERE x.event_version_id=? ORDER BY s.fetched_at,s.snapshot_id""", (row["event_version_id"],)).fetchall()]
+        for snapshot in snapshots:
+            snapshot["request_params"] = json.loads(snapshot.pop("request_params_json") or "{}")
         output.append({**dict(row), **json.loads(row["payload_json"]),
                        "event_version_id": row["event_version_id"], "logical_key": row["logical_key"],
                        "version_number": row["version"], "snapshot_id": row["snapshot_id"],

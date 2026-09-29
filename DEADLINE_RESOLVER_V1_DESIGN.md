@@ -881,12 +881,19 @@ classificados apenas durante a composição, de modo determinístico, como
 `HOLIDAY`, com `source_type=DERIVED_WEEKEND` e fonte de algoritmo. Não são
 gravados como ato/evento oficial.
 
-Os providers TJSP/TJAM deste corte normalizam linhas oficiais explicitamente
-revisadas. Não fazem scraping heurístico de páginas dinâmicas ou interpretação
-de texto livre; o snapshot bruto acompanha os dados estruturados. A página
-TJSP distingue suspensões de processos físicos. Para Piracaia, o registro
-oficial de 31/08/2026 é `COMARCA/PHYSICAL`; não se aplica a processos
-eletrônicos. A Portaria TJAM Presidência 1320/2026 produz quatro eventos
+O provider TJSP usa os endpoints JSON oficiais [PesquisarFeriados](https://www.tjsp.jus.br/CanaisComunicacao/Feriados/PesquisarFeriados)
+e [PesquisarSuspensoes](https://www.tjsp.jus.br/CanaisComunicacao/Feriados/PesquisarSuspensoes),
+em snapshots separados, com `nomeMunicipio`,
+`codigoMunicipio` e `ano`; `Data` é a fonte textual da data e timestamps
+`.NET /Date(...)` não determinam a data jurídica. Suspensões são expandidas a
+partir do intervalo textual e a descrição original, intervalo, DJE, parâmetros
+e hash do snapshot permanecem na provenance. Descrições de suspensão fora dos
+rótulos determinísticos conhecidos falham para revisão. O endpoint ordinário
+não é misturado à lista específica de processos físicos. TJAM continua
+normalizado por linhas oficiais revisadas, sem aquisição automática. A página
+institucional TJSP permanece registrada como fonte de provenance. Para
+Piracaia, o registro físico oficial de 31/08/2026 segue no provider separado;
+não se aplica a processos eletrônicos. A Portaria TJAM Presidência 1320/2026 produz quatro eventos
 `COMARCA/ALL` em Parintins: 14/05, 29/06, 16/07 e 15/10/2026.
 Referências oficiais consultadas: [TJSP Suspensão de Prazos](https://www.tjsp.jus.br/CanaisComunicacao/SuspensaoPrazos),
 [TJSP Processos Físicos](https://www.tjsp.jus.br/CanaisComunicacao/Feriados/ProcessosFisicos),

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from dataclasses import dataclass
 from datetime import date
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, runtime_checkable
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from core.documentos.deadline_policies_v1 import CourtCalendar
@@ -45,12 +45,18 @@ class RawSourceSnapshot:
     fetched_at: str
     parser_version: str
     content_hash: str | None = None
+    request_params: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         digest = hashlib.sha256(self.content).hexdigest()
         if self.content_hash and self.content_hash != digest:
             raise ValueError("content_hash não corresponde aos bytes do snapshot")
         object.__setattr__(self, "content_hash", digest)
+
+    @property
+    def source_endpoint(self) -> str:
+        parsed = urlparse(self.source_url)
+        return urlunparse(parsed._replace(query="", fragment=""))
 
 
 @runtime_checkable
@@ -67,20 +73,25 @@ def validate_request(provider_court: str, request: CalendarProviderRequest) -> N
 
 
 def fetch_official_snapshot(url: str, *, allowed_hosts: tuple[str, ...],
-                            parser_version: str, timeout_seconds: int = 20) -> RawSourceSnapshot:
+                            parser_version: str, timeout_seconds: int = 20,
+                            query_params: Mapping[str, str] | None = None) -> RawSourceSnapshot:
     """Fetch exact HTTPS bytes; caller persists the returned snapshot before parsing."""
     parsed = urlparse(url)
     hosts = {host.lower() for host in allowed_hosts}
     if parsed.scheme != "https" or not parsed.hostname or parsed.hostname.lower() not in hosts:
         raise ValueError("fonte de calendário deve ser HTTPS e host oficial allowlisted")
-    request = Request(url, headers={"User-Agent": "Themis-CourtCalendar/1.0"})
+    if parsed.query:
+        raise ValueError("informe endpoint sem query; passe query_params separadamente")
+    encoded_url = url + ("?" + urlencode(query_params) if query_params else "")
+    request = Request(encoded_url, headers={"User-Agent": "Themis-CourtCalendar/1.0"})
     with urlopen(request, timeout=timeout_seconds) as response:
         final_url = response.geturl()
         final = urlparse(final_url)
         if final.scheme != "https" or not final.hostname or final.hostname.lower() not in hosts:
             raise ValueError("redirect de snapshot saiu dos hosts oficiais allowlisted")
         content = response.read()
-    return RawSourceSnapshot(final_url, content, datetime.now(timezone.utc).isoformat(timespec="seconds"), parser_version)
+    return RawSourceSnapshot(final_url, content, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                             parser_version, request_params=dict(query_params or {}))
 
 
 def normalize_records(*, provider_id: str, authority: str, source_url: str,

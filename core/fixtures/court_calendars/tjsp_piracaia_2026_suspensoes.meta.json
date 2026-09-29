@@ -1,0 +1,12 @@
+{
+  "endpoint": "https://www.tjsp.jus.br/CanaisComunicacao/Feriados/PesquisarSuspensoes",
+  "fetched_at": "2026-09-29T20:19:09.2843096+00:00",
+  "request_params": {
+    "nomeMunicipio": "Piracaia",
+    "codigoMunicipio": "",
+    "ano": "2026"
+  },
+  "parser_version": "tjsp-json-calendar-v1.0.0",
+  "institutional_source": "https://www.tjsp.jus.br/CanaisComunicacao/SuspensaoPrazos",
+  "fixture_capture": "official endpoint response; tests use bytes offline"
+}
