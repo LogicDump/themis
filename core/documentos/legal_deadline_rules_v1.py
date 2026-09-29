@@ -61,7 +61,10 @@ def validate_rule(rule: LegalDeadlineRule | dict[str, Any]) -> None:
     legacy = "counting_type" in rule and "applicable_act_types" in rule
     required = {"rule_id", "rule_version", "category", "precedence", "legal_basis"}
     if not legacy:
-        required |= {"legal_domain", "base_regime", "term_unit", "allow_explicit_override"}
+        required |= {
+            "legal_domain", "base_regime", "term_unit", "allow_explicit_override",
+            "authority", "official_source", "effective_from", "effective_to", "verified_at",
+        }
         if rule.get("default_term_value") is not None or rule.get("term_value") is not None:
             required.add("counting_policy_id")
     missing = required - rule.keys()

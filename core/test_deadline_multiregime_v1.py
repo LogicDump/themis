@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from core.documentos.deadline_policies_v1 import CountingPolicy, validate_counting_policy
+from core.documentos.legal_context_v1 import LegalContext
 from core.documentos.deadline_rule_resolver_v1 import resolve_deadline_rule
 from core.documentos.legal_deadline_rules_v1 import get_catalog, validate_rule
 
@@ -80,6 +83,24 @@ def test_invalid_or_disallowed_explicit_term_requires_review():
                          explicit_term_unit="DAYS", explicit_term_permitted=False)
     assert invalid["resolved_rule_id"] is None and invalid["review_required"]
     assert disallowed["resolved_rule_id"] is None and disallowed["review_required"]
+
+
+def test_legal_context_requires_base_regime_in_applicable_regimes():
+    with pytest.raises(ValueError):
+        LegalContext(
+            legal_domain="SPECIAL_COURTS",
+            base_regime="CPC",
+            procedure_class="SYNTHETIC_CLASS",
+            applicable_regimes=("LAW_9099",),
+            jurisdiction="SYNTHETIC_COURT",
+        )
+
+
+def test_new_rule_requires_official_provenance_fields():
+    incomplete = rule("NEW", "CIVIL", "CPC", "CPC_BUSINESS_DAYS")
+    incomplete.pop("official_source")
+    with pytest.raises(ValueError):
+        validate_rule(incomplete)
 
 
 def test_effective_period_and_empty_legacy_pack():

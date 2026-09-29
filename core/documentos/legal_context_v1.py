@@ -21,8 +21,12 @@ class LegalContext:
             raise ValueError("legal_domain inválido")
         if not self.base_regime.strip():
             raise ValueError("base_regime obrigatório")
+        if not self.applicable_regimes:
+            raise ValueError("applicable_regimes não pode ser vazio")
         if len(set(self.applicable_regimes)) != len(self.applicable_regimes):
             raise ValueError("applicable_regimes não pode conter duplicatas")
+        if self.base_regime not in self.applicable_regimes:
+            raise ValueError("base_regime deve constar em applicable_regimes")
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "LegalContext":
