@@ -49,9 +49,9 @@ def test_counting_policy_is_separate_and_domains_can_coexist():
     cpp = rule("CPP", "CRIMINAL", "CPP", "CPP_CONTINUOUS_DAYS")
     clt = rule("CLT", "LABOR", "CLT", "CLT_BUSINESS_DAYS")
     policies = [
-        CountingPolicy("CPC_BUSINESS_DAYS", "1", "CIVIL", "CPC", "BUSINESS", False, True, "NONE", (), {}, None, None, None),
-        CountingPolicy("CPP_CONTINUOUS_DAYS", "1", "CRIMINAL", "CPP", "CONTINUOUS", False, True, "NONE", (), {}, None, None, None),
-        CountingPolicy("CLT_BUSINESS_DAYS", "1", "LABOR", "CLT", "BUSINESS", False, True, "NONE", (), {}, None, None, None),
+        CountingPolicy("CPC_BUSINESS_DAYS", "1", "CIVIL", "CPC", "BUSINESS", False, True, "NONE", (), {}, "2020-01-01", None, "https://fixture.invalid/cpc", "synthetic", "2026-09-29"),
+        CountingPolicy("CPP_CONTINUOUS_DAYS", "1", "CRIMINAL", "CPP", "CONTINUOUS", False, True, "NONE", (), {}, "2020-01-01", None, "https://fixture.invalid/cpp", "synthetic", "2026-09-29"),
+        CountingPolicy("CLT_BUSINESS_DAYS", "1", "LABOR", "CLT", "BUSINESS", False, True, "NONE", (), {}, "2020-01-01", None, "https://fixture.invalid/clt", "synthetic", "2026-09-29"),
     ]
     for policy in policies:
         validate_counting_policy(policy)
@@ -108,7 +108,7 @@ def test_effective_period_and_empty_legacy_pack():
     result = resolve(context("CIVIL", "CPC"), [old], candidate_rule_ids=["OLD"])
     assert result["resolved_rule_id"] is None
     assert result["explanation"]["rejected"][0]["reason"] == "OUTSIDE_EFFECTIVE_PERIOD"
-    assert get_catalog() == ()
+    assert get_catalog()
     validate_rule({"rule_id": "V1", "rule_version": "1", "category": "RESIDUAL_DEFAULT",
                    "applicable_act_types": ["*"], "jurisdiction_scope": "*", "default_term_value": 5,
                    "term_unit": "DAYS", "counting_type": "LEGACY", "precedence": 1,

@@ -388,11 +388,11 @@ O catálogo de regras é versionado, declarativo e auditável, estruturado para 
 
 ### 8.1. Estrutura Canônica do Catálogo
 
-**Nota de implementação da Fase 1:** o módulo inicial publica o contrato versionado
-do catálogo sem ativar regras materiais. Os exemplos abaixo dependem de confirmação
-jurídica e de fonte oficial/versionada por regra; até essa verificação, o catálogo
-permanece vazio e o resolver retorna `UNRESOLVED` quando não houver candidato
-validado. Esta limitação evita tratar exemplos conceituais como regra vigente.
+**Estado do Rule Pack:** o código contém um primeiro conjunto pequeno de regras
+CPC, CPP, CLT e Lei 9.099 com fundamento, vigência e links diretos para fontes
+oficiais. O pack não tenta ser exaustivo; prazo sem regra candidata validada segue
+`UNRESOLVED`. As policies de contagem, suspensão e comunicação são entidades
+separadas. O calendário permanece sem registros.
 
 Cada regra deve carregar provenance jurídico verificável, no mínimo: `effective_from`, `effective_to`, `jurisdiction_scope`, `authority`, `official_source`, `verified_at`, `rule_version` e fundamento legal estruturado. Alteração legislativa ou administrativa cria nova versão/intervalo de vigência; não se sobrescreve silenciosamente a regra histórica.
 
@@ -516,10 +516,15 @@ antes do regime-base e prevalece sobre ele quando ambos são compatíveis. A pre
 entre regras também é registrada no catálogo. Nenhuma camada desta fase produz `due_at`
 ou consulta calendário.
 
-Identidades previstas para policies incluem `CPC_BUSINESS_DAYS`, `CPP_CONTINUOUS_DAYS`,
-`CLT_BUSINESS_DAYS` e `LAW_9099_BUSINESS_DAYS`; são identificadores de contrato, não
-cadastro de conteúdo legal vigente. O Rule Pack segue vazio até cada regra e policy ter
-fundamento e fonte oficial verificados. Não há fallback universal para CPC.
+Identidades presentes para policies incluem `CPC_BUSINESS_DAYS`, `CPP_CONTINUOUS_DAYS`,
+`CLT_BUSINESS_DAYS` e `LAW_9099_BUSINESS_DAYS`; são referências versionadas, sem
+fallback universal para CPC. A convenção de inclusão do começo/vencimento para Lei
+9.099 não está expressa no art. 12-A; seus campos permanecem não resolvidos nesta versão,
+sem importar por suposição a regra geral do CPC.
+
+Regras deliberadamente fora do primeiro pack: CPP art. 593 (fora do recorte inicial),
+CPP art. 600 (tem prazo distinto para contravenção e para assistente), CLT art. 895
+(adiado para revisão própria de vigência) e CLT art. 897 (reúne atos de agravo distintos).
 
 ## 9. SCHEMA DE DATASET GOLDEN PARA TREINAMENTO E BENCHMARK
 

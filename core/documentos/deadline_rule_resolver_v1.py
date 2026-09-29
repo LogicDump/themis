@@ -43,8 +43,10 @@ def _check(rule: dict[str, Any], context: LegalContext, act_type: str,
     if classes and context.procedure_class not in classes:
         return "PROCEDURE_CLASS"
     jurisdiction = rule.get("jurisdiction_scope")
-    if jurisdiction not in (None, "", "*", "ANY", context.jurisdiction):
-        return "JURISDICTION"
+    if jurisdiction not in (None, "", "*", "ANY", "BR", context.jurisdiction):
+        scopes = jurisdiction if isinstance(jurisdiction, (list, tuple, set)) else (jurisdiction,)
+        if not any(scope in {"*", "ANY", "BR", context.jurisdiction} for scope in scopes):
+            return "JURISDICTION"
     roles = rule.get("recipient_roles", ())
     if roles and recipient_role not in roles:
         return "RECIPIENT_ROLE"
