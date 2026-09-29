@@ -71,6 +71,7 @@ def _process_package_schema_is_current(target: Path) -> bool:
         deadline_obligation_store_v1,
         participant_context_store_v1,
         process_event_store_v1,
+        publications_v1,
     )
     from core.documentos import movement_summary_store_v1 as summary_store
     from core.retrieval import summary_embedding_store
@@ -88,6 +89,7 @@ def _process_package_schema_is_current(target: Path) -> bool:
         deadline_instruction_store_v1.MIGRATION_VERSION,
         deadline_obligation_store_v1.MIGRATION_VERSION,
         participant_context_store_v1.MIGRATION_VERSION,
+        publications_v1.MIGRATION,
     }
     uri = target.resolve().as_uri() + "?mode=ro"
     try:
@@ -138,6 +140,8 @@ def bootstrap_database() -> dict:
             from core.documentos.deadline_obligation_store_v1 import migrate_connection as migrate_deadline_obligations
             result["deadline_obligations"] = migrate_deadline_obligations(db)
             result["participant_context"] = migrate_participant_context(db)
+            from core.documentos.publications_v1 import migrate_connection as migrate_publications
+            result["publications"] = migrate_publications(db)
             results[pid]=result
         finally:
             db.close()
@@ -1755,6 +1759,30 @@ def publications(process_id: str, path: Path | None = None) -> list[dict[str, An
         if not db.execute("SELECT 1 FROM processes WHERE process_id=?", (process_id,)).fetchone():
             return None
         return list_publications(db, process_id)
+    finally:
+        db.close()
+
+
+def sync_publications(
+    process_id: str,
+    *,
+    available_from: str,
+    available_to: str,
+) -> dict[str, Any]:
+    from core.documentos.process_event_store_v1 import materialize_process_events
+    from core.documentos.publications_v1 import sync_djen
+    from core.process_storage import connect_process
+
+    db = connect_process(process_id)
+    try:
+        result = sync_djen(
+            db,
+            process_id=process_id,
+            available_from=available_from,
+            available_to=available_to,
+        )
+        result["process_events"] = materialize_process_events(db, process_id)
+        return result
     finally:
         db.close()
 

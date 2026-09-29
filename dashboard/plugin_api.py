@@ -749,6 +749,26 @@ def get_process_publications(process_id: str):
     return val
 
 
+@router.post("/processes/{process_id}/publications/sync")
+def sync_process_publications(process_id: str, payload: dict[str, Any]):
+    available_from = str(payload.get("available_from") or "").strip()
+    available_to = str(payload.get("available_to") or "").strip()
+    if not available_from or not available_to:
+        raise HTTPException(status_code=400, detail="available_from e available_to são obrigatórios")
+    try:
+        return core_api.sync_publications(
+            process_id,
+            available_from=available_from,
+            available_to=available_to,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.get("/processes/{process_id}/autos")
 def get_autos(
     process_id: str,
