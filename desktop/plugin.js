@@ -25297,12 +25297,12 @@ var MARKDOWN_DOCUMENT_CSS = `
 .markdown-document a { color: inherit; text-decoration: none; }
 .markdown-document a:hover { text-decoration: underline; }
 .markdown-document strong { font-weight: 600; }
-.markdown-document h1, .markdown-document h2, .markdown-document h3, .markdown-document h4, .markdown-document h5, .markdown-document h6 { margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25; }
-.markdown-document h1 { padding-bottom: .3em; font-size: 2em; border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
-.markdown-document h2 { padding-bottom: .3em; font-size: 1.5em; border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
-.markdown-document h3 { font-size: 1.25em; }
-.markdown-document h4 { font-size: 1em; }
-.markdown-document h5 { font-size: .875em; }
+.markdown-document h1, .markdown-document h2, .markdown-document h3, .markdown-document h4, .markdown-document h5, .markdown-document h6 { margin-top: 18px; margin-bottom: 10px; font-weight: 600; line-height: 1.3; }
+.markdown-document h1 { padding-bottom: .25em; font-size: 1.2142857em; border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
+.markdown-document h2 { padding-bottom: .25em; font-size: 1.0714286em; border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
+.markdown-document h3 { font-size: 1em; }
+.markdown-document h4 { font-size: .95em; }
+.markdown-document h5 { font-size: .9em; }
 .markdown-document h6 { color: color-mix(in srgb, currentColor 65%, transparent); font-size: .85em; }
 .markdown-document p, .markdown-document blockquote, .markdown-document ul, .markdown-document ol, .markdown-document table, .markdown-document pre { margin-top: 0; margin-bottom: 16px; }
 .markdown-document p { text-align: justify; }
