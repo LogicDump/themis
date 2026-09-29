@@ -35,15 +35,25 @@ CREATE TABLE IF NOT EXISTS deadline_obligations(
   counting_qualifier TEXT,
   trigger_text TEXT,
   trigger_status TEXT NOT NULL,
-  origin_movement_id TEXT NOT NULL,
+  origin_movement_id TEXT,
   source_refs_json TEXT NOT NULL,
   source_hash TEXT NOT NULL,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  antecedent_source_event_id TEXT,
+  recipient_role TEXT,
+  recipient_participant_ids_json TEXT NOT NULL DEFAULT '[]',
+  recipient_resolution_method TEXT,
+  candidate_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+  model_preferred_rule_id TEXT,
+  resolved_rule_id TEXT,
+  review_required INTEGER NOT NULL DEFAULT 1,
+  provenance_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(process_id, obligation_id),
   FOREIGN KEY(originating_instruction_id) REFERENCES deadline_instructions(instruction_id) ON DELETE CASCADE,
-  FOREIGN KEY(origin_movement_id) REFERENCES movements(movement_id) ON DELETE CASCADE
+  FOREIGN KEY(origin_movement_id) REFERENCES movements(movement_id) ON DELETE CASCADE,
+  FOREIGN KEY(antecedent_source_event_id) REFERENCES process_events(event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_deadline_obligations_process
   ON deadline_obligations(process_id, status);
@@ -69,6 +79,67 @@ def validate_recipient_participants(db: sqlite3.Connection, process_id: str, par
         if not db.execute("SELECT 1 FROM process_participants WHERE process_id=? AND participant_id=?", (process_id, participant_id)).fetchone():
             raise ValueError("recipient_participant_id não pertence ao processo")
     return normalized
+
+
+def update_obligation_resolution(
+    db: sqlite3.Connection,
+    obligation_id: str,
+    *,
+    antecedent_source_event_id: str | None = None,
+    recipient_role: str | None = None,
+    recipient_participant_ids: list[str] | tuple[str, ...] = (),
+    recipient_resolution_method: str | None = None,
+    candidate_rule_ids: list[str] | tuple[str, ...] = (),
+    model_preferred_rule_id: str | None = None,
+    resolved_rule_id: str | None = None,
+    review_required: bool = True,
+    provenance: dict[str, Any] | None = None,
+) -> None:
+    """Canonical write path for specialist/rule-resolution fields.
+
+    Participant IDs and the optional antecedent event are validated against the
+    same process before persistence. This prevents cross-process recipient or
+    antecedent references from entering the obligation store.
+    """
+    row = db.execute(
+        "SELECT process_id, provenance_json FROM deadline_obligations WHERE obligation_id=?",
+        (obligation_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError("obligation_id inexistente")
+    process_id = str(row["process_id"])
+    participants = validate_recipient_participants(db, process_id, list(recipient_participant_ids))
+    if antecedent_source_event_id:
+        event = db.execute(
+            "SELECT process_id FROM process_events WHERE event_id=?",
+            (antecedent_source_event_id,),
+        ).fetchone()
+        if not event or str(event["process_id"]) != process_id:
+            raise ValueError("antecedent_source_event_id não pertence ao processo")
+    existing_provenance = json.loads(row["provenance_json"] or "{}")
+    if provenance:
+        existing_provenance.update(provenance)
+    db.execute(
+        """UPDATE deadline_obligations SET
+          antecedent_source_event_id=?, recipient_role=?, recipient_participant_ids_json=?,
+          recipient_resolution_method=?, candidate_rule_ids_json=?, model_preferred_rule_id=?,
+          resolved_rule_id=?, review_required=?, provenance_json=?, updated_at=?
+        WHERE obligation_id=?""",
+        (
+            antecedent_source_event_id,
+            recipient_role,
+            _json(participants),
+            recipient_resolution_method,
+            _json(sorted({str(value) for value in candidate_rule_ids if str(value).strip()})),
+            model_preferred_rule_id,
+            resolved_rule_id,
+            1 if review_required else 0,
+            _json(existing_provenance),
+            _now(),
+            obligation_id,
+        ),
+    )
+    db.commit()
 
 
 def _norm(value: Any) -> str:
@@ -155,6 +226,71 @@ def migrate_connection(db: sqlite3.Connection) -> dict[str, Any]:
     for name, declaration in additions.items():
         if name not in columns:
             db.execute(f"ALTER TABLE deadline_obligations ADD COLUMN {name} {declaration}")
+
+    # V1 required origin_movement_id, which prevents a PUBLICATION-backed
+    # instruction from becoming an obligation without inventing a Movement.
+    # Rebuild once so the legacy convenience column is nullable while the
+    # canonical origin remains originating_instruction_id -> DeadlineInstruction.
+    table_info = {str(row[1]): row for row in db.execute("PRAGMA table_info(deadline_obligations)")}
+    origin_info = table_info.get("origin_movement_id")
+    if origin_info is not None and int(origin_info[3]) == 1:
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute("PRAGMA legacy_alter_table=ON")
+        db.execute("ALTER TABLE deadline_obligations RENAME TO deadline_obligations_v1_backup")
+        db.executescript("""
+        CREATE TABLE deadline_obligations(
+          obligation_id TEXT PRIMARY KEY,
+          process_id TEXT NOT NULL,
+          originating_instruction_id TEXT NOT NULL,
+          supporting_instruction_ids_json TEXT NOT NULL,
+          origin_role TEXT NOT NULL,
+          action_text TEXT,
+          recipient_text TEXT,
+          term_value INTEGER,
+          term_unit TEXT NOT NULL,
+          counting_qualifier TEXT,
+          trigger_text TEXT,
+          trigger_status TEXT NOT NULL,
+          origin_movement_id TEXT,
+          source_refs_json TEXT NOT NULL,
+          source_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          antecedent_source_event_id TEXT,
+          recipient_role TEXT,
+          recipient_participant_ids_json TEXT NOT NULL DEFAULT '[]',
+          recipient_resolution_method TEXT,
+          candidate_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+          model_preferred_rule_id TEXT,
+          resolved_rule_id TEXT,
+          review_required INTEGER NOT NULL DEFAULT 1,
+          provenance_json TEXT NOT NULL DEFAULT '{}',
+          UNIQUE(process_id, obligation_id),
+          FOREIGN KEY(originating_instruction_id) REFERENCES deadline_instructions(instruction_id) ON DELETE CASCADE,
+          FOREIGN KEY(origin_movement_id) REFERENCES movements(movement_id) ON DELETE CASCADE,
+          FOREIGN KEY(antecedent_source_event_id) REFERENCES process_events(event_id)
+        );
+        INSERT INTO deadline_obligations(
+          obligation_id,process_id,originating_instruction_id,supporting_instruction_ids_json,origin_role,
+          action_text,recipient_text,term_value,term_unit,counting_qualifier,trigger_text,trigger_status,
+          origin_movement_id,source_refs_json,source_hash,status,created_at,updated_at,
+          antecedent_source_event_id,recipient_role,recipient_participant_ids_json,recipient_resolution_method,
+          candidate_rule_ids_json,model_preferred_rule_id,resolved_rule_id,review_required,provenance_json
+        )
+        SELECT obligation_id,process_id,originating_instruction_id,supporting_instruction_ids_json,origin_role,
+          action_text,recipient_text,term_value,term_unit,counting_qualifier,trigger_text,trigger_status,
+          origin_movement_id,source_refs_json,source_hash,status,created_at,updated_at,
+          antecedent_source_event_id,recipient_role,recipient_participant_ids_json,recipient_resolution_method,
+          candidate_rule_ids_json,model_preferred_rule_id,resolved_rule_id,review_required,provenance_json
+        FROM deadline_obligations_v1_backup;
+        DROP TABLE deadline_obligations_v1_backup;
+        """)
+        db.execute("PRAGMA legacy_alter_table=OFF")
+        db.execute("PRAGMA foreign_keys=ON")
+
+    db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_obligations_process ON deadline_obligations(process_id, status)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_obligations_recipient ON deadline_obligations(process_id, recipient_text)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_obligations_antecedent_event ON deadline_obligations(antecedent_source_event_id)")
     applied = db.execute("SELECT 1 FROM schema_migrations WHERE version=?", (MIGRATION_VERSION,)).fetchone()
     db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)", (MIGRATION_VERSION, _now()))
@@ -205,7 +341,9 @@ def _build_obligation(process_id: str, origin: dict[str, Any], supporting: list[
         "trigger_text": origin.get("trigger_text"),
         "trigger_status": origin["trigger_status"],
         "origin_movement_id": origin["movement_id"],
-        "antecedent_source_event_id": origin.get("source_event_id"),
+        # Resolved later by the antecedent resolver. The origin event is already
+        # reachable through originating_instruction_id -> deadline_instructions.
+        "antecedent_source_event_id": None,
         "recipient_role": None,
         "recipient_participant_ids_json": "[]",
         "recipient_resolution_method": None,
@@ -258,8 +396,7 @@ def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, An
               term_unit=excluded.term_unit, counting_qualifier=excluded.counting_qualifier, trigger_text=excluded.trigger_text,
               trigger_status=excluded.trigger_status, origin_movement_id=excluded.origin_movement_id,
               source_refs_json=excluded.source_refs_json, source_hash=excluded.source_hash, status=excluded.status,
-              updated_at=excluded.updated_at, antecedent_source_event_id=excluded.antecedent_source_event_id,
-              provenance_json=excluded.provenance_json""",
+              updated_at=excluded.updated_at, provenance_json=excluded.provenance_json""",
             values + (item["antecedent_source_event_id"], item["recipient_role"], item["recipient_participant_ids_json"], item["recipient_resolution_method"], item["candidate_rule_ids_json"], item["model_preferred_rule_id"], item["resolved_rule_id"], item["review_required"], item["provenance_json"]),
         )
     desired_ids = {item["obligation_id"] for item in desired}

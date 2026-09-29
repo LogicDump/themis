@@ -39,6 +39,14 @@ def test_explicit_term_only_when_explicit_rule_allows_override():
     assert "due_at" not in result
 
 
+def test_explicit_term_does_not_depend_on_ml_candidate_nomination():
+    catalog = [rule("J", "JUDICIAL_ORDER", applicable_act_types=["*"], allow_explicit_override=True)]
+    result = run(catalog, candidate_rule_ids=[], explicit_term_value=9, explicit_term_unit="BUSINESS_DAYS")
+    assert result["resolved_rule_id"] == "J"
+    assert result["resolution_method"] == "JUDICIAL_EXPLICIT_TERM"
+    assert result["term_value"] == 9
+
+
 def test_hard_recipient_constraint():
     catalog = [rule("S", "STATUTORY_SPECIFIC", recipient_roles=["RESPONDENT"])]
     result = run(catalog, candidate_rule_ids=["S"], recipient_role="CLAIMANT")

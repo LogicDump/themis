@@ -30,6 +30,15 @@ def resolve_deadline_rule(
     candidates = set(candidate_rule_ids)
     if model_preferred_rule_id:
         candidates.add(model_preferred_rule_id)
+    # An explicit judicial term is an observed fact, not an ML hypothesis.
+    # Therefore compatible JUDICIAL_ORDER rules must be considered even when
+    # the model did not nominate them among candidate_rule_ids.
+    if explicit_term_value is not None:
+        candidates.update(
+            rule["rule_id"]
+            for rule in catalog_by_id.values()
+            if rule.get("category") == "JUDICIAL_ORDER" and rule.get("allow_explicit_override")
+        )
     valid: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
     on_date = _date(relevant_date)

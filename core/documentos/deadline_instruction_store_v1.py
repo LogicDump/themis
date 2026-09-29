@@ -25,7 +25,10 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS deadline_instructions(
   instruction_id TEXT PRIMARY KEY,
   process_id TEXT NOT NULL,
-  movement_id TEXT NOT NULL,
+  movement_id TEXT,
+  source_event_id TEXT NOT NULL,
+  source_entity TEXT NOT NULL,
+  source_id TEXT NOT NULL,
   action_text TEXT,
   recipient_text TEXT,
   term_value INTEGER,
@@ -41,7 +44,8 @@ CREATE TABLE IF NOT EXISTS deadline_instructions(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(process_id, instruction_id),
-  FOREIGN KEY(movement_id) REFERENCES movements(movement_id) ON DELETE CASCADE
+  FOREIGN KEY(movement_id) REFERENCES movements(movement_id) ON DELETE CASCADE,
+  FOREIGN KEY(source_event_id) REFERENCES process_events(event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_deadline_instructions_process
   ON deadline_instructions(process_id, status, trigger_status);
@@ -199,9 +203,9 @@ def migrate_connection(db: sqlite3.Connection) -> dict[str, Any]:
         """)
         db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_instructions_process ON deadline_instructions(process_id,status,trigger_status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_instructions_movement ON deadline_instructions(movement_id,instruction_id)")
-        db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_instructions_event ON deadline_instructions(source_event_id)")
         db.execute("PRAGMA legacy_alter_table=OFF")
         db.execute("PRAGMA foreign_keys=ON")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_deadline_instructions_event ON deadline_instructions(source_event_id)")
     applied = db.execute("SELECT 1 FROM schema_migrations WHERE version=?", (MIGRATION_VERSION,)).fetchone()
     db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)", (MIGRATION_VERSION, _now()))
     db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)", (MIGRATION_V2, _now()))
@@ -358,7 +362,14 @@ def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, An
           source_refs_json=excluded.source_refs_json, source_hash=excluded.source_hash,
           extraction_method=excluded.extraction_method, status=excluded.status, updated_at=excluded.updated_at""", values)
     desired_ids = {item["instruction_id"] for item in desired}
-    stale = [instruction_id for instruction_id in existing if instruction_id not in desired_ids]
+    # This materializer owns only Movement-derived instructions. Generic
+    # instructions (notably DJEN PUBLICATION) are managed by their own source
+    # pipeline and must survive a Movement refresh.
+    stale = [
+        instruction_id
+        for instruction_id, row in existing.items()
+        if row["source_entity"] == "MOVEMENT" and instruction_id not in desired_ids
+    ]
     if stale:
         db.executemany("DELETE FROM deadline_instructions WHERE instruction_id=?", [(value,) for value in stale])
     db.commit()

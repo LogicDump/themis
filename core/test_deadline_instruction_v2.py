@@ -28,6 +28,34 @@ def test_publication_origin_does_not_invent_movement_and_has_event_fk():
     assert not db.execute("PRAGMA foreign_key_check").fetchall()
 
 
+def test_publication_instruction_survives_movement_materialization():
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
+    db.executescript("""
+    CREATE TABLE processes(process_id TEXT PRIMARY KEY);
+    INSERT INTO processes VALUES('p');
+    CREATE TABLE movements(movement_id TEXT PRIMARY KEY,process_id TEXT,sequence INTEGER,movement_type TEXT,title TEXT,occurred_at TEXT,protocol TEXT,payload_json TEXT);
+    CREATE TABLE publications(
+      publication_id TEXT PRIMARY KEY, process_id TEXT NOT NULL, published_on TEXT, available_on TEXT,
+      publication_type TEXT, full_text TEXT, communication_id TEXT, source_url TEXT, provenance_json TEXT NOT NULL
+    );
+    INSERT INTO publications VALUES('pub','p',NULL,'2026-01-02','Intimação','fixture','c',NULL,'{}');
+    """)
+    from core.documentos.process_event_store_v1 import materialize_process_events
+    materialize_process_events(db, "p")
+    event_id = db.execute("SELECT event_id FROM process_events WHERE source_entity='PUBLICATION' AND source_id='pub'").fetchone()[0]
+    migrate_connection(db)
+    instruction_id = create_from_event(
+        db, process_id="p", source_event_id=event_id, source_entity="PUBLICATION", source_id="pub",
+        source_excerpt="fixture", source_refs=[], source_hash="synthetic",
+    )
+    from core.documentos.deadline_instruction_store_v1 import materialize_process
+    materialize_process(db, "p")
+    row = db.execute("SELECT source_entity,movement_id FROM deadline_instructions WHERE instruction_id=?", (instruction_id,)).fetchone()
+    assert row is not None and row["source_entity"] == "PUBLICATION" and row["movement_id"] is None
+
+
 def test_invalid_event_anchor_is_rejected():
     db = database()
     with pytest.raises(ValueError):
