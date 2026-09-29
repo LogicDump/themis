@@ -1,4 +1,4 @@
-import { Badge, Button, Codicon, ConfirmDialog, DEFAULT_REASONING_EFFORT, DisclosureCaret, DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, MessageTextContent, ModelCatalogMenu, ModelMenuCloseContext, PanelAction, PanelBlock, PanelDetail, PanelEmpty, PanelHeader, PanelList, PanelListRow, PanelMeta, PanelPill, PanelSectionLabel, ROUTES_AREA, RowButton, SIDEBAR_NAV_AREA, SegmentedControl, THEMES_AREA, cn, host, reasoningEffortLabel, useValue } from "@hermes/plugin-sdk";
+import { Badge, Button, Codicon, ConfirmDialog, DEFAULT_REASONING_EFFORT, DisclosureCaret, DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, MessageTextContent, ModelCatalogMenu, ModelMenuCloseContext, PanelAction, PanelBlock, PanelDetail, PanelEmpty, PanelHeader, PanelList, PanelListRow, PanelMeta, PanelPill, PanelSectionLabel, ROUTES_AREA, RowButton, SIDEBAR_NAV_AREA, SegmentedControl, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, THEMES_AREA, cn, host, reasoningEffortLabel, useValue } from "@hermes/plugin-sdk";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 //#region \0rolldown/runtime.js
@@ -27969,14 +27969,18 @@ function ThemisShell({ ctx }) {
 	const filterActions = jsxs("div", {
 		className: "flex min-w-0 items-center gap-3",
 		children: [
-			jsx("select", {
+			jsxs(Select, {
 				value: filterProcess,
-				onChange: (event) => setFilterProcess(event.target.value),
-				className: "h-7 max-w-56 rounded-md bg-muted/60 px-2 text-[0.7rem] text-foreground outline-none",
-				"aria-label": "Filtrar por processo",
-				children: [jsx("option", { value: "todos", children: "Todos os processos" }), ...processes.map((process) => {
-					const pid = process.process_id || process.id || "";
-					return jsx("option", { value: pid, children: pid }, pid);
+				onValueChange: setFilterProcess,
+				children: [jsx(SelectTrigger, {
+					className: "h-7 w-56 max-w-56 rounded-md text-[0.7rem]",
+					"aria-label": "Filtrar por processo",
+					children: jsx(SelectValue, { placeholder: "Todos os processos" })
+				}), jsxs(SelectContent, {
+					children: [jsx(SelectItem, { value: "todos", children: "Todos os processos" }), ...processes.map((process) => {
+						const pid = process.process_id || process.id || "";
+						return jsx(SelectItem, { value: pid, children: pid }, pid);
+					})]
 				})]
 			}),
 			jsxs("div", {
