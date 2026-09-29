@@ -1821,7 +1821,7 @@ def ingest_bulk_zip(
             if not info.is_dir() and (info.filename.lower().endswith(".pdf") or not Path(info.filename).suffix)
         ]
         
-    for idx, info in enumerate(pdf_infos, 1):
+        for idx, info in enumerate(pdf_infos, 1):
             raw_pdf = zf.read(info)
             if not raw_pdf.startswith(b"%PDF"):
                 continue
