@@ -27809,7 +27809,6 @@ function ThemisShell({ ctx }) {
 	const [search, setSearch] = useState("");
 	const [listWidthPct, setListWidthPct] = useState(38);
 	const [isDragging, setIsDragging] = useState(false);
-	const [expandedDates, setExpandedDates] = useState({});
 	const splitContainerRef = useRef(null);
 	const handleNavigateAutos = (target) => {
 		setNavTarget({
@@ -27910,43 +27909,27 @@ function ThemisShell({ ctx }) {
 		filterType,
 		search
 	]);
-	const toggleDate = (dateKey) => {
-		setExpandedDates((prev) => ({
-			...prev,
-			[dateKey]: prev[dateKey] !== void 0 ? !prev[dateKey] : false
-		}));
-	};
-	const groupedByDate = useMemo(() => {
-		const map = /* @__PURE__ */ new Map();
-		const sorted = [...filteredEventos].sort((a, b) => {
-			const aDate = a.data || "9999-99-99";
-			const bDate = b.data || "9999-99-99";
-			const cmp = aDate.localeCompare(bDate);
-			if (cmp !== 0) return cmp;
-			return (a.horario || "").localeCompare(b.horario || "");
+	const sortedEventos = useMemo(() => {
+		return [...filteredEventos].sort((a, b) => {
+			const aDeadline = a.tipo === "prazo";
+			const bDeadline = b.tipo === "prazo";
+			if (aDeadline !== bDeadline) return aDeadline ? -1 : 1;
+			const aDate = a.data || (aDeadline ? "9999-99-99" : "0000-00-00");
+			const bDate = b.data || (bDeadline ? "9999-99-99" : "0000-00-00");
+			const dateCompare = aDate.localeCompare(bDate);
+			if (dateCompare !== 0) return aDeadline ? dateCompare : -dateCompare;
+			const timeCompare = (a.horario || "").localeCompare(b.horario || "");
+			if (timeCompare !== 0) return aDeadline ? timeCompare : -timeCompare;
+			return String(a.id || "").localeCompare(String(b.id || ""));
 		});
-		for (const evt of sorted) {
-			const key = evt.data || "sem-data";
-			if (!map.has(key)) map.set(key, {
-				data: key,
-				dataExibicao: evt.dataExibicao || "Sem data definida",
-				eventos: []
-			});
-			map.get(key).eventos.push(evt);
-		}
-		return Array.from(map.values());
 	}, [filteredEventos]);
 	const selectedEvent = useMemo(() => {
 		if (selectedId) {
-			const found = events.find((evt) => evt.id === selectedId);
+			const found = sortedEventos.find((evt) => evt.id === selectedId);
 			if (found) return found;
 		}
-		return filteredEventos[0] || null;
-	}, [
-		selectedId,
-		events,
-		filteredEventos
-	]);
+		return sortedEventos[0] || null;
+	}, [selectedId, sortedEventos]);
 	const handlePointerDown = (e) => {
 		e.preventDefault();
 		setIsDragging(true);
@@ -27984,7 +27967,7 @@ function ThemisShell({ ctx }) {
 	const djenSyncedAt = selectedDjenState?.last_successful_sync_at ? new Date(selectedDjenState.last_successful_sync_at) : null;
 	const djenStatusLabel = djenSyncing ? "Atualizando DJEN…" : djenSyncedAt && !Number.isNaN(djenSyncedAt.getTime()) ? `DJEN atualizado ${djenSyncedAt.toLocaleDateString("pt-BR")} às ${djenSyncedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "DJEN ainda não atualizado";
 	const filterActions = jsxs("div", {
-		className: "flex min-w-0 items-center gap-2",
+		className: "flex min-w-0 items-center gap-3",
 		children: [
 			jsx("select", {
 				value: filterProcess,
@@ -27996,17 +27979,24 @@ function ThemisShell({ ctx }) {
 					return jsx("option", { value: pid, children: pid }, pid);
 				})]
 			}),
-			jsx("span", {
-				className: "hidden xl:inline text-[0.68rem] text-muted-foreground whitespace-nowrap",
-				children: djenStatusLabel
-			}),
-			jsx(Button, {
-				variant: "ghost",
-				size: "sm",
-				disabled: djenSyncing,
-				onClick: () => refreshDjen(false).catch(() => {}),
-				className: "h-7 px-2 text-[0.7rem]",
-				children: djenSyncing ? "Atualizando…" : "Atualizar agora"
+			jsxs("div", {
+				className: "flex items-center gap-2 rounded-md bg-muted/35 px-2 py-1",
+				children: [jsx(Codicon, {
+					name: "sync",
+					size: "0.75rem",
+					className: "text-muted-foreground/80"
+				}), jsx("span", {
+					className: "hidden 2xl:inline text-[0.68rem] text-muted-foreground whitespace-nowrap",
+					children: djenStatusLabel
+				}), jsx(Button, {
+					variant: "secondary",
+					size: "sm",
+					disabled: djenSyncing,
+					onClick: () => refreshDjen(false).catch(() => {}),
+					className: "h-6 px-2 text-[0.68rem]",
+					title: "Sincronizar publicações do DJEN",
+					children: djenSyncing ? "Atualizando DJEN…" : "Atualizar DJEN"
+				})]
 			}),
 			jsx(SegmentedControl, {
 				options: filterOptions,
@@ -28082,80 +28072,44 @@ function ThemisShell({ ctx }) {
 									className: "text-[0.6875rem] text-muted-foreground",
 									children: fetchError
 								})]
-							}) : groupedByDate.length === 0 ? jsx("div", {
+							}) : sortedEventos.length === 0 ? jsx("div", {
 								className: "p-4 text-center text-xs text-muted-foreground",
 								children: "Nenhum evento correspondente"
 							}) : jsx("div", {
-								role: "tree",
-								"aria-label": "Árvore cronológica de eventos",
-								className: "flex flex-col gap-1.5 p-1",
-								children: groupedByDate.map((group) => {
-									const isExpanded = expandedDates[group.data] !== false;
-									return jsxs("div", {
-										role: "treeitem",
-										"aria-expanded": isExpanded,
-										className: "select-none",
-										children: [jsxs(RowButton, {
-											"aria-expanded": isExpanded,
-											className: cn("flex h-6.5 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary) cursor-pointer"),
-											onClick: () => toggleDate(group.data),
-											children: [
-												jsx(DisclosureCaret, {
-													open: isExpanded,
-													size: "0.75rem",
-													className: "text-muted-foreground/70"
-												}),
-												jsx(Codicon, {
-													name: "calendar",
-													size: "0.75rem",
-													className: "text-muted-foreground/60"
-												}),
-												jsx("span", {
-													className: "truncate font-mono tracking-tight text-foreground/80",
-													children: group.dataExibicao
-												}),
-												jsx("span", {
-													"aria-hidden": true,
-													className: "min-w-0 flex-1"
-												}),
-												jsx("span", {
-													className: "shrink-0 rounded-full bg-muted/70 px-1.5 py-0.2 text-[0.625rem] font-medium tabular-nums text-muted-foreground",
-													children: group.eventos.length
-												})
-											]
-										}), isExpanded ? jsx("div", {
-											role: "group",
-											className: "relative mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-border/40 pl-2",
-											children: group.eventos.map((evt) => {
-												const active = selectedEvent?.id === evt.id;
-												return jsxs("div", {
-													role: "treeitem",
-													"aria-selected": active,
-													className: cn("group/row relative flex h-7.5 w-full items-center gap-1.5 rounded-md px-1.5 text-[0.78rem] transition-colors cursor-pointer", active ? "bg-(--ui-row-active-background,var(--muted)) text-foreground font-medium shadow-xs" : "text-(--ui-text-secondary,var(--muted-foreground)) hover:bg-muted/40 hover:text-foreground"),
-													onClick: () => setSelectedId(evt.id),
-													children: [
-														evt.dotClass ? jsx("span", {
-															"aria-hidden": true,
-															className: cn("size-1.5 shrink-0 rounded-full", evt.dotClass)
-														}) : jsx(Codicon, {
-															name: evt.codicon || "circle-outline",
-															size: "0.75rem",
-															className: "shrink-0 text-muted-foreground/60"
-														}),
-														evt.horario ? jsx("span", {
-															className: "shrink-0 font-mono text-[0.6875rem] text-muted-foreground/75",
-															children: evt.horario
-														}) : null,
-														jsx("span", {
-															className: "min-w-0 flex-1 truncate text-[0.75rem]",
-															title: evt.titulo,
-															children: evt.titulo
-														})
-													]
-												}, evt.id);
-											})
-										}) : null]
-									}, group.data);
+								role: "list",
+								"aria-label": "Eventos processuais",
+								className: "flex flex-col gap-0.5 p-1",
+								children: sortedEventos.map((evt) => {
+									const active = selectedEvent?.id === evt.id;
+									const dateLabel = evt.dataExibicao + (evt.horario ? " · " + evt.horario : "");
+									return jsxs("button", {
+										type: "button",
+										role: "listitem",
+										"aria-current": active ? "true" : void 0,
+										onClick: () => setSelectedId(evt.id),
+										className: cn("group/row flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors cursor-pointer", active ? "bg-(--ui-row-active-background,var(--muted)) text-foreground font-medium" : "text-(--ui-text-secondary,var(--muted-foreground)) hover:bg-muted/40 hover:text-foreground"),
+										children: [
+											jsx(Codicon, {
+												name: evt.codicon || "circle-outline",
+												size: "0.8rem",
+												className: cn("shrink-0", active ? "text-foreground/85" : "text-muted-foreground/75")
+											}),
+											jsx("span", {
+												className: "w-24 shrink-0 font-mono text-[0.68rem] tabular-nums text-muted-foreground/80",
+												children: dateLabel
+											}),
+											jsx("span", {
+												className: "min-w-0 flex-1 truncate text-[0.75rem]",
+												title: evt.titulo,
+												children: evt.titulo
+											}),
+											filterProcess === "todos" && evt.processo ? jsx("span", {
+												className: "hidden min-[72rem]:inline max-w-40 shrink-0 truncate font-mono text-[0.63rem] text-muted-foreground/55",
+												title: evt.processo,
+												children: evt.processo
+											}) : null
+										]
+									}, evt.id);
 								})
 							})
 						})
@@ -28178,7 +28132,7 @@ function ThemisShell({ ctx }) {
 						},
 						className: "flex min-h-0 min-w-0 flex-col overflow-hidden pl-2",
 						children: selectedEvent ? jsxs(PanelDetail, {
-							className: "min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1",
+							className: "flex min-h-0 flex-1 flex-col overflow-hidden pr-1",
 							children: [
 								jsxs("div", {
 									className: "flex items-start justify-between gap-3 border-b border-border/40 pb-3",
@@ -28203,16 +28157,29 @@ function ThemisShell({ ctx }) {
 										children: `${selectedEvent.dataExibicao}${selectedEvent.horario ? " · " + selectedEvent.horario : ""}`
 									})]
 								}),
-								selectedEvent.meta && selectedEvent.meta.length > 0 ? jsxs(React.Fragment, { children: [jsx(PanelSectionLabel, { children: "Metadados & Identificação" }), jsx(PanelMeta, { rows: selectedEvent.meta })] }) : null,
-								jsx(PanelSectionLabel, { children: "Teor / Conteúdo do Ato" }),
-								jsx(PanelBlock, { children: selectedEvent.teor }),
-								selectedEvent.providencias ? jsxs("div", {
-									className: "space-y-2",
-									children: [jsx(PanelSectionLabel, { children: "Providências & Ações" }), jsx("div", {
-										className: "rounded-md border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-foreground/90",
-										children: selectedEvent.providencias
+								selectedEvent.meta && selectedEvent.meta.length > 0 ? jsxs("div", {
+									className: "shrink-0",
+									children: [jsx(PanelSectionLabel, { children: "Metadados & Identificação" }), jsx(PanelMeta, { rows: selectedEvent.meta })]
+								}) : null,
+								jsxs("div", {
+									className: "flex min-h-0 flex-1 flex-col pt-1",
+									children: [jsx(PanelSectionLabel, { children: "Teor / Conteúdo do Ato" }), jsx("div", {
+										className: "themis-scroll-visible min-h-0 flex-1 overflow-y-auto rounded-md bg-muted/20 p-3",
+										children: jsxs("div", {
+											className: "space-y-4",
+											children: [jsx("div", {
+												className: "whitespace-pre-wrap text-[0.78rem] leading-relaxed text-foreground/90",
+												children: selectedEvent.teor
+											}), selectedEvent.providencias ? jsxs("div", {
+												className: "space-y-2",
+												children: [jsx(PanelSectionLabel, { children: "Providências & Ações" }), jsx("div", {
+													className: "rounded-md bg-primary/5 p-3 text-xs leading-relaxed text-foreground/90",
+													children: selectedEvent.providencias
+												})]
+											}) : null]
+										})
 									})]
-								}) : null
+								})
 							]
 						}) : jsx(PanelEmpty, {
 							icon: "inbox",
