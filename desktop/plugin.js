@@ -25782,6 +25782,7 @@ function PdfJsViewer({ pdfData, runtimePromise, pageNumber = 1, active = false, 
 			jsx("div", {
 				ref: containerRef,
 				className: "pdfjs-viewer-container absolute inset-x-0 bottom-0 overflow-auto bg-background",
+				"data-themis-page-scroll": "true",
 				style: {
 					position: "absolute",
 					top: "36px",
@@ -26986,6 +26987,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 									className: activeSection === "dossie" ? "contents" : "hidden",
 									children: [jsxs(PanelDetail, {
 										className: "min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 space-y-4",
+										"data-themis-page-scroll": "true",
 										children: [currentOverview ? jsxs(React.Fragment, { children: [
 											jsx(PanelSectionLabel, { children: "Informações Cadastrais / Capa CPOPG" }),
 											(() => {
@@ -27272,6 +27274,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 									className: activeSection === "timeline" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden",
 									children: [jsxs("div", {
 										className: "themis-scroll-visible min-h-0 h-0 flex-1 overflow-y-auto overscroll-contain pr-1 space-y-2",
+										"data-themis-page-scroll": "true",
 										children: [jsxs("div", {
 											className: "flex items-center justify-between gap-2",
 											children: [jsx(PanelSectionLabel, { children: `Movimentos Processuais (${currentMovements.length})` }), jsxs("div", {
@@ -27334,6 +27337,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												ref: autosScrollRef,
 												onScroll: handleAutosScroll,
 												className: "themis-scroll-visible min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-1",
+												"data-themis-page-scroll": "true",
 												"data-autos-rendered-pages": renderedAutosCount,
 												"data-autos-total-pages": currentAutos?.pages?.length || 0,
 												children: [!currentAutos?.pages || currentAutos.pages.length === 0 ? jsx(PanelEmpty, {
@@ -27684,6 +27688,7 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 					]
 				}) : result ? jsxs("div", {
 					className: "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pr-1 space-y-4",
+					"data-themis-page-scroll": "true",
 					children: [result.answer ? jsxs("div", {
 						className: "rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-3 shadow-2xs",
 						children: [
@@ -27789,6 +27794,22 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 			})
 		]
 	});
+}
+function handleThemisPageNavigation(event) {
+	if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+	if (event.key !== "PageDown" && event.key !== "PageUp") return;
+	const target = event.target;
+	if (target?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+	const root = event.currentTarget;
+	let scroller = target?.closest?.("[data-themis-page-scroll='true']");
+	if (!scroller || scroller.scrollHeight <= scroller.clientHeight) {
+		const candidates = Array.from(root.querySelectorAll("[data-themis-page-scroll='true']")).filter((node) => node.getClientRects().length > 0 && node.scrollHeight > node.clientHeight);
+		scroller = candidates.sort((a, b) => b.clientHeight - a.clientHeight)[0] || null;
+	}
+	if (!scroller) return;
+	event.preventDefault();
+	const direction = event.key === "PageDown" ? 1 : -1;
+	scroller.scrollBy({ top: direction * Math.max(80, Math.floor(scroller.clientHeight * 0.88)), behavior: "auto" });
 }
 function ThemisShell({ ctx }) {
 	const [activeTab, setActiveTab] = useState(() => {
@@ -28011,6 +28032,7 @@ function ThemisShell({ ctx }) {
 	});
 	return jsxs("div", {
 		className: "flex h-full w-full flex-col overflow-hidden bg-background text-foreground",
+		onKeyDownCapture: handleThemisPageNavigation,
 		children: [jsxs("header", {
 			className: "flex h-7 shrink-0 select-none items-stretch justify-between border-b border-border/40 bg-(--ui-sidebar-surface-background,var(--muted)) px-2",
 			children: [jsxs("div", {
@@ -28168,6 +28190,7 @@ function ThemisShell({ ctx }) {
 									className: "flex min-h-0 flex-1 flex-col pt-1",
 									children: [jsx(PanelSectionLabel, { children: "Teor / Conteúdo do Ato" }), jsx("div", {
 										className: "themis-scroll-visible min-h-0 flex-1 overflow-y-auto rounded-md bg-muted/20 p-3",
+										"data-themis-page-scroll": "true",
 										children: jsxs("div", {
 											className: "space-y-4",
 											children: [jsx("div", {
