@@ -110,6 +110,14 @@ def calculation_identity(
         "calendar_version": result.get("calendar_version"),
         "suspension_policies": policies.get("suspensions", []),
         "policy_catalog_versions": provenance.get("policy_catalog_versions", {}),
+        # A mesma entrada deve ser idempotente, mas uma mudança material no
+        # resultado (por exemplo, uma exceção de suspensão que deixa de estar
+        # resolvida) precisa preservar a versão anterior para auditoria.
+        "result_status": result.get("status"),
+        "due_date": result.get("due_date"),
+        "reason": result.get("reason"),
+        "applied_suspensions": result.get("applied_suspensions", []),
+        "calculation_trace": result.get("calculation_trace", []),
     }
     return "dc_" + uuid.uuid5(ID_NAMESPACE, _digest(material)).hex, _digest(material)
 

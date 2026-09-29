@@ -12,6 +12,7 @@ from core.documentos.deadline_calculation_store_v1 import (
     calculate_and_materialize,
     list_calculations,
     migrate_connection,
+    persist_calculation,
 )
 from core.documentos.deadline_obligation_store_v1 import update_obligation_resolution
 from core.documentos.deadline_policies_v1 import CourtCalendar
@@ -108,6 +109,22 @@ def test_review_required_removes_previous_projection_but_keeps_calculation_histo
     review = run(db, requires_personal_notice=True)
     assert review["status"] == "REVIEW_REQUIRED" and review["deadline_id"] is None
     assert db.execute("SELECT count(*) FROM deadlines").fetchone()[0] == 0
+    stored = list_calculations(db, "p1", "ob1")
+    assert len(stored) == 2
+    assert {x["status"] for x in stored} == {"CALCULATED", "REVIEW_REQUIRED"}
+
+
+def test_material_result_change_gets_new_calculation_identity_and_preserves_prior_version():
+    db = setup_db()
+    first = run(db)
+    original = list_calculations(db, "p1", "ob1")[0]["calculation"]
+    revised = dict(original)
+    revised["status"] = "REVIEW_REQUIRED"
+    revised["due_date"] = None
+    revised["reason"] = {"code": "SUSPENSION_EXCEPTION_UNRESOLVED"}
+    revised["applied_suspensions"] = [{"policy_id": "SYNTHETIC", "suspended": True}]
+    second_id = persist_calculation(db, process_id="p1", obligation_id="ob1", result=revised)
+    assert second_id != first["calculation_id"]
     stored = list_calculations(db, "p1", "ob1")
     assert len(stored) == 2
     assert {x["status"] for x in stored} == {"CALCULATED", "REVIEW_REQUIRED"}
