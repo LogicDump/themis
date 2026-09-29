@@ -1,22 +1,28 @@
 @echo off
 setlocal
 
-rem The browser launches this process outside the Hermes Desktop environment.
-rem Resolve the Hermes-owned Python from this plugin's installed location.
+rem Native Messaging nao herda necessariamente o ambiente do Hermes Desktop.
+rem Deriva HERMES_HOME a partir da instalacao do proprio plugin:
+rem <HERMES_HOME>\plugins\themis\browser-bridge\native-host
 for %%I in ("%~dp0..\..\..\..") do set "THEMIS_HERMES_HOME=%%~fI"
 
+rem Override explicito, se existir.
 if defined HERMES_PYTHON if exist "%HERMES_PYTHON%" (
     set "THEMIS_PYTHON=%HERMES_PYTHON%"
     goto :run
 )
 
-if exist "%THEMIS_HERMES_HOME%\hermes-agent\venv\Scripts\python.exe" (
-    set "THEMIS_PYTHON=%THEMIS_HERMES_HOME%\hermes-agent\venv\Scripts\python.exe"
-    goto :run
+rem Runtime gerenciado atual do Hermes.
+for /d %%P in ("%THEMIS_HERMES_HOME%\tools\python-*") do (
+    if exist "%%~fP\python.exe" (
+        set "THEMIS_PYTHON=%%~fP\python.exe"
+        goto :run
+    )
 )
 
-if exist "%THEMIS_HERMES_HOME%\hermes-agent\.venv\Scripts\python.exe" (
-    set "THEMIS_PYTHON=%THEMIS_HERMES_HOME%\hermes-agent\.venv\Scripts\python.exe"
+rem Compatibilidade com layouts antigos.
+if exist "%THEMIS_HERMES_HOME%\hermes-agent\venv\Scripts\python.exe" (
+    set "THEMIS_PYTHON=%THEMIS_HERMES_HOME%\hermes-agent\venv\Scripts\python.exe"
     goto :run
 )
 
@@ -25,17 +31,7 @@ if exist "%THEMIS_HERMES_HOME%\runtime\Scripts\python.exe" (
     goto :run
 )
 
-if exist "%THEMIS_HERMES_HOME%\.venv\Scripts\python.exe" (
-    set "THEMIS_PYTHON=%THEMIS_HERMES_HOME%\.venv\Scripts\python.exe"
-    goto :run
-)
-
-if exist "%THEMIS_HERMES_HOME%\pm-runtime\Scripts\python.exe" (
-    set "THEMIS_PYTHON=%THEMIS_HERMES_HOME%\pm-runtime\Scripts\python.exe"
-    goto :run
-)
-
-rem Deliberately do not fall back to an arbitrary "python" from PATH.
+rem Nao usar "python" do PATH: pode ser Python de outro aplicativo.
 exit /b 127
 
 :run
