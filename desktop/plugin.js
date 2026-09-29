@@ -27795,12 +27795,13 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 		]
 	});
 }
-function handleThemisPageNavigation(event) {
+function handleThemisPageNavigation(event, rootOverride = null) {
 	if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
 	if (event.key !== "PageDown" && event.key !== "PageUp") return;
 	const target = event.target;
 	if (target?.closest?.("input, textarea, select, [contenteditable='true']")) return;
-	const root = event.currentTarget;
+	const root = rootOverride || event.currentTarget;
+	if (!root?.querySelectorAll || root.getClientRects?.().length === 0) return;
 	let scroller = target?.closest?.("[data-themis-page-scroll='true']");
 	if (!scroller || scroller.scrollHeight <= scroller.clientHeight) {
 		const candidates = Array.from(root.querySelectorAll("[data-themis-page-scroll='true']")).filter((node) => node.getClientRects().length > 0 && node.scrollHeight > node.clientHeight);
@@ -27812,6 +27813,7 @@ function handleThemisPageNavigation(event) {
 	scroller.scrollBy({ top: direction * Math.max(80, Math.floor(scroller.clientHeight * 0.88)), behavior: "auto" });
 }
 function ThemisShell({ ctx }) {
+	const themisRootRef = useRef(null);
 	const [activeTab, setActiveTab] = useState(() => {
 		const saved = ctx.storage.get("workspace.activeModule", "eventos");
 		return saved === "pesquisa" ? "processos" : saved;
@@ -27824,6 +27826,11 @@ function ThemisShell({ ctx }) {
 	const [djenError, setDjenError] = useState(null);
 	const [loading, setLoading] = useState(true);
 	const [fetchError, setFetchError] = useState(null);
+	useEffect(() => {
+		const onPageNavigation = (event) => handleThemisPageNavigation(event, themisRootRef.current);
+		window.addEventListener("keydown", onPageNavigation, { capture: true });
+		return () => window.removeEventListener("keydown", onPageNavigation, { capture: true });
+	}, []);
 	const [selectedId, setSelectedId] = useState("");
 	const [filterProcess, setFilterProcess] = useState("todos");
 	const [filterType, setFilterType] = useState("todos");
@@ -28031,6 +28038,7 @@ function ThemisShell({ ctx }) {
 		]
 	});
 	return jsxs("div", {
+		ref: themisRootRef,
 		className: "flex h-full w-full flex-col overflow-hidden bg-background text-foreground select-text",
 		onKeyDownCapture: handleThemisPageNavigation,
 		children: [jsxs("header", {
