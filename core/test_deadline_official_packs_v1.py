@@ -59,6 +59,25 @@ def test_all_material_rules_validate_and_point_to_pack_policy():
         assert "due_at" not in rule
 
 
+def test_explicit_judicial_term_is_not_cpc_exclusive():
+    cases = [
+        ({"legal_domain": "CIVIL", "base_regime": "CPC", "applicable_regimes": ["CPC"], "jurisdiction": "BR"}, "CPC_BUSINESS_DAYS"),
+        ({"legal_domain": "CRIMINAL", "base_regime": "CPP", "applicable_regimes": ["CPP"], "jurisdiction": "BR"}, None),
+        ({"legal_domain": "LABOR", "base_regime": "CLT", "applicable_regimes": ["CLT"], "jurisdiction": "BR"}, None),
+    ]
+    for context, expected_policy in cases:
+        result = resolve_deadline_rule(
+            legal_context=context,
+            procedural_act_type="ANY",
+            explicit_term_value=5,
+            explicit_term_unit="DAYS",
+            catalog=get_catalog(),
+        )
+        assert result["resolved_rule_id"] == "JUDICIAL_EXPLICIT_TERM"
+        assert result["term_value"] == 5
+        assert result["counting_policy_id"] == expected_policy
+
+
 def test_resolver_remains_pure_with_material_pack_and_explicit_term_is_ml_independent():
     context = {"legal_domain": "CIVIL", "base_regime": "CPC", "applicable_regimes": ["CPC"], "jurisdiction": "BR"}
     explicit = resolve_deadline_rule(legal_context=context, procedural_act_type="ANY", explicit_term_value=3,

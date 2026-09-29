@@ -91,21 +91,20 @@ def resolve_deadline_rule(
     if explicit_term_value is not None and explicit_valid and explicit_term_permitted:
         judicial = [r for r in rules if r.get("category") in {"JUDICIAL_ORDER", "JUDICIAL_EXPLICIT_TERM"} and r.get("allow_explicit_override")]
         compatible = [r for r in judicial if _check(r, context, procedural_act_type, recipient_role, on_date) is None]
-        if not judicial or compatible:
-            selected = compatible[0] if compatible else None
-            return {
-                "resolved_rule_id": selected["rule_id"] if selected else EXPLICIT_FACT_RULE_ID,
-                "resolution_method": "JUDICIAL_EXPLICIT_TERM",
-                "term_value": explicit_term_value,
-                "term_unit": explicit_term_unit,
-                "counting_policy_id": selected.get("counting_policy_id") if selected else None,
-                "communication_policy_id": selected.get("communication_policy_id") if selected else None,
-                "legal_basis": selected.get("legal_basis") if selected else None,
-                "precedence_applied": "JUDICIAL_EXPLICIT_TERM",
-                "review_required": False,
-                "explanation": {"candidate_rule_ids": sorted(requested), "explicit_term_is_observed_fact": True,
-                                "model_preference_authoritative": False, "calendar_consulted": False},
-            }
+        selected = compatible[0] if compatible else None
+        return {
+            "resolved_rule_id": selected["rule_id"] if selected else EXPLICIT_FACT_RULE_ID,
+            "resolution_method": "JUDICIAL_EXPLICIT_TERM",
+            "term_value": explicit_term_value,
+            "term_unit": explicit_term_unit,
+            "counting_policy_id": selected.get("counting_policy_id") if selected else None,
+            "communication_policy_id": selected.get("communication_policy_id") if selected else None,
+            "legal_basis": selected.get("legal_basis") if selected else None,
+            "precedence_applied": "JUDICIAL_EXPLICIT_TERM",
+            "review_required": False,
+            "explanation": {"candidate_rule_ids": sorted(requested), "explicit_term_is_observed_fact": True,
+                            "model_preference_authoritative": False, "calendar_consulted": False},
+        }
 
     rejected: list[dict[str, str]] = []
     if explicit_term_value is not None and (not explicit_valid or not explicit_term_permitted):
