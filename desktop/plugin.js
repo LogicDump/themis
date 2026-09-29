@@ -27835,7 +27835,6 @@ function ThemisShell({ ctx }) {
 		setEvents(adapted);
 		setFetchError(null);
 		setLoading(false);
-		setSelectedId((current) => current || adapted[0]?.id || "");
 		return adapted;
 	}, [ctx]);
 	const refreshDjen = useCallback(async (automatic = false) => {
@@ -28091,7 +28090,7 @@ function ThemisShell({ ctx }) {
 										role: "listitem",
 										"aria-current": active ? "true" : void 0,
 										onClick: () => setSelectedId(evt.id),
-										className: cn("group/row flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors cursor-pointer", active ? "bg-(--ui-row-active-background,var(--muted)) text-foreground font-medium" : "text-(--ui-text-secondary,var(--muted-foreground)) hover:bg-muted/40 hover:text-foreground"),
+										className: cn("group/row flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors cursor-pointer", active ? "bg-(--ui-row-active-background,var(--muted)) text-foreground font-medium" : "text-(--ui-text-secondary,var(--muted-foreground)) hover:bg-muted/40 hover:text-foreground"),
 										children: [
 											jsx(Codicon, {
 												name: evt.codicon || "circle-outline",
