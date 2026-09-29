@@ -27804,7 +27804,12 @@ function handleThemisPageNavigation(event, rootOverride = null) {
 	if (!root?.querySelectorAll || root.getClientRects?.().length === 0) return;
 	let scroller = target?.closest?.("[data-themis-page-scroll='true']");
 	if (!scroller || scroller.scrollHeight <= scroller.clientHeight) {
-		const candidates = Array.from(root.querySelectorAll("[data-themis-page-scroll='true']")).filter((node) => node.getClientRects().length > 0 && node.scrollHeight > node.clientHeight);
+		let candidates = Array.from(root.querySelectorAll("[data-themis-page-scroll='true']")).filter((node) => node.getClientRects().length > 0 && node.scrollHeight > node.clientHeight);
+		if (candidates.length === 0) candidates = Array.from(root.querySelectorAll("*")).filter((node) => {
+			if (node.getClientRects().length === 0 || node.scrollHeight <= node.clientHeight) return false;
+			const overflowY = getComputedStyle(node).overflowY;
+			return overflowY === "auto" || overflowY === "scroll";
+		});
 		scroller = candidates.sort((a, b) => b.clientHeight - a.clientHeight)[0] || null;
 	}
 	if (!scroller) return;
