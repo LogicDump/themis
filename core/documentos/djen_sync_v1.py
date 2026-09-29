@@ -1,0 +1,201 @@
+"""Operational DJEN synchronization state and daily/manual orchestration."""
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import date, datetime, timezone
+from typing import Any
+
+from core.process_storage import connect_process, connect_workspace, known_process_ids
+from core.runtime_paths import workspace_db_path
+from core.documentos.process_event_store_v1 import materialize_process_events
+from core.documentos.publications_v1 import sync_djen
+
+SYNC_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS djen_sync_state(
+  process_id TEXT PRIMARY KEY,
+  last_successful_sync_date TEXT,
+  last_successful_sync_at TEXT,
+  last_available_from TEXT,
+  last_available_to TEXT,
+  last_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+"""
+
+def _now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+def _parse_distribution_date(raw: object) -> str | None:
+    text = str(raw or "").strip()
+    if len(text) < 10:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%d/%m/%Y").date().isoformat()
+    except ValueError:
+        return None
+def _initial_available_from(process_id: str) -> str:
+    db = connect_process(process_id)
+    try:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_metadata'").fetchone():
+            row = db.execute(
+                "SELECT provenance_json FROM process_metadata WHERE process_id=?",
+                (process_id,),
+            ).fetchone()
+            if row and row[0]:
+                provenance = json.loads(str(row[0]))
+                basic = provenance.get("basic_data") if isinstance(provenance, dict) else None
+                value = _parse_distribution_date(
+                    basic.get("distribuicao") if isinstance(basic, dict) else None
+                )
+                if value:
+                    return value
+
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='publications'").fetchone():
+            row = db.execute(
+                "SELECT min(available_on) FROM publications WHERE process_id=? AND available_on IS NOT NULL",
+                (process_id,),
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+
+        row = db.execute("SELECT created_at FROM processes WHERE process_id=?", (process_id,)).fetchone()
+        if row and row[0]:
+            try:
+                return datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).date().isoformat()
+            except ValueError:
+                pass
+    finally:
+        db.close()
+    return date.today().replace(month=1, day=1).isoformat()
+
+def _read_state(process_id: str) -> dict[str, Any] | None:
+    target = workspace_db_path()
+    if not target.is_file():
+        return None
+    db = connect_workspace()
+    try:
+        db.executescript(SYNC_STATE_SCHEMA)
+        row = db.execute(
+            "SELECT * FROM djen_sync_state WHERE process_id=?",
+            (process_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        db.close()
+
+def _write_success(
+    process_id: str, *, available_from: str, available_to: str, count: int
+) -> dict[str, Any]:
+    db = connect_workspace(create=True)
+    try:
+        db.executescript(SYNC_STATE_SCHEMA)
+        now = _now()
+        db.execute(
+            """INSERT INTO djen_sync_state(
+                 process_id,last_successful_sync_date,last_successful_sync_at,
+                 last_available_from,last_available_to,last_count,last_error
+               ) VALUES(?,?,?,?,?,?,NULL)
+               ON CONFLICT(process_id) DO UPDATE SET
+                 last_successful_sync_date=excluded.last_successful_sync_date,
+                 last_successful_sync_at=excluded.last_successful_sync_at,
+                 last_available_from=excluded.last_available_from,
+                 last_available_to=excluded.last_available_to,
+                 last_count=excluded.last_count,
+                 last_error=NULL""",
+            (process_id, available_to, now, available_from, available_to, int(count)),
+        )
+        db.commit()
+        return dict(db.execute(
+            "SELECT * FROM djen_sync_state WHERE process_id=?", (process_id,)
+        ).fetchone())
+    finally:
+        db.close()
+def _write_error(process_id: str, message: str) -> None:
+    db = connect_workspace(create=True)
+    try:
+        db.executescript(SYNC_STATE_SCHEMA)
+        db.execute(
+            """INSERT INTO djen_sync_state(process_id,last_count,last_error)
+               VALUES(?,0,?)
+               ON CONFLICT(process_id) DO UPDATE SET last_error=excluded.last_error""",
+            (process_id, str(message)[:2000]),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+def status(*, as_of: str | None = None) -> dict[str, Any]:
+    today = as_of or date.today().isoformat()
+    process_ids = known_process_ids()
+    states = []
+    for process_id in process_ids:
+        state = _read_state(process_id) or {"process_id": process_id}
+        state["needs_sync"] = state.get("last_successful_sync_date") != today
+        states.append(state)
+    return {
+        "date": today,
+        "process_count": len(process_ids),
+        "all_successful_today": bool(process_ids) and all(not s["needs_sync"] for s in states),
+        "needs_sync": any(s["needs_sync"] for s in states),
+        "processes": states,
+    }
+
+def sync_now(
+    *, process_id: str | None = None, available_to: str | None = None
+) -> dict[str, Any]:
+    target_date = available_to or date.today().isoformat()
+    targets = [process_id] if process_id else known_process_ids()
+    results: list[dict[str, Any]] = []
+    for pid in targets:
+        state = _read_state(pid)
+        available_from = (
+            str(state["last_successful_sync_date"])
+            if state and state.get("last_successful_sync_date")
+            else _initial_available_from(pid)
+        )
+        if available_from > target_date:
+            available_from = target_date
+        db = connect_process(pid)
+        try:
+            result = sync_djen(
+                db,
+                process_id=pid,
+                available_from=available_from,
+                available_to=target_date,
+            )
+            event_result = materialize_process_events(db, pid)
+        except Exception as exc:
+            _write_error(pid, str(exc))
+            results.append({
+                "process_id": pid,
+                "ok": False,
+                "available_from": available_from,
+                "available_to": target_date,
+                "error": str(exc),
+            })
+            continue
+        finally:
+            db.close()
+
+        sync_state = _write_success(
+            pid,
+            available_from=available_from,
+            available_to=target_date,
+            count=int(result.get("count") or 0),
+        )
+        results.append({
+            "process_id": pid,
+            "ok": True,
+            "available_from": available_from,
+            "available_to": target_date,
+            "count": int(result.get("count") or 0),
+            "process_events": event_result,
+            "state": sync_state,
+        })
+    return {
+        "date": target_date,
+        "ok": all(item.get("ok") for item in results) if results else True,
+        "results": results,
+        "status": status(as_of=target_date),
+    }

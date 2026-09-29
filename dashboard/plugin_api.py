@@ -741,6 +741,24 @@ def get_process_procedural_acts(process_id: str):
     return val
 
 
+@router.get("/djen/status")
+def get_djen_status():
+    return core_api.djen_status()
+
+
+@router.post("/djen/sync-now")
+def sync_djen_now(payload: dict[str, Any] | None = None):
+    process_id = str((payload or {}).get("process_id") or "").strip() or None
+    try:
+        return core_api.sync_djen_now(process_id=process_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.get("/processes/{process_id}/publications")
 def get_process_publications(process_id: str):
     val = core_api.publications(process_id)

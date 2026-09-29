@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from core.documentos.legal_event_projection_v1 import LegalEventProjection
 from core.documentos.process_event_store_v1 import (
     list_process_events,
     materialize_process_events,
@@ -154,5 +155,30 @@ def test_publications_migration_upgrades_legacy_table():
         assert "active" in columns
         assert "canceled_on" in columns
         assert "cancellation_reason" in columns
+    finally:
+        db.close()
+
+
+def test_legal_event_projection_uses_djen_availability_when_publication_date_is_unknown():
+    db = _db()
+    try:
+        sync_djen(
+            db,
+            process_id=PROCESS_ID,
+            available_from="2026-09-01",
+            available_to="2026-09-29",
+            client=FakeDjenClient(),
+        )
+        events = LegalEventProjection.project_publications(db, process_id=PROCESS_ID)
+        assert len(events) == 1
+        event = events[0]
+        assert event["published_at"] is None
+        assert event["available_at"] == "2026-09-28"
+        assert event["date_basis"] == "AVAILABLE"
+        assert event["relevant_at"] == "2026-09-28"
+        assert event["status"] == "P"
+        assert event["active"] is True
+        assert event["recipients"][0]["nome"] == "PARTE TESTE"
+        assert event["recipient_lawyers"][0]["advogado"]["numero_oab"] == "12345"
     finally:
         db.close()

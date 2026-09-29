@@ -25176,17 +25176,42 @@ function adaptLegalEventToUI(evt) {
 	} else if (kind === "PUBLICATION") {
 		tipo = "publicacao";
 		tipoLabel = "Publicação";
-		tone = "muted";
+		tone = evt.active === false || evt.canceled_on ? "bad" : "muted";
 		codicon = "megaphone";
-		dotClass = "bg-blue-500/70";
-		status = evt.status || "Publicado";
+		dotClass = evt.active === false || evt.canceled_on ? "bg-red-500/70" : "bg-blue-500/70";
+		status = evt.status || (evt.active === false ? "Inativa" : "DJEN");
 		if (relevantAt) meta.push({
-			label: "Data Publicação",
+			label: evt.date_basis === "AVAILABLE" ? "Disponibilização DJEN" : "Data Publicação",
 			value: `${dataExibicao}${horario ? " às " + horario : ""}`
 		});
+		if (evt.tribunal) meta.push({
+			label: "Tribunal",
+			value: evt.tribunal
+		});
+		if (evt.organ) meta.push({
+			label: "Órgão",
+			value: evt.organ
+		});
+		if (Array.isArray(evt.recipients) && evt.recipients.length > 0) meta.push({
+			label: "Destinatários",
+			value: evt.recipients.map((item) => item?.nome || item?.name || item?.destinatario || String(item)).join(", ")
+		});
+		if (Array.isArray(evt.recipient_lawyers) && evt.recipient_lawyers.length > 0) meta.push({
+			label: "Advogados",
+			value: evt.recipient_lawyers.map((item) => {
+				const lawyer = item?.advogado && typeof item.advogado === "object" ? item.advogado : item;
+				const name = lawyer?.nome || lawyer?.name || "";
+				const oab = lawyer?.numero_oab || lawyer?.numeroOab || lawyer?.oab || "";
+				return [name, oab].filter(Boolean).join(" · ") || String(item);
+			}).join(", ")
+		});
 		if (evt.status) meta.push({
-			label: "Status",
+			label: "Status DJEN",
 			value: evt.status
+		});
+		if (evt.canceled_on) meta.push({
+			label: "Cancelamento",
+			value: evt.cancellation_reason ? `${formatDateDisplay(evt.canceled_on)} · ${evt.cancellation_reason}` : formatDateDisplay(evt.canceled_on)
 		});
 	} else {
 		tipo = (evt.kind || "evento").toLowerCase();
@@ -27772,9 +27797,14 @@ function ThemisShell({ ctx }) {
 	});
 	const [navTarget, setNavTarget] = useState(null);
 	const [events, setEvents] = useState([]);
+	const [processes, setProcesses] = useState([]);
+	const [djenStatus, setDjenStatus] = useState(null);
+	const [djenSyncing, setDjenSyncing] = useState(false);
+	const [djenError, setDjenError] = useState(null);
 	const [loading, setLoading] = useState(true);
 	const [fetchError, setFetchError] = useState(null);
 	const [selectedId, setSelectedId] = useState("");
+	const [filterProcess, setFilterProcess] = useState("todos");
 	const [filterType, setFilterType] = useState("todos");
 	const [search, setSearch] = useState("");
 	const [listWidthPct, setListWidthPct] = useState(38);
@@ -27800,27 +27830,51 @@ function ThemisShell({ ctx }) {
 	useEffect(() => {
 		ctx.storage.set("workspace.activeModule", activeTab);
 	}, [ctx, activeTab]);
+	const loadEvents = useCallback(async () => {
+		const data = await ctx.rest("/events");
+		const adapted = (Array.isArray(data) ? data : []).map(adaptLegalEventToUI);
+		setEvents(adapted);
+		setFetchError(null);
+		setLoading(false);
+		setSelectedId((current) => current || adapted[0]?.id || "");
+		return adapted;
+	}, [ctx]);
+	const refreshDjen = useCallback(async (automatic = false) => {
+		if (djenSyncing) return;
+		setDjenSyncing(true);
+		setDjenError(null);
+		try {
+			const body = filterProcess === "todos" ? {} : { process_id: filterProcess };
+			const result = await ctx.rest("/djen/sync-now", { method: "POST", body });
+			setDjenStatus(result?.status || await ctx.rest("/djen/status"));
+			await loadEvents();
+			return result;
+		} catch (error) {
+			console.error("[Themis] Falha ao sincronizar DJEN:", error);
+			setDjenError(error.message || String(error));
+			if (!automatic) throw error;
+		} finally {
+			setDjenSyncing(false);
+		}
+	}, [ctx, djenSyncing, filterProcess, loadEvents]);
 	useEffect(() => {
-		let isMounted = true;
+		let cancelled = false;
 		setLoading(true);
-		ctx.rest("/events").then((data) => {
-			if (!isMounted) return;
-			const adapted = (Array.isArray(data) ? data : []).map(adaptLegalEventToUI);
-			setEvents(adapted);
-			setFetchError(null);
-			setLoading(false);
-			if (adapted.length > 0 && !selectedId) setSelectedId(adapted[0].id);
+		Promise.all([ctx.rest("/tree"), ctx.rest("/djen/status"), loadEvents()]).then(async ([tree, status]) => {
+			if (cancelled) return;
+			setProcesses(Array.isArray(tree?.processes) ? tree.processes : []);
+			setDjenStatus(status);
+			if (status?.needs_sync) await refreshDjen(true);
 		}).catch((err) => {
-			if (!isMounted) return;
-			console.error("[Themis Plugin] Erro ao carregar eventos via ctx.rest:", err);
+			if (cancelled) return;
+			console.error("[Themis Plugin] Erro ao carregar Eventos/DJEN:", err);
 			setFetchError(err.message || String(err));
-			setEvents([]);
 			setLoading(false);
 		});
 		return () => {
-			isMounted = false;
+			cancelled = true;
 		};
-	}, [ctx]);
+	}, [ctx, loadEvents]);
 	const filterOptions = useMemo(() => [
 		{
 			id: "todos",
@@ -27845,12 +27899,14 @@ function ThemisShell({ ctx }) {
 	], [events.length]);
 	const filteredEventos = useMemo(() => {
 		return events.filter((evt) => {
+			const matchProcess = filterProcess === "todos" || evt.processo === filterProcess;
 			const matchFilter = filterType === "todos" || evt.tipo === filterType;
 			const matchSearch = !search || evt.titulo.toLowerCase().includes(search.toLowerCase()) || evt.processo.toLowerCase().includes(search.toLowerCase()) || evt.teor.toLowerCase().includes(search.toLowerCase());
-			return matchFilter && matchSearch;
+			return matchProcess && matchFilter && matchSearch;
 		});
 	}, [
 		events,
+		filterProcess,
 		filterType,
 		search
 	]);
@@ -27918,11 +27974,47 @@ function ThemisShell({ ctx }) {
 	const handleDoubleClick = () => {
 		setListWidthPct(38);
 	};
-	const filterActions = jsx(SegmentedControl, {
-		options: filterOptions,
-		value: filterType,
-		onChange: setFilterType,
-		className: "shrink-0"
+	const selectedDjenState = useMemo(() => {
+		const states = Array.isArray(djenStatus?.processes) ? djenStatus.processes : [];
+		if (filterProcess !== "todos") return states.find((item) => item.process_id === filterProcess) || null;
+		const synced = states.filter((item) => item.last_successful_sync_at);
+		if (synced.length === 0) return null;
+		return synced.sort((a, b) => String(a.last_successful_sync_at).localeCompare(String(b.last_successful_sync_at)))[0];
+	}, [djenStatus, filterProcess]);
+	const djenSyncedAt = selectedDjenState?.last_successful_sync_at ? new Date(selectedDjenState.last_successful_sync_at) : null;
+	const djenStatusLabel = djenSyncing ? "Atualizando DJEN…" : djenSyncedAt && !Number.isNaN(djenSyncedAt.getTime()) ? `DJEN atualizado ${djenSyncedAt.toLocaleDateString("pt-BR")} às ${djenSyncedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "DJEN ainda não atualizado";
+	const filterActions = jsxs("div", {
+		className: "flex min-w-0 items-center gap-2",
+		children: [
+			jsx("select", {
+				value: filterProcess,
+				onChange: (event) => setFilterProcess(event.target.value),
+				className: "h-7 max-w-56 rounded-md bg-muted/60 px-2 text-[0.7rem] text-foreground outline-none",
+				"aria-label": "Filtrar por processo",
+				children: [jsx("option", { value: "todos", children: "Todos os processos" }), ...processes.map((process) => {
+					const pid = process.process_id || process.id || "";
+					return jsx("option", { value: pid, children: pid }, pid);
+				})]
+			}),
+			jsx("span", {
+				className: "hidden xl:inline text-[0.68rem] text-muted-foreground whitespace-nowrap",
+				children: djenStatusLabel
+			}),
+			jsx(Button, {
+				variant: "ghost",
+				size: "sm",
+				disabled: djenSyncing,
+				onClick: () => refreshDjen(false).catch(() => {}),
+				className: "h-7 px-2 text-[0.7rem]",
+				children: djenSyncing ? "Atualizando…" : "Atualizar agora"
+			}),
+			jsx(SegmentedControl, {
+				options: filterOptions,
+				value: filterType,
+				onChange: setFilterType,
+				className: "shrink-0"
+			})
+		]
 	});
 	return jsxs("div", {
 		className: "flex h-full w-full flex-col overflow-hidden bg-background text-foreground",
@@ -27958,7 +28050,10 @@ function ThemisShell({ ctx }) {
 				title: "Eventos Processuais",
 				subtitle: "Cronologia unificada de publicações, prazos, audiências e pendências",
 				actions: filterActions
-			}), jsxs("div", {
+			}), djenError ? jsx("div", {
+				className: "rounded-md bg-destructive/8 px-3 py-2 text-[0.72rem] text-destructive",
+				children: `Falha ao atualizar DJEN: ${djenError}`
+			}) : null, jsxs("div", {
 				ref: splitContainerRef,
 				className: cn("flex min-h-0 flex-1 flex-row overflow-hidden", isDragging && "select-none"),
 				children: [

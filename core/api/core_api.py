@@ -1752,6 +1752,16 @@ def get_event(
     return None
 
 
+def djen_status() -> dict[str, Any]:
+    from core.documentos.djen_sync_v1 import status
+    return status()
+
+
+def sync_djen_now(process_id: str | None = None) -> dict[str, Any]:
+    from core.documentos.djen_sync_v1 import sync_now
+    return sync_now(process_id=process_id)
+
+
 def publications(process_id: str, path: Path | None = None) -> list[dict[str, Any]] | None:
     from core.documentos.publications_v1 import list_publications
     db = _process_db(process_id,path)

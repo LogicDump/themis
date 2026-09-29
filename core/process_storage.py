@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS chat_context_bindings(
   owner_type TEXT NOT NULL CHECK(owner_type='PROCESS'),
   owner_id TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS djen_sync_state(
+  process_id TEXT PRIMARY KEY,
+  last_successful_sync_date TEXT,
+  last_successful_sync_at TEXT,
+  last_available_from TEXT,
+  last_available_to TEXT,
+  last_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
 """
 
 

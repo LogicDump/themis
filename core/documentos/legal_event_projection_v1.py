@@ -8,8 +8,8 @@ Conforme auditoria do Core:
 - DEADLINE -> projetado a partir de 'deadlines'
 - HEARING  -> projetado a partir de 'hearings' (+ 'hearing_participants')
 - PENDING  -> projetado a partir de 'pending_items'
-- PUBLICATION -> não projetado neste momento devido à ausência de regra determinística
-                 comprovada em chronology_events / process_movements.
+- PUBLICATION -> projetado de publications; usa published_on quando conhecido e,
+                 caso contrário, available_on como data operacional explicitamente identificada.
 
 O Core retorna estritamente dados de domínio limpos, sem propriedades visuais
 (como tone, codicon, dot_class ou formatações de interface).
@@ -305,12 +305,48 @@ class LegalEventProjection:
         cls._ensure_row_factory(db)
         if not _has_table(db, "publications"):
             return []
-        query = "SELECT * FROM publications WHERE published_on IS NOT NULL"
+        query = "SELECT * FROM publications WHERE coalesce(published_on, available_on) IS NOT NULL"
         params: list[Any] = []
         if process_id:
-            query += " AND process_id=?"; params.append(process_id)
-        query += " ORDER BY published_on, publication_id"
-        return [{"id": f"publication:{r['publication_id']}", "kind": "PUBLICATION", "source_entity": "publications", "source_id": r["publication_id"], "owner_type": "PROCESS", "owner_id": r["process_id"], "process_id": r["process_id"], "title": r["publication_type"] or "Publicação", "description": r["full_text"], "published_at": r["published_on"], "relevant_at": r["published_on"], "date": r["published_on"], "tribunal": r["tribunal"], "organ": r["organ"], "medium": r["medium"], "source_url": r["source_url"], "provenance": _json_or_default(r["provenance_json"], {}), "created_at": r["created_at"], "updated_at": r["updated_at"]} for r in db.execute(query, params).fetchall()]
+            query += " AND process_id=?"
+            params.append(process_id)
+        query += " ORDER BY coalesce(published_on, available_on), publication_id"
+
+        events: list[dict[str, Any]] = []
+        for r in db.execute(query, params).fetchall():
+            published_on = r["published_on"]
+            available_on = r["available_on"]
+            relevant_at = published_on or available_on
+            events.append({
+                "id": f"publication:{r['publication_id']}",
+                "kind": "PUBLICATION",
+                "source_entity": "publications",
+                "source_id": r["publication_id"],
+                "owner_type": "PROCESS",
+                "owner_id": r["process_id"],
+                "process_id": r["process_id"],
+                "title": r["publication_type"] or "Publicação",
+                "description": r["full_text"],
+                "published_at": published_on,
+                "available_at": available_on,
+                "date_basis": "PUBLISHED" if published_on else "AVAILABLE",
+                "relevant_at": relevant_at,
+                "date": relevant_at,
+                "tribunal": r["tribunal"],
+                "organ": r["organ"],
+                "medium": r["medium"],
+                "status": r["publication_status"],
+                "active": None if r["active"] is None else bool(r["active"]),
+                "canceled_on": r["canceled_on"],
+                "cancellation_reason": r["cancellation_reason"],
+                "recipients": _json_or_default(r["recipients_json"], []),
+                "recipient_lawyers": _json_or_default(r["recipient_lawyers_json"], []),
+                "source_url": r["source_url"],
+                "provenance": _json_or_default(r["provenance_json"], {}),
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            })
+        return events
 
     @classmethod
     def list_events(
