@@ -26986,7 +26986,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 								jsxs("div", {
 									className: activeSection === "dossie" ? "contents" : "hidden",
 									children: [jsxs(PanelDetail, {
-										className: "min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 space-y-4",
+										className: "themis-scroll-visible min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 space-y-4",
 										"data-themis-page-scroll": "true",
 										children: [currentOverview ? jsxs(React.Fragment, { children: [
 											jsx(PanelSectionLabel, { children: "Informações Cadastrais / Capa CPOPG" }),
