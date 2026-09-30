@@ -237,6 +237,8 @@ def materialize_movements(
     materialize_process(db, process_id)
     from core.documentos.deadline_obligation_store_v1 import materialize_process as materialize_deadline_obligations
     materialize_deadline_obligations(db, process_id)
+    from core.documentos.deadline_resolution_pipeline_v1 import enrich_process_obligations
+    enrich_process_obligations(db, process_id)
     return {
         "process_id": process_id,
         "projected": len(projected),

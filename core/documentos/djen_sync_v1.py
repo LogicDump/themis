@@ -165,6 +165,19 @@ def sync_now(
                 available_to=target_date,
             )
             event_result = materialize_process_events(db, pid)
+            from core.documentos.deadline_instruction_store_v1 import materialize_publication_instructions
+            from core.documentos.deadline_obligation_store_v1 import materialize_process as materialize_deadline_obligations
+            from core.documentos.deadline_resolution_pipeline_v1 import enrich_process_obligations
+            instruction_result = materialize_publication_instructions(db, pid)
+            has_movements = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='movements'"
+            ).fetchone()
+            if has_movements:
+                obligation_result = materialize_deadline_obligations(db, pid)
+                resolution_result = enrich_process_obligations(db, pid)
+            else:
+                obligation_result = {"process_id": pid, "instructions": 0, "obligations": 0}
+                resolution_result = {"process_id": pid, "obligations": 0, "resolved": 0, "review_required": 0, "nonoperative": 0, "legal_context": None}
         except Exception as exc:
             _write_error(pid, str(exc))
             results.append({
@@ -191,6 +204,9 @@ def sync_now(
             "available_to": target_date,
             "count": int(result.get("count") or 0),
             "process_events": event_result,
+            "deadline_instructions": instruction_result,
+            "deadline_obligations": obligation_result,
+            "deadline_resolution": resolution_result,
             "state": sync_state,
         })
     return {

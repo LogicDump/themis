@@ -311,7 +311,13 @@ def _instructions_with_context(db: sqlite3.Connection, process_id: str) -> list[
         row["sequence"] = movement.get("sequence", 0)
         row["movement_type"] = movement.get("movement_type")
         row["title"] = movement.get("title")
-        row["source_role"] = _source_role(row["movement_type"], row["title"], row.get("source_excerpt"))
+        # A PUBLICATION instruction is a legitimate origin in its own right.
+        # It remains anchored to its PUBLICATION ProcessEvent and never
+        # masquerades as a Movement.
+        row["source_role"] = (
+            "ORIGINATING_ORDER" if row.get("source_entity") == "PUBLICATION"
+            else _source_role(row["movement_type"], row["title"], row.get("source_excerpt"))
+        )
     return rows
 
 

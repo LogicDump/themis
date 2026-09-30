@@ -219,7 +219,7 @@ def create_from_event(db: sqlite3.Connection, *, process_id: str, source_event_i
                       recipient_text: str | None = None, term_value: int | None = None,
                       term_unit: str = "UNSPECIFIED", counting_qualifier: str | None = None,
                       trigger_text: str | None = None, trigger_status: str = "UNSPECIFIED",
-                      status: str = "AMBIGUOUS") -> str:
+                      status: str = "AMBIGUOUS", extraction_method: str = EXTRACTION_METHOD) -> str:
     """Persist an instruction only when its generic event anchor is valid."""
     event = db.execute("SELECT process_id,source_entity,source_id FROM process_events WHERE event_id=?", (source_event_id,)).fetchone()
     if not event or event["process_id"] != process_id or event["source_entity"] != source_entity or event["source_id"] != source_id:
@@ -237,7 +237,7 @@ def create_from_event(db: sqlite3.Connection, *, process_id: str, source_event_i
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instruction_id) DO NOTHING""",
       (instruction_id,process_id,movement_id,source_event_id,source_entity,source_id,action_text,recipient_text,
        term_value,term_unit,counting_qualifier,trigger_text,trigger_status,source_excerpt,_json(source_refs),
-       source_hash,"DETERMINISTIC_V1",status,now,now))
+       source_hash,extraction_method,status,now,now))
     return instruction_id
 
 
@@ -325,6 +325,35 @@ def extract_for_movement(db: sqlite3.Connection, movement_id: str) -> list[dict[
                 continue
             candidates.append(item); occupied.append((match.start(), match.end()))
 
+    # The legacy regex layer remains authoritative for explicit terms. The
+    # semantic specialist adds operative candidates that have no numeric term
+    # without changing the canonical source text or PDF pipeline.
+    from core.documentos.deadline_specialist_v1 import analyze_deadline_text, deadline_candidate_windows
+    existing_excerpts = {_norm(item.get("source_excerpt")) for item in candidates}
+    for window in deadline_candidate_windows(text):
+        normalized_window = _norm(window)
+        if any(normalized_window in excerpt or excerpt in normalized_window for excerpt in existing_excerpts if excerpt):
+            continue
+        output = analyze_deadline_text(window)
+        if not output.operative_instruction:
+            continue
+        candidates.append({
+            "process_id": process_id,
+            "movement_id": movement_id,
+            "action_text": output.action_text,
+            "recipient_text": output.recipient_text,
+            "term_value": output.explicit_term_value,
+            "term_unit": output.explicit_term_unit,
+            "counting_qualifier": "BUSINESS_DAYS" if output.explicit_term_unit == "BUSINESS_DAYS" else None,
+            "trigger_text": output.trigger_text,
+            "trigger_status": "UNSPECIFIED",
+            "source_excerpt": window,
+            "source_refs_json": _json({"pages": [{"document_id": p["document_id"], "page_number": p["page_number"]} for p in pages], "extraction_method": "DEADLINE_SPECIALIST_V1"}),
+            "source_hash": source_hash,
+            "extraction_method": "DEADLINE_SPECIALIST_V1",
+            "status": "INFERRED" if output.explicit_term_value is None and output.explicit_term_unit != "DATE_CERTAIN" else "EXPLICIT",
+        })
+
     unique: dict[tuple[Any, ...], dict[str, Any]] = {}
     for item in candidates:
         key = (item["action_text"], item["recipient_text"], item["term_value"], item["term_unit"], item["trigger_text"], item["source_excerpt"])
@@ -372,6 +401,53 @@ def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, An
     ]
     if stale:
         db.executemany("DELETE FROM deadline_instructions WHERE instruction_id=?", [(value,) for value in stale])
+    db.commit()
+    return {"process_id": process_id, "materialized": len(desired), "deleted": len(stale)}
+
+
+def materialize_publication_instructions(db: sqlite3.Connection, process_id: str) -> dict[str, Any]:
+    """Materialize semantic instructions anchored directly in DJEN publications."""
+    migrate_connection(db)
+    from core.documentos.deadline_specialist_v1 import analyze_deadline_text, deadline_candidate_windows
+
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='publications'").fetchone():
+        return {"process_id": process_id, "materialized": 0, "deleted": 0}
+
+    desired: set[str] = set()
+    rows = db.execute(
+        """SELECT p.publication_id,p.full_text,p.source_url,p.payload_hash,p.communication_id,e.event_id
+             FROM publications p JOIN process_events e
+               ON e.process_id=p.process_id AND e.source_entity='PUBLICATION' AND e.source_id=p.publication_id
+            WHERE p.process_id=? AND coalesce(p.active,1)<>0""",
+        (process_id,),
+    ).fetchall()
+    for row in rows:
+        for window in deadline_candidate_windows(row["full_text"] or ""):
+            output = analyze_deadline_text(window)
+            if not output.operative_instruction:
+                continue
+            instruction_id = create_from_event(
+                db, process_id=process_id, source_event_id=row["event_id"],
+                source_entity="PUBLICATION", source_id=row["publication_id"],
+                source_excerpt=window,
+                source_refs={"source_url": row["source_url"], "communication_id": row["communication_id"]},
+                source_hash=row["payload_hash"] or hashlib.sha256((row["full_text"] or "").encode("utf-8")).hexdigest(),
+                action_text=output.action_text, recipient_text=output.recipient_text,
+                term_value=output.explicit_term_value, term_unit=output.explicit_term_unit,
+                counting_qualifier="BUSINESS_DAYS" if output.explicit_term_unit == "BUSINESS_DAYS" else None,
+                trigger_text=output.trigger_text,
+                trigger_status="EXPLICIT" if output.trigger_text else "UNSPECIFIED",
+                status="INFERRED" if output.explicit_term_value is None and output.explicit_term_unit != "DATE_CERTAIN" else "EXPLICIT",
+                extraction_method="DEADLINE_SPECIALIST_V1",
+            )
+            desired.add(instruction_id)
+    existing = db.execute(
+        "SELECT instruction_id FROM deadline_instructions WHERE process_id=? AND source_entity='PUBLICATION'",
+        (process_id,),
+    ).fetchall()
+    stale = [row[0] for row in existing if row[0] not in desired]
+    if stale:
+        db.executemany("DELETE FROM deadline_instructions WHERE instruction_id=?", [(item,) for item in stale])
     db.commit()
     return {"process_id": process_id, "materialized": len(desired), "deleted": len(stale)}
 
