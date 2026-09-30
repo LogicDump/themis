@@ -27874,6 +27874,7 @@ function ThemisShell({ ctx }) {
 	const [djenSyncing, setDjenSyncing] = useState(false);
 	const [djenError, setDjenError] = useState(null);
 	const djenPollRef = useRef(false);
+	const eventsTreeSignatureRef = useRef("");
 	const [loading, setLoading] = useState(true);
 	const [fetchError, setFetchError] = useState(null);
 	useEffect(() => {
@@ -27959,7 +27960,15 @@ function ThemisShell({ ctx }) {
 		setLoading(true);
 		Promise.all([ctx.rest("/tree"), ctx.rest("/djen/status"), loadEvents()]).then(async ([tree, status]) => {
 			if (cancelled) return;
-			setProcesses(Array.isArray(tree?.processes) ? tree.processes : []);
+			const initialProcesses = Array.isArray(tree?.processes) ? tree.processes : [];
+			eventsTreeSignatureRef.current = JSON.stringify(initialProcesses.map((process) => ({
+				id: process.process_id || process.id || "",
+				pipeline_status: process.pipeline_status || process.status || "",
+				pipeline_revision: process.pipeline_revision || "",
+				updated_at: process.updated_at || "",
+				documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0
+			})));
+			setProcesses(initialProcesses);
 			setDjenStatus(status);
 			if (status?.active_job) await watchDjenJob(status.active_job).catch(() => null);
 			else if (status?.needs_sync) await refreshDjen(true);
@@ -27973,6 +27982,40 @@ function ThemisShell({ ctx }) {
 			cancelled = true;
 		};
 	}, [ctx, loadEvents]);
+	useEffect(() => {
+		if (activeTab !== "eventos") return;
+		let cancelled = false;
+		let inFlight = false;
+		const refreshEventLinksFromProcessTree = async () => {
+			if (inFlight) return;
+			inFlight = true;
+			try {
+				const tree = await ctx.rest("/tree");
+				if (cancelled) return;
+				const procs = Array.isArray(tree?.processes) ? tree.processes : [];
+				const signature = JSON.stringify(procs.map((process) => ({
+					id: process.process_id || process.id || "",
+					pipeline_status: process.pipeline_status || process.status || "",
+					pipeline_revision: process.pipeline_revision || "",
+					updated_at: process.updated_at || "",
+					documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0
+				})));
+				const changed = Boolean(eventsTreeSignatureRef.current && eventsTreeSignatureRef.current !== signature);
+				eventsTreeSignatureRef.current = signature;
+				setProcesses(procs);
+				if (changed) await loadEvents();
+			} catch (error) {
+				if (!cancelled) console.warn("[Themis] Falha ao observar atualização dos processos:", error);
+			} finally {
+				inFlight = false;
+			}
+		};
+		const timer = setInterval(refreshEventLinksFromProcessTree, 3000);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	}, [activeTab, ctx, loadEvents]);
 	const filterOptions = useMemo(() => [
 		{
 			id: "todos",
