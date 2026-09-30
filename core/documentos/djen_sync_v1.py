@@ -141,6 +141,82 @@ def status(*, as_of: str | None = None) -> dict[str, Any]:
         "processes": states,
     }
 
+
+def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target_date: str) -> dict[str, Any]:
+    """Acquire the official TJSP calendar and calculate all current obligations.
+
+    Calendar failure is reported to the caller and must not invalidate a
+    successful DJEN synchronization.
+    """
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_metadata'").fetchone():
+        return {"process_id": process_id, "status": "SKIPPED", "reason": "PROCESS_METADATA_MISSING"}
+    columns = {str(row[1]) for row in db.execute("PRAGMA table_info(process_metadata)").fetchall()}
+    if not {"tribunal", "comarca"} <= columns:
+        return {"process_id": process_id, "status": "SKIPPED", "reason": "COURT_METADATA_MISSING"}
+    metadata = db.execute(
+        "SELECT tribunal,comarca FROM process_metadata WHERE process_id=?", (process_id,)
+    ).fetchone()
+    if not metadata or str(metadata["tribunal"] or "").upper().strip() != "TJSP":
+        return {"process_id": process_id, "status": "SKIPPED", "reason": "UNSUPPORTED_COURT"}
+
+    locality = str(metadata["comarca"] or "").strip()
+    for prefix in ("Foro de ", "Comarca de "):
+        if locality.casefold().startswith(prefix.casefold()):
+            locality = locality[len(prefix):].strip()
+            break
+    if not locality:
+        return {"process_id": process_id, "status": "SKIPPED", "reason": "LOCALITY_MISSING"}
+
+    from core.documentos.court_calendar_store_v1 import get_snapshot, migrate_connection as migrate_calendar
+    from core.documentos.deadline_calculation_store_v1 import calculate_process
+    from core.documentos.providers.tjsp_calendar_acquisition_v1 import (
+        HOLIDAYS_ENDPOINT, SUSPENSIONS_ENDPOINT, TjspAcquisitionRequest,
+        acquire_tjsp_calendar, compose_effective_tjsp_calendar,
+    )
+
+    migrate_calendar(db)
+    years: set[int] = {int(target_date[:4])}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='publications'").fetchone():
+        rows = db.execute(
+            """SELECT DISTINCT coalesce(p.published_on,p.available_on) AS communication_date
+                 FROM deadline_instructions i
+                 JOIN publications p ON p.publication_id=i.source_id
+                WHERE i.process_id=? AND i.source_entity='PUBLICATION'
+                  AND coalesce(p.active,1)<>0
+                  AND coalesce(p.published_on,p.available_on) IS NOT NULL""",
+            (process_id,),
+        ).fetchall()
+        for row in rows:
+            value = str(row["communication_date"] or "")
+            if len(value) >= 4 and value[:4].isdigit():
+                years.add(int(value[:4]))
+
+    entries = []
+    calendars = []
+    for year in sorted(years):
+        request = TjspAcquisitionRequest(locality, "", year)
+        acquired = acquire_tjsp_calendar(db, request)
+        snapshots = {item["endpoint"]: get_snapshot(db, item["snapshot_id"]) for item in acquired["snapshots"]}
+        composition = compose_effective_tjsp_calendar(
+            snapshots[HOLIDAYS_ENDPOINT], snapshots[SUSPENSIONS_ENDPOINT], request,
+            start_date=f"{year:04d}-01-01", end_date=f"{year:04d}-12-31",
+            proceeding_medium="ELECTRONIC",
+        )
+        entries.extend(composition.entries)
+        calendars.append({
+            "year": year, "calendar_version": composition.calendar_version,
+            "coverage_complete": composition.coverage_complete,
+            "missing_dates": list(composition.missing_dates),
+            "snapshots": acquired["snapshots"],
+        })
+
+    result = calculate_process(db, process_id=process_id, calendar_entries=entries)
+    return {
+        "process_id": process_id, "status": "OK", "locality": locality,
+        "calendars": calendars, **result,
+    }
+
+
 def sync_now(
     *, process_id: str | None = None, available_to: str | None = None
 ) -> dict[str, Any]:
@@ -165,19 +241,34 @@ def sync_now(
                 available_to=target_date,
             )
             event_result = materialize_process_events(db, pid)
-            from core.documentos.deadline_instruction_store_v1 import materialize_publication_instructions
+            from core.documentos.deadline_instruction_store_v1 import (
+                materialize_process as materialize_movement_instructions,
+                materialize_publication_instructions,
+            )
             from core.documentos.deadline_obligation_store_v1 import materialize_process as materialize_deadline_obligations
             from core.documentos.deadline_resolution_pipeline_v1 import enrich_process_obligations
-            instruction_result = materialize_publication_instructions(db, pid)
             has_movements = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='movements'"
             ).fetchone()
             if has_movements:
+                movement_instruction_result = materialize_movement_instructions(db, pid)
+            else:
+                movement_instruction_result = {"process_id": pid, "materialized": 0, "deleted": 0}
+            instruction_result = materialize_publication_instructions(db, pid)
+            if has_movements:
                 obligation_result = materialize_deadline_obligations(db, pid)
                 resolution_result = enrich_process_obligations(db, pid)
+                try:
+                    calculation_result = _calculate_tjsp_deadlines(db, pid, target_date=target_date)
+                except Exception as calculation_exc:
+                    calculation_result = {
+                        "process_id": pid, "status": "ERROR",
+                        "error": str(calculation_exc)[:2000],
+                    }
             else:
                 obligation_result = {"process_id": pid, "instructions": 0, "obligations": 0}
                 resolution_result = {"process_id": pid, "obligations": 0, "resolved": 0, "review_required": 0, "nonoperative": 0, "legal_context": None}
+                calculation_result = {"process_id": pid, "status": "SKIPPED", "reason": "MOVEMENTS_MISSING"}
         except Exception as exc:
             _write_error(pid, str(exc))
             results.append({
@@ -204,9 +295,11 @@ def sync_now(
             "available_to": target_date,
             "count": int(result.get("count") or 0),
             "process_events": event_result,
+            "deadline_movement_instructions": movement_instruction_result,
             "deadline_instructions": instruction_result,
             "deadline_obligations": obligation_result,
             "deadline_resolution": resolution_result,
+            "deadline_calculation": calculation_result,
             "state": sync_state,
         })
     return {
