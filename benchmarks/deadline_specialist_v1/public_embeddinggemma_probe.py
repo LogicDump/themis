@@ -6,8 +6,13 @@ import os
 import random
 import time
 import urllib.request
+import sys
 from collections import Counter
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 
@@ -17,7 +22,6 @@ SEED = 20260929
 random.seed(SEED)
 np.random.seed(SEED)
 
-ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 CASES = HERE / "cases.jsonl"
 MODEL_DIR = ROOT / ".benchmark-model"
