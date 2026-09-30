@@ -39,10 +39,20 @@ _OPPOSING = re.compile(r"\b(parte\s+(?:contr[aá]ria|adversa)|polo\s+oposto|ex\s
 _PARTY_REQUEST = re.compile(r"\b(?:a\s+parte\s+)?(?:autor[ae]?|r[eé]u|r[eé]|requerente|requerid[oa]|exequente|executad[oa])\s+(?:requer|pede|postula|pleiteia)\b", re.I)
 _JUDICIAL_VERB = re.compile(r"\b(?:intim(?:e-se|em-se|ar)|cite-se|oficie-se|determino|determina-se|faculto|concedo|d[eê]-se\s+vista|vista\s+[aà]|apresentem|manifeste-se|manifeste-se)\b", re.I)
 _CLERICAL_ONLY = re.compile(r"^\s*(?:junte-se|anote-se|certifique-se|ap[oó]s,?\s*conclusos|voltem\s+conclusos|arquive-se)[\s.;,-]*(?:(?:junte-se|anote-se|certifique-se|ap[oó]s,?\s*conclusos|voltem\s+conclusos|arquive-se)[\s.;,-]*)*$", re.I)
-_TERM = re.compile(r"\b(?:prazo(?:\s+comum)?\s+de|em|dentro\s+de)\s*(\d{1,3})(?:\s*\([^)]*\))?\s*(dias\s+[uú]teis|dias\s+corridos|dias|horas|meses)\b", re.I)
+_TERM = re.compile(
+    r"\b(?:prazo(?:\s+comum)?\s+de|prazo\s+para\s+[^.;]{1,120}?\s+ser[aá�]\s+de|em|dentro\s+de)"
+    r"\s*(\d{1,3})(?:\s*\([^)]*\))?\s*(dias\s+[uú�]teis|dias\s+corridos|dias|horas|meses)\b",
+    re.I,
+)
 _DATE = re.compile(r"\bat[eé]\s+(\d{1,2})/(\d{1,2})/(\d{4})\b", re.I)
+_PARTY_ACTION = re.compile(
+    r"\b(?:manifeste-se|manifestem-se|manifeste[m]?|conteste[m]?|apresente[m]?\s+(?:a\s+)?(?:contesta[cç][aã]o|defesa|manifesta[cç][aã]o|documentos?)|"
+    r"(?:para|sobre)\s+manifesta[cç][aã]o|contesta.{0,2}o|"
+    r"responda[m]?|especifique[m]?|indique[m]?\s+(?:as?\s+)?provas?|digam\s+(?:as\s+)?provas?|"
+    r"comprove[m]?|informe[m]?|junte[m]?|compare[cç]a[m]?)\b", re.I
+)
 _DIRECT_ROLES = (
-    (re.compile(r"\b(?:ambas\s+as\s+partes|as\s+partes|autor\s+e\s+r[eé]u|requerente\s+e\s+requerid[oa])\b", re.I), "BOTH_PARTIES"),
+    (re.compile(r"\b(?:ambas\s+as\s+partes|(?:as|[àa]s)\s+partes|autor\s+e\s+r[eé]u|requerente\s+e\s+requerid[oa])\b", re.I), "BOTH_PARTIES"),
     (re.compile(r"\b(?:autor[ae]?|requerente|exequente)\b", re.I), "PLAINTIFF"),
     (re.compile(r"\b(?:r[eé]u|r[eé]|requerid[oa]|executad[oa])\b", re.I), "DEFENDANT"),
     (re.compile(r"\b(?:minist[eé]rio\s+p[uú]blico|promotor(?:a)?(?:\s+de\s+justi[cç]a)?)\b", re.I), "PROSECUTOR"),
@@ -51,7 +61,7 @@ _DIRECT_ROLES = (
 )
 _INDIRECT_PARTICIPANT = re.compile(r"\b(?:mencionad[oa]\s+na\s+capa|cadastrad[oa]\s+no\s+polo|indicad[oa]\s+na\s+capa|constante\s+da\s+capa)\b", re.I)
 _ACT_PATTERNS = (
-    (re.compile(r"\b(?:contesta[cç][aã]o|ofere[cç]a\s+defesa|apresente\s+defesa|responda\s+[aà]\s+demanda)\b", re.I), "FILE_DEFENSE"),
+    (re.compile(r"\b(?:contesta.{0,2}o|ofere[cç�]a\s+defesa|apresente\s+defesa|responda\s+[aà]\s+demanda)\b", re.I), "FILE_DEFENSE"),
     (re.compile(r"\b(?:memoriais|alega[cç][oõ]es\s+finais)\b", re.I), "FILE_MEMORIALS"),
     (re.compile(r"\b(?:especifi(?:que|quem)|indiquem?|digam)\b.{0,80}\bprovas?\b", re.I | re.S), "SPECIFY_EVIDENCE"),
     (re.compile(r"\b(?:ap[oó]s|depois\s+de).{0,90}\b(?:medida|dilig[eê]ncia|cumprimento|efetiva[cç][aã]o)\b", re.I | re.S), "MANIFEST_AFTER_MEASURE"),
@@ -88,7 +98,7 @@ def _explicit_term(text: str) -> tuple[int | None, str, str | None]:
     if match:
         value = int(match.group(1))
         raw = _norm(match.group(2))
-        if "util" in raw:
+        if "util" in raw or "uteis" in raw or "�teis" in raw:
             unit = "BUSINESS_DAYS"
         elif "dia" in raw:
             unit = "DAYS"
@@ -175,7 +185,7 @@ def analyze_deadline_text(
     operative = bool(predictions.get("operative_instruction", False))
     if _PARTY_REQUEST.search(excerpt) or _CLERICAL_ONLY.fullmatch(excerpt):
         operative = False
-    elif _JUDICIAL_VERB.search(excerpt):
+    elif _JUDICIAL_VERB.search(excerpt) or (_PARTY_ACTION.search(excerpt) and _TERM.search(excerpt)):
         operative = True
 
     if not operative:
@@ -188,6 +198,10 @@ def analyze_deadline_text(
     term_value, term_unit, term_marker = _explicit_term(excerpt)
     act_type = _act_type(excerpt, predictions.get("procedural_act_type"))
     recipient_role = _direct_role(excerpt) or str(predictions.get("recipient_role") or "UNRESOLVED")
+    # Filing a defense/contestation is structurally an act of the defendant.
+    # Prefer this procedural fact over an uncertain model-head role.
+    if act_type == "FILE_DEFENSE" and _direct_role(excerpt) is None:
+        recipient_role = "DEFENDANT"
     sufficiency = str(predictions.get("context_sufficiency") or "SUFFICIENT")
     antecedent_id: str | None = None
     candidate_antecedents: tuple[str, ...] = ()
@@ -293,12 +307,24 @@ def _catalog_act(output: DeadlineSpecialistOutput, context: Iterable[Mapping[str
     if act == "RESPOND_TO_OPPOSING_SUBMISSION":
         antecedent = " ".join(str(x.get("text") or "") for x in context)
         normalized = _norm(antecedent)
-        if "document" in normalized:
+        features = [x.get("rule_features") for x in context if isinstance(x.get("rule_features"), Mapping)]
+        if any(bool(f.get("is_contestation")) for f in features):
+            if any(bool(f.get("mentions_preliminary")) for f in features):
+                return "REPLY_PRELIMINARY", ("CPC_ART_351_REPLY_PRELIMINARY",)
+            if any(bool(f.get("mentions_new_fact")) for f in features):
+                return "REPLY_NEW_FACT", ("CPC_ART_350_REPLY_NEW_FACT",)
+            # A contestation must never be downgraded to a document response
+            # merely because its summary mentions documents. Without a more
+            # specific art. 350/351 feature, abstain into residual/review path.
+            return "RESIDUAL_PARTY_ACT", ("CPC_ART_218_P3_RESIDUAL",)
+        if any(bool(f.get("document_submission")) for f in features):
             return "DOCUMENT_RESPONSE", ("CPC_ART_437_P1_DOCUMENT_RESPONSE",)
         if "preliminar" in normalized or "art. 337" in normalized or "artigo 337" in normalized:
             return "REPLY_PRELIMINARY", ("CPC_ART_351_REPLY_PRELIMINARY",)
         if any(x in normalized for x in ("impeditivo", "modificativo", "extintivo")):
             return "REPLY_NEW_FACT", ("CPC_ART_350_REPLY_NEW_FACT",)
+        if "documento" in normalized:
+            return "DOCUMENT_RESPONSE", ("CPC_ART_437_P1_DOCUMENT_RESPONSE",)
         return "RESIDUAL_PARTY_ACT", ("CPC_ART_218_P3_RESIDUAL",)
     return act, ()
 
@@ -319,15 +345,33 @@ def resolve_specialist_rule(
     # Restrict candidates to the resolved legal regime before invoking the legal resolver.
     catalog = get_catalog()
     compatible_ids = []
+    compatible_rules = []
     for rule_id in candidates:
         rule = next((r for r in catalog if r["rule_id"] == rule_id), None)
         if rule and str(rule.get("base_regime") or "").upper() in legal_context.applicable_regimes:
             compatible_ids.append(rule_id)
+            compatible_rules.append(rule)
+
+    # A number stated in the order may merely restate a statutory deadline.
+    # When the classified act has a specific compatible rule with the same
+    # duration, keep the observed term on the instruction/obligation but let
+    # the deterministic resolver retain the statutory rule identity.
+    explicit_value = output.explicit_term_value
+    explicit_unit = output.explicit_term_unit
+    statutory_confirmation = (
+        explicit_value is not None
+        and bool(compatible_rules)
+        and any(
+            int(rule.get("term_value") or rule.get("default_term_value") or -1) == explicit_value
+            and rule.get("category") != "JUDICIAL_ORDER"
+            for rule in compatible_rules
+        )
+    )
     return resolve_deadline_rule(
         legal_context=legal_context,
         procedural_act_type=catalog_act or "RESIDUAL_PARTY_ACT",
-        explicit_term_value=output.explicit_term_value,
-        explicit_term_unit=output.explicit_term_unit,
+        explicit_term_value=None if statutory_confirmation else explicit_value,
+        explicit_term_unit=None if statutory_confirmation else explicit_unit,
         candidate_rule_ids=compatible_ids,
         recipient_role=output.recipient_role,
         relevant_date=relevant_date,
@@ -335,24 +379,54 @@ def resolve_specialist_rule(
     )
 
 def deadline_candidate_windows(text: str) -> tuple[str, ...]:
-    """Return compact imperative windows without deciding that they are deadlines."""
+    """Split operative text at sentence and numbered-item boundaries."""
     source = " ".join(str(text or "").split())
     if not source:
         return ()
-    boundaries = [0]
-    boundaries.extend(match.end() for match in re.finditer(r"[.;!?](?:\\s+|$)", source))
+    # Numbered rulings commonly contain several independent determinations in
+    # one sentence. Split before each item marker, then preserve each item as
+    # its own semantic unit.
+    item_starts = [m.start() for m in re.finditer(r"(?:^|\s)(?:\(?\d{1,2}[.)]|[IVXLCDM]{1,6}[.)])\s+", source, re.I)]
+    boundaries = {0, len(source)}
+    boundaries.update(m.end() for m in re.finditer(r"[.;!?](?=\s|$)", source))
+    boundaries.update(item_starts)
+    ordered = sorted(boundaries)
+    segments: list[str] = []
+    for left, right in zip(ordered, ordered[1:]):
+        segment = source[left:right].strip(" .;-")
+        segment = re.sub(r"^(?:\(?\d{1,2}[.)]|[IVXLCDM]{1,6}[.)])\s+", "", segment, flags=re.I)
+        if segment:
+            segments.append(segment)
+
+    # Attach a detached term/date sentence to the immediately preceding
+    # instruction, never across another numbered item or operative command.
+    merged: list[str] = []
+    for segment in segments:
+        if merged and not _JUDICIAL_VERB.search(segment) and (_TERM.search(segment) or _DATE.search(segment)):
+            merged[-1] = f"{merged[-1]}. {segment}"
+        else:
+            merged.append(segment)
+
     windows: list[str] = []
-    for match in _JUDICIAL_VERB.finditer(source):
-        start = max((value for value in boundaries if value <= match.start()), default=0)
-        end_candidates = [value for value in boundaries if value > match.end()]
-        end = end_candidates[0] if end_candidates else min(len(source), match.end() + 480)
-        if end_candidates:
-            next_candidates = [value for value in boundaries if value > end]
-            extended = next_candidates[0] if next_candidates else min(len(source), end + 360)
-            following = source[end:extended]
-            if _TERM.search(following) or _DATE.search(following):
-                end = extended
-        window = source[start:end].strip(" .;-")
-        if window and window not in windows:
-            windows.append(window)
+    for segment in merged:
+        verbs = list(_JUDICIAL_VERB.finditer(segment))
+        if not verbs:
+            # A court can state a deadline declaratively, e.g. "O prazo para
+            # oferta de contestação será de 15 dias úteis".
+            if (_TERM.search(segment) or _DATE.search(segment)) and segment not in windows:
+                windows.append(segment)
+            continue
+        # Multiple determinations within a segment start independent windows.
+        starts = [0] + [m.start() for m in verbs[1:]]
+        ends = starts[1:] + [len(segment)]
+        for start, end in zip(starts, ends):
+            window = segment[start:end].strip(" .;-")
+            if window and window not in windows:
+                windows.append(window)
     return tuple(windows)
+
+
+def is_party_deadline_candidate(text: str) -> bool:
+    """Whether a window contains a party act or an explicit temporal term."""
+    value = str(text or "")
+    return bool(_PARTY_ACTION.search(value) or _TERM.search(value) or _DATE.search(value))

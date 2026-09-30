@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import unicodedata
 from typing import Any, Mapping
@@ -76,7 +77,7 @@ def _summary_rows(db: sqlite3.Connection, process_id: str) -> list[dict[str, Any
                     AND st.eligible=1 AND s.source_hash=st.source_hash
                     AND s.summary_version=(SELECT max(x.summary_version) FROM movement_summaries x WHERE x.movement_id=m.movement_id)"""
     rows = db.execute(
-        f"""SELECT m.movement_id,m.sequence,m.movement_type,m.title,m.actor,m.occurred_at,
+        f"""SELECT m.movement_id,m.sequence,m.movement_type,m.title,m.actor,m.occurred_at,m.payload_json,
                    e.event_id,{summary_sql}
               FROM movements m
               LEFT JOIN process_events e ON e.process_id=m.process_id AND e.source_entity='MOVEMENT' AND e.source_id=m.movement_id
@@ -85,6 +86,78 @@ def _summary_rows(db: sqlite3.Connection, process_id: str) -> list[dict[str, Any
         (process_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+def _movement_folio_range(row: Mapping[str, Any]) -> tuple[int, int] | None:
+    try:
+        payload = json.loads(str(row.get("payload_json") or "{}"))
+    except (TypeError, ValueError):
+        return None
+    values: list[int] = []
+    for component in payload.get("components") or payload.get("documents") or ():
+        if not isinstance(component, Mapping):
+            continue
+        for key in ("folha_inicial", "folha_final", "page_start", "page_end"):
+            raw = component.get(key)
+            if isinstance(raw, int):
+                values.append(raw)
+            elif str(raw or "").isdigit():
+                values.append(int(raw))
+        for page in component.get("pages") or ():
+            if not isinstance(page, Mapping):
+                continue
+            raw = page.get("process_folio_label") or page.get("process_folio")
+            if str(raw or "").isdigit():
+                values.append(int(raw))
+    return (min(values), max(values)) if values else None
+
+
+_FOLIO_REF = re.compile(
+    r"(?:\bfls?\.?\s*|^\s*)(\d{1,6})(?:\s*[/\-–]\s*(\d{1,6}))?\s*(?=:|\b)",
+    re.I,
+)
+
+
+def _referenced_folio_range(text: str) -> tuple[int, int] | None:
+    match = _FOLIO_REF.search(text or "")
+    if not match:
+        return None
+    start = int(match.group(1))
+    end = int(match.group(2) or start)
+    return (min(start, end), max(start, end))
+
+
+def _movement_rule_features(db: sqlite3.Connection, row: Mapping[str, Any]) -> dict[str, bool]:
+    label = _norm(" ".join(str(row.get(k) or "") for k in ("movement_type", "title", "summary_text")))
+    features = {
+        "is_contestation": "contestacao" in label,
+        "mentions_preliminary": "preliminar" in label or "art. 337" in label or "artigo 337" in label,
+        "mentions_new_fact": any(x in label for x in ("impeditivo", "modificativo", "extintivo")),
+        "document_submission": any(x in label for x in ("juntada", "juntando", "documentos", "documento novo")),
+    }
+    if not features["is_contestation"] or features["mentions_preliminary"]:
+        return features
+    # For a contestation, inspect the canonical extracted pages only to derive
+    # compact rule features; full pleading text is never persisted in provenance.
+    try:
+        payload = json.loads(str(row.get("payload_json") or "{}"))
+    except (TypeError, ValueError):
+        return features
+    document_ids: list[str] = []
+    for component in payload.get("components") or payload.get("documents") or ():
+        if isinstance(component, Mapping) and component.get("document_id"):
+            document_ids.append(str(component["document_id"]))
+    if not document_ids:
+        return features
+    placeholders = ",".join("?" for _ in document_ids)
+    parts = db.execute(
+        f"SELECT content FROM pages WHERE document_id IN ({placeholders}) ORDER BY document_id,page_number",
+        document_ids,
+    ).fetchall()
+    normalized = _norm(" ".join(str(part[0] or "") for part in parts))
+    features["mentions_preliminary"] = "preliminar" in normalized or "art. 337" in normalized or "artigo 337" in normalized
+    features["mentions_new_fact"] = any(x in normalized for x in ("impeditivo", "modificativo", "extintivo"))
+    return features
+
 
 def _current_origin(db: sqlite3.Connection, obligation: Mapping[str, Any]) -> dict[str, Any] | None:
     return db.execute(
@@ -128,11 +201,34 @@ def _antecedent_context(
         candidates.append({
             "type": "ANTECEDENT_CANDIDATE", "event_id": row.get("event_id"),
             "movement_id": row["movement_id"], "actor_role": role, "text": text,
-            "sequence": row["sequence"],
+            "sequence": row["sequence"], "movement_type": row.get("movement_type"),
+            "title": row.get("title"), "folio_range": _movement_folio_range(row),
+            "rule_features": _movement_rule_features(db, row),
         })
     if not candidates:
         return []
     query = str(origin["source_excerpt"] or origin["action_text"] or "")
+    referenced = _referenced_folio_range(query)
+    if referenced:
+        start, end = referenced
+        folio_matches = [
+            item for item in candidates
+            if item.get("folio_range")
+            and not (item["folio_range"][1] < start or item["folio_range"][0] > end)
+        ]
+        if folio_matches:
+            # Explicit folio references are documentary evidence and outrank
+            # semantic similarity. Preserve multiple matching party acts if the
+            # referenced range is genuinely ambiguous.
+            return [dict(item, retrieval_method="EXPLICIT_FOLIO_REFERENCE") for item in folio_matches[:max_candidates]]
+    normalized_query = _norm(query)
+    if "contestacao" in normalized_query:
+        contestations = [
+            item for item in candidates
+            if bool((item.get("rule_features") or {}).get("is_contestation"))
+        ]
+        if len(contestations) == 1:
+            return [dict(contestations[0], retrieval_method="EXPLICIT_ACT_REFERENCE")]
     qvec = generate_embedding_onnx(query, is_query=True)
     vectors = generate_embeddings_batch_onnx([item["text"] for item in candidates[:max_candidates * 3]])
     scored = []
@@ -166,6 +262,9 @@ def _resolution_method(output: Any) -> str:
 
 def _candidate_rules(output: Any, rule_result: Mapping[str, Any]) -> list[str]:
     if output.explicit_term_value is not None and output.explicit_term_unit not in {"UNSPECIFIED", "DATE_CERTAIN"}:
+        resolved = str(rule_result.get("resolved_rule_id") or "")
+        if resolved and resolved != "JUDICIAL_EXPLICIT_TERM":
+            return [resolved]
         return ["JUDICIAL_EXPLICIT_TERM"]
     explanation = rule_result.get("explanation") or {}
     candidates = explanation.get("candidate_rule_ids") or []
@@ -178,12 +277,35 @@ def enrich_process_obligations(db: sqlite3.Connection, process_id: str) -> dict[
     resolved = review = nonoperative = 0
     for obligation in obligations:
         instruction = db.execute(
-            "SELECT source_excerpt,action_text,source_event_id,source_entity,source_id FROM deadline_instructions WHERE instruction_id=?",
+            "SELECT instruction_id,source_excerpt,action_text,source_event_id,source_entity,source_id FROM deadline_instructions WHERE instruction_id=?",
             (obligation["originating_instruction_id"],),
         ).fetchone()
         if not instruction:
             continue
-        text = str(instruction["source_excerpt"] or instruction["action_text"] or obligation.get("action_text") or "")
+
+        # A uniquely matched DJEN publication is cleaner semantic evidence than
+        # a wide PDF window/header, while the Movement remains the canonical
+        # origin of the obligation. Prefer that support for classification.
+        semantic_instruction = instruction
+        support_ids = list(obligation.get("supporting_instruction_ids") or ())
+        publication_supports = []
+        if support_ids:
+            placeholders = ",".join("?" for _ in support_ids)
+            publication_supports = db.execute(
+                f"""SELECT instruction_id,source_excerpt,action_text,source_event_id,source_entity,source_id
+                      FROM deadline_instructions
+                     WHERE instruction_id IN ({placeholders}) AND source_entity='PUBLICATION'""",
+                support_ids,
+            ).fetchall()
+        if len(publication_supports) == 1:
+            semantic_instruction = publication_supports[0]
+
+        text = str(
+            semantic_instruction["source_excerpt"]
+            or semantic_instruction["action_text"]
+            or obligation.get("action_text")
+            or ""
+        )
         context: list[dict[str, Any]] = []
         if any(marker in _norm(text) for marker in ("parte contraria", "parte adversa", "polo oposto", "ex advers")):
             context = _antecedent_context(db, process_id, obligation)
@@ -208,6 +330,11 @@ def enrich_process_obligations(db: sqlite3.Connection, process_id: str) -> dict[
                 "legal_context": legal_context.as_dict() if legal_context else None,
                 "legal_context_provenance": legal_context_provenance,
                 "rule_resolution": rule_result,
+                "semantic_evidence": {
+                    "instruction_id": semantic_instruction["instruction_id"],
+                    "source_entity": semantic_instruction["source_entity"],
+                    "source_id": semantic_instruction["source_id"],
+                },
             }
         }
         update_obligation_resolution(

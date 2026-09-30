@@ -328,14 +328,14 @@ def extract_for_movement(db: sqlite3.Connection, movement_id: str) -> list[dict[
     # The legacy regex layer remains authoritative for explicit terms. The
     # semantic specialist adds operative candidates that have no numeric term
     # without changing the canonical source text or PDF pipeline.
-    from core.documentos.deadline_specialist_v1 import analyze_deadline_text, deadline_candidate_windows
+    from core.documentos.deadline_specialist_v1 import analyze_deadline_text, deadline_candidate_windows, is_party_deadline_candidate
     existing_excerpts = {_norm(item.get("source_excerpt")) for item in candidates}
     for window in deadline_candidate_windows(text):
         normalized_window = _norm(window)
         if any(normalized_window in excerpt or excerpt in normalized_window for excerpt in existing_excerpts if excerpt):
             continue
         output = analyze_deadline_text(window)
-        if not output.operative_instruction:
+        if not output.operative_instruction or not is_party_deadline_candidate(window):
             continue
         candidates.append({
             "process_id": process_id,
@@ -408,7 +408,7 @@ def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, An
 def materialize_publication_instructions(db: sqlite3.Connection, process_id: str) -> dict[str, Any]:
     """Materialize semantic instructions anchored directly in DJEN publications."""
     migrate_connection(db)
-    from core.documentos.deadline_specialist_v1 import analyze_deadline_text, deadline_candidate_windows
+    from core.documentos.deadline_specialist_v1 import analyze_deadline_text, deadline_candidate_windows, is_party_deadline_candidate
 
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='publications'").fetchone():
         return {"process_id": process_id, "materialized": 0, "deleted": 0}
@@ -424,7 +424,7 @@ def materialize_publication_instructions(db: sqlite3.Connection, process_id: str
     for row in rows:
         for window in deadline_candidate_windows(row["full_text"] or ""):
             output = analyze_deadline_text(window)
-            if not output.operative_instruction:
+            if not output.operative_instruction or not is_party_deadline_candidate(window):
                 continue
             instruction_id = create_from_event(
                 db, process_id=process_id, source_event_id=row["event_id"],

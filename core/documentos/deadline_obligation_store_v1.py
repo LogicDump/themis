@@ -367,11 +367,35 @@ def _build_obligation(process_id: str, origin: dict[str, Any], supporting: list[
 def materialize_process(db: sqlite3.Connection, process_id: str) -> dict[str, Any]:
     migrate_connection(db)
     instructions = _instructions_with_context(db, process_id)
+
+    # The same judicial order may be present both in the autos (MOVEMENT) and
+    # in DJEN (PUBLICATION). Reuse the deterministic support matcher to merge
+    # only a publication that proves exactly one Movement-backed instruction.
+    # Publication-only or ambiguous instructions remain independent origins.
+    movement_origins = [
+        item for item in instructions
+        if item["source_role"] == "ORIGINATING_ORDER" and item.get("source_entity") == "MOVEMENT"
+    ]
+    cross_source_supports: dict[str, str] = {}
+    for publication in [item for item in instructions if item.get("source_entity") == "PUBLICATION"]:
+        matches = [
+            origin for origin in movement_origins
+            if _supports(origin, publication, origin_sequence=0, candidate_sequence=1)
+        ]
+        if len(matches) == 1:
+            publication["source_role"] = "PUBLICATION"
+            cross_source_supports[publication["instruction_id"]] = matches[0]["instruction_id"]
+
     origins = [item for item in instructions if item["source_role"] == "ORIGINATING_ORDER"]
     supports = [item for item in instructions if item["source_role"] in {"COMMUNICATION", "PUBLICATION", "CERTIFICATION", "REPRODUCTION"}]
     desired: list[dict[str, Any]] = []
     support_map: dict[str, list[dict[str, Any]]] = {item["instruction_id"]: [] for item in origins}
+
     for candidate in supports:
+        mapped_origin_id = cross_source_supports.get(candidate["instruction_id"])
+        if mapped_origin_id and mapped_origin_id in support_map:
+            support_map[mapped_origin_id].append(candidate)
+            continue
         matches = [origin for origin in origins if _supports(origin, candidate, origin_sequence=origin["sequence"], candidate_sequence=candidate["sequence"])]
         if len(matches) == 1:
             support_map[matches[0]["instruction_id"]].append(candidate)
