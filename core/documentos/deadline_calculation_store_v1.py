@@ -336,6 +336,41 @@ def _remove_obligation_projections(db: sqlite3.Connection, *, process_id: str, o
             db.execute("DELETE FROM deadlines WHERE deadline_id=?", (row["deadline_id"],))
 
 
+def _deadline_title(obligation: Mapping[str, Any], result: Mapping[str, Any], rule: Mapping[str, Any]) -> str:
+    role_labels = {
+        "PLAINTIFF": "requerente",
+        "DEFENDANT": "requerida",
+        "BOTH_PARTIES": "partes",
+        "PUBLIC_PROSECUTOR": "Ministério Público",
+    }
+    role = role_labels.get(str(obligation.get("recipient_role") or "").upper(), "destinatário")
+    rule_id = str(result.get("resolved_rule_id") or "")
+    procedural = [x for x in rule.get("procedural_act_types", rule.get("applicable_act_types", [])) if x != "*"]
+    act = procedural[0] if procedural else ""
+
+    if rule_id == "CPC_ART_335_CONTESTATION" or act == "CONTESTATION":
+        return f"Contestação — {role}"
+    if rule_id == "CPC_ART_351_REPLY_PRELIMINARY" or act == "REPLY_PRELIMINARY":
+        return f"Réplica à contestação — {role}"
+    if rule_id == "CPC_ART_350_REPLY_NEW_FACT" or act == "REPLY_NEW_FACT":
+        return f"Manifestação sobre fatos novos — {role}"
+    if rule_id == "CPC_ART_437_P1_DOCUMENT_RESPONSE" or act == "DOCUMENT_RESPONSE":
+        return f"Manifestação sobre documentos — {role}"
+
+    value = result.get("term_value")
+    unit = str(result.get("term_unit") or "")
+    if isinstance(value, int) and value > 0:
+        if unit == "BUSINESS_DAYS":
+            return f"Prazo judicial de {value} dias úteis — {role}"
+        if unit in {"DAYS", "CONTINUOUS_DAYS"}:
+            return f"Prazo judicial de {value} dias — {role}"
+        if unit == "HOURS":
+            return f"Prazo judicial de {value} horas — {role}"
+        if unit == "MONTHS":
+            return f"Prazo judicial de {value} meses — {role}"
+    return f"Prazo processual — {role}"
+
+
 def _project_deadline(
     db: sqlite3.Connection,
     *,
@@ -368,7 +403,7 @@ def _project_deadline(
     }
     procedure_types = [x for x in rule.get("procedural_act_types", rule.get("applicable_act_types", [])) if x != "*"]
     deadline_type = procedure_types[0] if procedure_types else rule.get("category") or result.get("resolved_rule_id")
-    title = obligation.get("action_text") or rule.get("name") or result.get("resolved_rule_id") or "Prazo processual"
+    title = _deadline_title(obligation, result, rule)
     term = _json({"value": result.get("term_value"), "unit": result.get("term_unit"),
                   "counting_policy_id": result.get("counting_policy_id"),
                   "counting_policy_version": result.get("counting_policy_version")})
