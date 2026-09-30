@@ -25864,6 +25864,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	});
 	const [overviews, setOverviews] = useState({});
 	const [movements, setMovements] = useState({});
+	const [movementOrder, setMovementOrder] = useState(() => ctx.storage.get("workspace.movements.order", "asc"));
 	const [movementSummaries, setMovementSummaries] = useState({});
 	const [summaryLoading, setSummaryLoading] = useState({});
 	const [summaryErrors, setSummaryErrors] = useState({});
@@ -26265,6 +26266,9 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		ctx.storage.set("workspace.process.view", activeSection);
 	}, [ctx, activeSection]);
 	useEffect(() => {
+		ctx.storage.set("workspace.movements.order", movementOrder);
+	}, [ctx, movementOrder]);
+	useEffect(() => {
 		if (pdfView?.processId && Number.isInteger(pdfView.pageNumber)) ctx.storage.set("workspace.pdf.current", {
 			processId: pdfView.processId,
 			pageNumber: pdfView.pageNumber
@@ -26336,17 +26340,27 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 			});
 			if (targetPage) targetKey = sourcePageKey(targetPage);
 		} else targetKey = savedReading?.pageKey;
-		const pageElement = targetKey ? autosPageRefs.current[targetKey] : null;
 		const restoreKey = `${selectedPid}:${targetKey || "start"}:${navTarget?.timestamp || ""}`;
-		const frameId = requestAnimationFrame(() => {
-			if (autosRestoreKeyRef.current === restoreKey || !autosScrollRef.current) return;
-			if (targetKey && !pageElement) return;
-			if (pageElement && autosScrollRef.current) {
+		let cancelled = false;
+		let frameId = null;
+		let attempts = 0;
+		const tryRestore = () => {
+			if (cancelled || autosRestoreKeyRef.current === restoreKey || !autosScrollRef.current) return;
+			const pageElement = targetKey ? autosPageRefs.current[targetKey] : null;
+			if (targetKey && !pageElement) {
+				if (attempts++ < 180) frameId = requestAnimationFrame(tryRestore);
+				return;
+			}
+			if (pageElement) {
 				scrollContainerToElement(pageElement, autosScrollRef.current, isNav ? 0 : savedReading?.offset || 0);
 			} else if (!isNav) autosScrollRef.current.scrollTop = 0;
 			autosRestoreKeyRef.current = restoreKey;
-		});
-		return () => cancelAnimationFrame(frameId);
+		};
+		frameId = requestAnimationFrame(tryRestore);
+		return () => {
+			cancelled = true;
+			if (frameId !== null) cancelAnimationFrame(frameId);
+		};
 	}, [
 		ctx,
 		activeSection,
@@ -26780,6 +26794,16 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	};
 	const currentOverview = overviews[selectedPid] || null;
 	const currentMovements = movements[selectedPid] || [];
+	const orderedMovements = useMemo(() => [...currentMovements].sort((a, b) => {
+		const aSeq = Number(a.sequence);
+		const bSeq = Number(b.sequence);
+		const aHasSeq = Number.isFinite(aSeq);
+		const bHasSeq = Number.isFinite(bSeq);
+		let cmp = 0;
+		if (aHasSeq && bHasSeq) cmp = aSeq - bSeq;
+		else cmp = String(a.occurred_at || a.source_datetime || "").localeCompare(String(b.occurred_at || b.source_datetime || ""));
+		return movementOrder === "desc" ? -cmp : cmp;
+	}), [currentMovements, movementOrder]);
 	const currentProcess = processes.find((process) => (process.process_id || process.id) === selectedPid) || null;
 	const selectedSummaryStatus = summaryStatuses[selectedPid] || null;
 	const selectedSummaryJob = processSummaryJob?.process_id === selectedPid ? processSummaryJob : movementAnalysisJobFromStatus(selectedSummaryStatus);
@@ -27296,6 +27320,12 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												children: [jsxs("div", {
 													className: "flex items-center gap-2",
 													children: [
+														jsx(PanelAction, {
+															icon: movementOrder === "desc" ? "arrow-down" : "arrow-up",
+															onClick: () => setMovementOrder((order) => order === "desc" ? "asc" : "desc"),
+															title: movementOrder === "desc" ? "Mais recentes primeiro" : "Mais antigos primeiro",
+															children: movementOrder === "desc" ? "Recentes primeiro" : "Antigos primeiro"
+														}),
 														jsx("span", {
 															className: "text-[0.68rem] text-muted-foreground",
 															children: selectedSummaryStatusReady ? `${selectedSummaryStatus?.v2_completed ?? 0}/${v2EligibleTotal} resumos · ${v2PendingTotal} pendentes` : summaryStatusError?.pid === selectedPid && summaryStatusError.epoch === processSelectionRef.current.epoch ? "Falha ao carregar estado dos resumos" : "Carregando estado dos resumos…"
@@ -27324,7 +27354,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 											icon: pipelineRunning ? "clock" : pipelineStatus === "ERROR" ? "error" : "clock",
 											title: pipelineRunning ? "Sincronização em andamento" : pipelineStatus === "ERROR" ? "Falha na sincronização" : "Nenhuma movimentação",
 											description: pipelineRunning ? currentProcess?.pipeline_progress?.message || "Os documentos estão sendo recebidos e processados. As movimentações aparecerão ao término da sincronização." : pipelineStatus === "ERROR" ? currentProcess?.pipeline_error || "O processamento dos documentos falhou. Tente sincronizar novamente após corrigir o problema." : "Não foram encontradas movimentações processuais no histórico."
-										}) : currentMovements.map((mov, idx) => renderMovementItem(mov, idx, openAutosAtMovementPage, isMovementExpanded(mov, idx), () => toggleMovementExpanded(mov, idx), movementSummaries[selectedPid]?.[mov.movement_id] || null, Boolean(summaryLoading[mov.movement_id]), summaryErrors[mov.movement_id] || null, () => requestMovementSummary(mov), expandedMovementSummaries[mov.movement_id] ?? true, () => toggleMovementSummary(mov.movement_id), processSummaryJob?.process_id === selectedPid && processSummaryJob?.status === "RUNNING"))]
+										}) : orderedMovements.map((mov, idx) => renderMovementItem(mov, idx, openAutosAtMovementPage, isMovementExpanded(mov, idx), () => toggleMovementExpanded(mov, idx), movementSummaries[selectedPid]?.[mov.movement_id] || null, Boolean(summaryLoading[mov.movement_id]), summaryErrors[mov.movement_id] || null, () => requestMovementSummary(mov), expandedMovementSummaries[mov.movement_id] ?? true, () => toggleMovementSummary(mov.movement_id), processSummaryJob?.process_id === selectedPid && processSummaryJob?.status === "RUNNING"))]
 									})]
 								}),
 								jsxs("div", {
