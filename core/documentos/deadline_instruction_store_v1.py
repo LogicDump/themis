@@ -312,7 +312,14 @@ def extract_for_movement(db: sqlite3.Connection, movement_id: str) -> list[dict[
     process_id, text, pages = source
     movement_row = db.execute("SELECT movement_type FROM movements WHERE movement_id=?", (movement_id,)).fetchone()
     movement_type = str(movement_row["movement_type"] or "") if movement_row else ""
-    non_determinative = bool(re.search(r"peti|contesta|manifesta|parecer", movement_type, re.IGNORECASE))
+    # Only process-native judicial acts may originate a deadline from Autos.
+    # Petitions, exhibits, certificates, letters and copied external rulings can
+    # contain imperative/legal language but are evidence/support, not a new order
+    # of the current court. Publication-origin instructions remain independent.
+    judicial_origin = bool(re.search(r"despacho|decis|senten|ato\s+ordin", _norm(movement_type), re.IGNORECASE))
+    if not judicial_origin:
+        return []
+    non_determinative = False
     _, source_hash = source_text_and_hash(db, movement_id)
     candidates: list[dict[str, Any]] = []
     occupied: list[tuple[int, int]] = []

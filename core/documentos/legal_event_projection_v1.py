@@ -17,7 +17,9 @@ O Core retorna estritamente dados de domínio limpos, sem propriedades visuais
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +208,62 @@ def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenan
         "counted_days_label": ", ".join(counted_days) or None,
         "excluded_days_label": ", ".join(excluded_days) or None,
         "legal_basis_label": " ".join(legal_parts) or None,
+    }
+
+
+def _norm_match_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _publication_autos_target(
+    publication_text: str | None,
+    page_rows: list[sqlite3.Row],
+    *,
+    process_id: str,
+) -> dict[str, Any] | None:
+    normalized = _norm_match_text(publication_text)
+    if len(normalized) < 40:
+        return None
+    chunks = [
+        chunk.strip()
+        for chunk in re.split(r"[.;]", normalized)
+        if len(chunk.strip()) >= 35
+    ]
+    probes = sorted(chunks, key=len, reverse=True)[:5]
+    if not probes:
+        probes = [normalized[:160]]
+
+    scored: list[tuple[int, sqlite3.Row]] = []
+    for page in page_rows:
+        page_text = _norm_match_text(page["content"])
+        if not page_text:
+            continue
+        score = 0
+        for probe in probes:
+            if probe[:140] and probe[:140] in page_text:
+                score += 3
+            elif len(probe) >= 80 and probe[:80] in page_text:
+                score += 2
+            elif len(probe) >= 55 and probe[:55] in page_text:
+                score += 1
+        if score:
+            scored.append((score, page))
+
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], str(item[1]["process_folio"] or ""), item[1]["page_number"]))
+    best_score = scored[0][0]
+    best = [item for item in scored if item[0] == best_score]
+    if best_score < 3 or len(best) != 1:
+        return None
+    page = best[0][1]
+    return {
+        "process_id": process_id,
+        "document_id": page["document_id"],
+        "pdf_page": page["page_number"],
+        "process_folio": str(page["process_folio"]) if page["process_folio"] is not None else None,
     }
 
 
@@ -469,10 +527,21 @@ class LegalEventProjection:
         query += " ORDER BY coalesce(published_on, available_on), publication_id"
 
         events: list[dict[str, Any]] = []
+        page_rows_by_process: dict[str, list[sqlite3.Row]] = {}
+        if _has_table(db, "pages"):
+            page_query = "SELECT p.document_id,p.page_number,p.process_folio,p.content,d.process_id FROM pages p JOIN documents d ON d.document_id=p.document_id"
+            for page in db.execute(page_query).fetchall():
+                page_rows_by_process.setdefault(str(page["process_id"]), []).append(page)
+
         for r in db.execute(query, params).fetchall():
             published_on = r["published_on"]
             available_on = r["available_on"]
             relevant_at = published_on or available_on
+            autos_target = _publication_autos_target(
+                r["full_text"],
+                page_rows_by_process.get(str(r["process_id"]), []),
+                process_id=str(r["process_id"]),
+            )
             events.append({
                 "id": f"publication:{r['publication_id']}",
                 "kind": "PUBLICATION",
@@ -498,6 +567,7 @@ class LegalEventProjection:
                 "recipients": _json_or_default(r["recipients_json"], []),
                 "recipient_lawyers": _json_or_default(r["recipient_lawyers_json"], []),
                 "source_url": r["source_url"],
+                "autos_target": autos_target,
                 "provenance": _json_or_default(r["provenance_json"], {}),
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],

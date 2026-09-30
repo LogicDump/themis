@@ -25229,6 +25229,16 @@ function adaptLegalEventToUI(evt) {
 			value: evt.status
 		});
 	}
+	if (processo && !meta.some((row) => row.action === "autos")) {
+		const autosTarget = evt.autos_target || evt.origin_autos_target || { process_id: processo };
+		const folio = autosTarget?.process_folio;
+		meta.push({
+			label: "Autos",
+			value: folio ? "Abrir Autos — fl. " + folio : "Abrir Autos",
+			action: "autos",
+			target: autosTarget
+		});
+	}
 	return {
 		id: evt.id,
 		raw: evt,
@@ -26314,14 +26324,18 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		const rendered = visibleAutosPages[selectedPid] || 0;
 		if (activeSection !== "autos" || rendered === 0 || pages.length === 0) return void 0;
 		const savedReading = ctx.storage.get("workspace.autos.reading", {})[selectedPid];
-		const isNav = navTarget?.process_id === selectedPid && (navTarget.document_id || navTarget.pdf_page);
-		const targetKey = isNav ? Object.keys(autosPageRefs.current).find((k) => {
-			if (navTarget.document_id && k.startsWith(navTarget.document_id)) {
-				if (navTarget.pdf_page && k.endsWith(`:${navTarget.pdf_page}`)) return true;
-			}
-			if (navTarget.pdf_page && k.endsWith(`:${navTarget.pdf_page}`)) return true;
-			return false;
-		}) : savedReading?.pageKey;
+		const isNav = navTarget?.process_id === selectedPid && (navTarget.document_id || navTarget.pdf_page || navTarget.process_folio);
+		let targetKey = null;
+		if (isNav) {
+			const targetPage = pages.find((page) => {
+				const sref = page.source_ref || {};
+				if (navTarget.document_id && sref.document_id !== navTarget.document_id) return false;
+				if (navTarget.process_folio != null && String(sref.process_folio) === String(navTarget.process_folio)) return true;
+				if (navTarget.pdf_page != null && Number(sref.pdf_page) === Number(navTarget.pdf_page)) return true;
+				return Boolean(navTarget.document_id && sref.document_id === navTarget.document_id);
+			});
+			if (targetPage) targetKey = sourcePageKey(targetPage);
+		} else targetKey = savedReading?.pageKey;
 		const pageElement = targetKey ? autosPageRefs.current[targetKey] : null;
 		const restoreKey = `${selectedPid}:${targetKey || "start"}:${navTarget?.timestamp || ""}`;
 		const frameId = requestAnimationFrame(() => {
@@ -26329,12 +26343,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 			if (targetKey && !pageElement) return;
 			if (pageElement && autosScrollRef.current) {
 				scrollContainerToElement(pageElement, autosScrollRef.current, isNav ? 0 : savedReading?.offset || 0);
-				if (isNav) {
-					pageElement.classList.add("ring-2", "ring-primary/70", "rounded-md", "transition-all");
-					setTimeout(() => {
-						pageElement.classList.remove("ring-2", "ring-primary/70");
-					}, 2500);
-				}
 			} else if (!isNav) autosScrollRef.current.scrollTop = 0;
 			autosRestoreKeyRef.current = restoreKey;
 		});

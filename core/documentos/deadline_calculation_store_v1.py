@@ -338,8 +338,8 @@ def _remove_obligation_projections(db: sqlite3.Connection, *, process_id: str, o
 
 def _deadline_title(obligation: Mapping[str, Any], result: Mapping[str, Any], rule: Mapping[str, Any]) -> str:
     role_labels = {
-        "PLAINTIFF": "requerente",
-        "DEFENDANT": "requerida",
+        "PLAINTIFF": "polo ativo",
+        "DEFENDANT": "polo passivo",
         "BOTH_PARTIES": "partes",
         "PUBLIC_PROSECUTOR": "Ministério Público",
     }
