@@ -27886,7 +27886,7 @@ function ThemisShell({ ctx }) {
 	const [filterProcess, setFilterProcess] = useState("todos");
 	const [filterType, setFilterType] = useState("todos");
 	const [search, setSearch] = useState("");
-	const [listWidthPct, setListWidthPct] = useState(30);
+	const [listWidthPct, setListWidthPct] = useState(38);
 	const [isDragging, setIsDragging] = useState(false);
 	const splitContainerRef = useRef(null);
 	const handleNavigateAutos = (target) => {
@@ -28130,7 +28130,7 @@ function ThemisShell({ ctx }) {
 		window.addEventListener("pointerup", handlePointerUp);
 	};
 	const handleDoubleClick = () => {
-		setListWidthPct(30);
+		setListWidthPct(38);
 	};
 	const selectedDjenState = useMemo(() => {
 		const states = Array.isArray(djenStatus?.processes) ? djenStatus.processes : [];
@@ -28276,7 +28276,7 @@ function ThemisShell({ ctx }) {
 												className: cn("shrink-0", evt.urgencyClass || (active ? "text-foreground/85" : "text-muted-foreground/75"))
 											}),
 											jsx("span", {
-												className: cn("w-24 shrink-0 font-mono text-[0.68rem] tabular-nums", evt.urgencyClass || "text-muted-foreground/80"),
+												className: cn("w-20 shrink-0 font-mono text-[0.68rem] tabular-nums", evt.urgencyClass || "text-muted-foreground/80"),
 												children: dateLabel
 											}),
 											jsx("span", {
@@ -28340,7 +28340,7 @@ function ThemisShell({ ctx }) {
 								}),
 								selectedEvent.meta && selectedEvent.meta.length > 0 ? jsxs("div", {
 									className: "shrink-0",
-									children: [jsx(PanelSectionLabel, { children: selectedEvent.tipo === "prazo" ? "Trilha do prazo" : "Metadados & Identificação" }), jsx(PanelMeta, { rows: selectedMetaRows })]
+									children: [jsx(PanelSectionLabel, { children: selectedEvent.tipo === "prazo" ? "Trilha do prazo" : "Metadados & Identificação" }), jsx("div", { className: "space-y-1 text-[0.7rem]", children: selectedMetaRows.map((row, index) => jsxs("div", { className: "grid items-baseline gap-x-2", style: { gridTemplateColumns: "10rem minmax(0, 1fr)" }, children: [jsx("span", { className: "whitespace-nowrap text-muted-foreground/55", children: row.label }), jsx("span", { className: "min-w-0 break-words text-foreground/85", children: row.value })] }, `${row.label}-${index}`)) })]
 								}) : null,
 								jsxs("div", {
 									className: "flex min-h-0 flex-1 flex-col pt-1",
