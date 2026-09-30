@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 CONTEXT_SUFFICIENCY = {"SUFFICIENT", "NEEDS_CONTEXT", "AMBIGUOUS_REVIEW"}
+CONTEXT_PURPOSES = {"SEMANTIC_RESOLUTION", "TRIGGER_RESOLUTION", "RULE_RESOLUTION"}
 CONTEXT_NEEDS = {
     "ANTECEDENT_PLEADING",
     "COMMUNICATION_EVENT",
@@ -23,12 +24,15 @@ TERM_UNITS = {"DAYS", "BUSINESS_DAYS", "HOURS", "MONTHS", "DATE_CERTAIN", "UNSPE
 class ContextRequest:
     kind: str
     reason: str
+    purpose: str = "SEMANTIC_RESOLUTION"
     query_hint: str | None = None
     candidate_event_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in CONTEXT_NEEDS:
             raise ValueError(f"context kind inválido: {self.kind}")
+        if self.purpose not in CONTEXT_PURPOSES:
+            raise ValueError(f"context purpose inválido: {self.purpose}")
         if not self.reason.strip():
             raise ValueError("context request exige reason")
 
@@ -36,6 +40,7 @@ class ContextRequest:
         return {
             "kind": self.kind,
             "reason": self.reason,
+            "purpose": self.purpose,
             "query_hint": self.query_hint,
             "candidate_event_ids": list(self.candidate_event_ids),
         }
@@ -49,8 +54,10 @@ class DeadlineSpecialistOutput:
     action_text: str | None = None
     recipient_text: str | None = None
     recipient_role: str = "UNRESOLVED"
+    recipient_participant_ids: tuple[str, ...] = ()
     explicit_term_value: int | None = None
     explicit_term_unit: str = "UNSPECIFIED"
+    explicit_term_date: str | None = None
     trigger_text: str | None = None
     antecedent_source_event_id: str | None = None
     candidate_antecedent_event_ids: tuple[str, ...] = ()
@@ -69,10 +76,11 @@ class DeadlineSpecialistOutput:
             raise ValueError("explicit_term_unit inválido")
         if self.explicit_term_value is not None and self.explicit_term_value <= 0:
             raise ValueError("explicit_term_value deve ser positivo")
-        if self.context_sufficiency == "SUFFICIENT" and self.context_requests:
-            raise ValueError("SUFFICIENT não pode pedir contexto adicional")
-        if self.context_sufficiency == "NEEDS_CONTEXT" and not self.context_requests:
-            raise ValueError("NEEDS_CONTEXT exige pelo menos um context_request")
+        semantic_requests = tuple(item for item in self.context_requests if item.purpose == "SEMANTIC_RESOLUTION")
+        if self.context_sufficiency == "SUFFICIENT" and semantic_requests:
+            raise ValueError("SUFFICIENT não pode pedir contexto de resolução semântica")
+        if self.context_sufficiency == "NEEDS_CONTEXT" and not semantic_requests:
+            raise ValueError("NEEDS_CONTEXT exige context_request de SEMANTIC_RESOLUTION")
         if self.antecedent_source_event_id and self.antecedent_source_event_id in self.candidate_antecedent_event_ids:
             raise ValueError("antecedente resolvido não deve permanecer como candidato")
         for name, value in self.confidence.items():
@@ -81,7 +89,12 @@ class DeadlineSpecialistOutput:
 
     @property
     def review_required(self) -> bool:
+        """Compatibility alias: semantic review, not downstream trigger/rule lookup."""
         return self.context_sufficiency != "SUFFICIENT"
+
+    @property
+    def downstream_context_required(self) -> bool:
+        return any(item.purpose in {"TRIGGER_RESOLUTION", "RULE_RESOLUTION"} for item in self.context_requests)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -91,8 +104,10 @@ class DeadlineSpecialistOutput:
             "action_text": self.action_text,
             "recipient_text": self.recipient_text,
             "recipient_role": self.recipient_role,
+            "recipient_participant_ids": list(self.recipient_participant_ids),
             "explicit_term_value": self.explicit_term_value,
             "explicit_term_unit": self.explicit_term_unit,
+            "explicit_term_date": self.explicit_term_date,
             "trigger_text": self.trigger_text,
             "antecedent_source_event_id": self.antecedent_source_event_id,
             "candidate_antecedent_event_ids": list(self.candidate_antecedent_event_ids),
@@ -105,8 +120,8 @@ class DeadlineSpecialistOutput:
         }
 
 
-def context_request_kinds(output: DeadlineSpecialistOutput) -> set[str]:
-    return {item.kind for item in output.context_requests}
+def context_request_keys(output: DeadlineSpecialistOutput) -> set[tuple[str, str]]:
+    return {(item.purpose, item.kind) for item in output.context_requests}
 
 
 def score_specialist_output(expected: DeadlineSpecialistOutput,
@@ -114,12 +129,12 @@ def score_specialist_output(expected: DeadlineSpecialistOutput,
     """Deterministic benchmark scorer. No legal inference happens here."""
     fields = (
         "operative_instruction", "context_sufficiency", "procedural_act_type",
-        "recipient_role", "explicit_term_value", "explicit_term_unit",
+        "recipient_role", "recipient_participant_ids", "explicit_term_value", "explicit_term_unit", "explicit_term_date",
         "antecedent_source_event_id", "model_preferred_rule_id",
     )
     field_results = {name: getattr(expected, name) == getattr(actual, name) for name in fields}
-    expected_needs = context_request_kinds(expected)
-    actual_needs = context_request_kinds(actual)
+    expected_needs = context_request_keys(expected)
+    actual_needs = context_request_keys(actual)
     need_recall = 1.0 if not expected_needs else len(expected_needs & actual_needs) / len(expected_needs)
     need_precision = 1.0 if not actual_needs else len(expected_needs & actual_needs) / len(actual_needs)
     dangerous_false_resolution = (
