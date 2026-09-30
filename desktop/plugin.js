@@ -27886,7 +27886,7 @@ function ThemisShell({ ctx }) {
 	const [filterProcess, setFilterProcess] = useState("todos");
 	const [filterType, setFilterType] = useState("todos");
 	const [search, setSearch] = useState("");
-	const [listWidthPct, setListWidthPct] = useState(42);
+	const [listWidthPct, setListWidthPct] = useState(30);
 	const [isDragging, setIsDragging] = useState(false);
 	const splitContainerRef = useRef(null);
 	const handleNavigateAutos = (target) => {
@@ -28130,7 +28130,7 @@ function ThemisShell({ ctx }) {
 		window.addEventListener("pointerup", handlePointerUp);
 	};
 	const handleDoubleClick = () => {
-		setListWidthPct(42);
+		setListWidthPct(30);
 	};
 	const selectedDjenState = useMemo(() => {
 		const states = Array.isArray(djenStatus?.processes) ? djenStatus.processes : [];
@@ -28340,7 +28340,7 @@ function ThemisShell({ ctx }) {
 								}),
 								selectedEvent.meta && selectedEvent.meta.length > 0 ? jsxs("div", {
 									className: "shrink-0",
-									children: [jsx(PanelSectionLabel, { children: selectedEvent.tipo === "prazo" ? "Trilha do prazo" : "Metadados & Identificação" }), jsx("div", { className: "grid grid-cols-[minmax(10.5rem,12rem)_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[0.72rem]", children: selectedMetaRows.map((row, index) => jsxs(React.Fragment, { children: [jsx("div", { className: "font-medium text-muted-foreground/80 leading-5", children: row.label }), jsx("div", { className: "min-w-0 break-words leading-5 text-foreground/90", children: row.value })] }, `${row.label}-${index}`)) })]
+									children: [jsx(PanelSectionLabel, { children: selectedEvent.tipo === "prazo" ? "Trilha do prazo" : "Metadados & Identificação" }), jsx(PanelMeta, { rows: selectedMetaRows })]
 								}) : null,
 								jsxs("div", {
 									className: "flex min-h-0 flex-1 flex-col pt-1",
