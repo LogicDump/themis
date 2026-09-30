@@ -217,12 +217,107 @@ def _norm_match_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
-def _publication_autos_target(
-    publication_text: str | None,
+def _document_piece_type_map(db: sqlite3.Connection) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if not _has_table(db, "movements"):
+        return result
+    for row in db.execute("SELECT payload_json FROM movements").fetchall():
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        for component in payload.get("components") or ():
+            if not isinstance(component, dict) or not component.get("document_id"):
+                continue
+            label = component.get("piece_type") or component.get("artifact_type")
+            if label:
+                result[str(component["document_id"])] = str(label)
+    return result
+
+
+def _piece_priority(label: str | None) -> int:
+    normalized = _norm_match_text(label)
+    if "certidao de publicacao" in normalized:
+        return 0
+    if "certidao" in normalized:
+        return 1
+    if "ato ordinatorio" in normalized or "comunicacao" in normalized:
+        return 2
+    if "despacho" in normalized or "decisao" in normalized or "sentenca" in normalized:
+        return 3
+    return 9
+
+
+def _hearing_autos_target(
+    scheduled_at: str | None,
+    hearing_type: str | None,
     page_rows: list[sqlite3.Row],
+    document_types: dict[str, str],
     *,
     process_id: str,
 ) -> dict[str, Any] | None:
+    if not scheduled_at:
+        return None
+    iso = str(scheduled_at)[:10]
+    if len(iso) != 10:
+        return None
+    human = f"{iso[8:10]}/{iso[5:7]}/{iso[0:4]}"
+    hearing_token = _norm_match_text(hearing_type or "audiencia")
+    candidates: list[tuple[int, int, sqlite3.Row]] = []
+    for page in page_rows:
+        text = _norm_match_text(page["content"])
+        if human not in text:
+            continue
+        if hearing_token and hearing_token not in text and "audiencia" not in text and "concilia" not in text:
+            continue
+        label = _norm_match_text(document_types.get(str(page["document_id"])))
+        if "certidao de publicacao" in label:
+            priority = 2
+        elif "certidao" in label:
+            priority = 0
+        elif "ato ordinatorio" in label or "comunicacao" in label:
+            priority = 1
+        else:
+            priority = 3
+        candidates.append((priority, int(page["process_folio"] or 10**9), page))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]["page_number"]))
+    page = candidates[0][2]
+    return {
+        "process_id": process_id,
+        "document_id": page["document_id"],
+        "pdf_page": page["page_number"],
+        "process_folio": str(page["process_folio"]) if page["process_folio"] is not None else None,
+    }
+
+
+def _publication_autos_target(
+    publication_text: str | None,
+    page_rows: list[sqlite3.Row],
+    document_types: dict[str, str],
+    *,
+    process_id: str,
+    communication_number: str | None = None,
+) -> dict[str, Any] | None:
+    if communication_number:
+        exact = [page for page in page_rows if str(communication_number) in str(page["content"] or "")]
+        if exact:
+            exact.sort(
+                key=lambda page: (
+                    _piece_priority(document_types.get(str(page["document_id"]))),
+                    int(page["process_folio"] or 10**9),
+                    page["page_number"],
+                )
+            )
+            page = exact[0]
+            return {
+                "process_id": process_id,
+                "document_id": page["document_id"],
+                "pdf_page": page["page_number"],
+                "process_folio": str(page["process_folio"]) if page["process_folio"] is not None else None,
+            }
+
     normalized = _norm_match_text(publication_text)
     if len(normalized) < 40:
         return None
@@ -253,12 +348,18 @@ def _publication_autos_target(
 
     if not scored:
         return None
-    scored.sort(key=lambda item: (-item[0], str(item[1]["process_folio"] or ""), item[1]["page_number"]))
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            _piece_priority(document_types.get(str(item[1]["document_id"]))),
+            int(item[1]["process_folio"] or 10**9),
+            item[1]["page_number"],
+        )
+    )
     best_score = scored[0][0]
-    best = [item for item in scored if item[0] == best_score]
-    if best_score < 3 or len(best) != 1:
+    if best_score < 3:
         return None
-    page = best[0][1]
+    page = scored[0][1]
     return {
         "process_id": process_id,
         "document_id": page["document_id"],
@@ -327,12 +428,38 @@ class LegalEventProjection:
 
         rows = db.execute(query, params).fetchall()
         events: list[dict[str, Any]] = []
+        document_types = _document_piece_type_map(db)
+        page_rows_by_process: dict[str, list[sqlite3.Row]] = {}
+        if _has_table(db, "pages"):
+            page_query = "SELECT p.document_id,p.page_number,p.process_folio,p.content,d.process_id FROM pages p JOIN documents d ON d.document_id=p.document_id"
+            for page in db.execute(page_query).fetchall():
+                page_rows_by_process.setdefault(str(page["process_id"]), []).append(page)
 
         for r in rows:
             due_at = r["due_at"]
             date_str = str(due_at)[:10] if due_at else None
             provenance = _json_or_default(r["provenance_json"], {})
             display_details = _deadline_display_details(db, r, provenance)
+            if not display_details.get("origin_autos_target") and display_details.get("origin_publication_id"):
+                publication_id = str(display_details["origin_publication_id"]).split("publication:", 1)[-1]
+                pub_row = db.execute(
+                    "SELECT full_text,provenance_json,process_id FROM publications WHERE publication_id=?",
+                    (publication_id,),
+                ).fetchone()
+                if pub_row:
+                    pub_provenance = _json_or_default(pub_row["provenance_json"], {})
+                    raw_item = pub_provenance.get("raw_item") or {}
+                    communication_number = raw_item.get("numeroComunicacao") or raw_item.get("numero_comunicacao")
+                    display_details["origin_autos_target"] = _publication_autos_target(
+                        pub_row["full_text"],
+                        page_rows_by_process.get(str(pub_row["process_id"]), []),
+                        document_types,
+                        process_id=str(pub_row["process_id"]),
+                        communication_number=str(communication_number) if communication_number else None,
+                    )
+                    target = display_details.get("origin_autos_target") or {}
+                    if target.get("process_folio"):
+                        display_details["origin_folio"] = target["process_folio"]
             events.append({
                 "id": f"deadline:{r['deadline_id']}",
                 "kind": "DEADLINE",
@@ -403,12 +530,25 @@ class LegalEventProjection:
         rows = db.execute(query, params).fetchall()
         has_participants = _has_table(db, "hearing_participants")
         events: list[dict[str, Any]] = []
+        document_types = _document_piece_type_map(db)
+        page_rows_by_process: dict[str, list[sqlite3.Row]] = {}
+        if _has_table(db, "pages"):
+            page_query = "SELECT p.document_id,p.page_number,p.process_folio,p.content,d.process_id FROM pages p JOIN documents d ON d.document_id=p.document_id"
+            for page in db.execute(page_query).fetchall():
+                page_rows_by_process.setdefault(str(page["process_id"]), []).append(page)
 
         for r in rows:
             scheduled_at = r["scheduled_at"]
             date_str = str(scheduled_at)[:10] if scheduled_at else None
             h_type = r["hearing_type"] or "Audiência"
             h_id = r["hearing_id"]
+            autos_target = _hearing_autos_target(
+                scheduled_at,
+                r["hearing_type"],
+                page_rows_by_process.get(str(r["process_id"]), []),
+                document_types,
+                process_id=str(r["process_id"]),
+            )
 
             participants = []
             if has_participants:
@@ -438,6 +578,7 @@ class LegalEventProjection:
                 "status": r["status"],
                 "outcome_notes": r["outcome_notes"],
                 "participants": participants,
+                "autos_target": autos_target,
                 "source_refs": _json_or_default(r["source_refs_json"], []),
                 "provenance": _json_or_default(r["provenance_json"], {}),
                 "created_at": r["created_at"],
@@ -527,6 +668,7 @@ class LegalEventProjection:
         query += " ORDER BY coalesce(published_on, available_on), publication_id"
 
         events: list[dict[str, Any]] = []
+        document_types = _document_piece_type_map(db)
         page_rows_by_process: dict[str, list[sqlite3.Row]] = {}
         if _has_table(db, "pages"):
             page_query = "SELECT p.document_id,p.page_number,p.process_folio,p.content,d.process_id FROM pages p JOIN documents d ON d.document_id=p.document_id"
@@ -537,10 +679,15 @@ class LegalEventProjection:
             published_on = r["published_on"]
             available_on = r["available_on"]
             relevant_at = published_on or available_on
+            provenance = _json_or_default(r["provenance_json"], {})
+            raw_item = provenance.get("raw_item") or {}
+            communication_number = raw_item.get("numeroComunicacao") or raw_item.get("numero_comunicacao")
             autos_target = _publication_autos_target(
                 r["full_text"],
                 page_rows_by_process.get(str(r["process_id"]), []),
+                document_types,
                 process_id=str(r["process_id"]),
+                communication_number=str(communication_number) if communication_number else None,
             )
             events.append({
                 "id": f"publication:{r['publication_id']}",
