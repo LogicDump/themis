@@ -88,6 +88,34 @@ def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenan
         if event_row:
             origin_date = event_row["event_date"]
 
+    origin_autos_target = None
+    origin_folio = None
+    origin_refs = ((obligation_prov.get("source_refs") or {}).get("origin") or {})
+    origin_pages = origin_refs.get("pages") or []
+    if origin_pages:
+        first_page = origin_pages[0] or {}
+        if first_page.get("document_id"):
+            origin_autos_target = {
+                "process_id": row["owner_id"] if row["owner_type"] == "PROCESS" else None,
+                "document_id": first_page.get("document_id"),
+                "pdf_page": first_page.get("page_number"),
+            }
+            if _has_table(db, "pages"):
+                page_row = db.execute(
+                    "SELECT process_folio FROM pages WHERE document_id=? AND page_number=? LIMIT 1",
+                    (first_page.get("document_id"), first_page.get("page_number")),
+                ).fetchone()
+                if page_row and page_row["process_folio"]:
+                    origin_folio = str(page_row["process_folio"])
+                    origin_autos_target["process_folio"] = origin_folio
+
+    communication_refs = calc.get("communication_source_refs") or []
+    origin_publication_id = None
+    for ref in communication_refs:
+        if str(ref.get("source_entity") or "").upper() == "PUBLICATION" and ref.get("source_id"):
+            origin_publication_id = f"publication:{ref['source_id']}"
+            break
+
     term_data = _json_or_default(row["term"], {})
     value = term_data.get("value")
     unit = str(term_data.get("unit") or "")
@@ -164,6 +192,9 @@ def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenan
         "origin_event_id": origin_event_id,
         "origin_act_date": origin_date,
         "origin_act_date_label": _pt_date(origin_date),
+        "origin_folio": origin_folio,
+        "origin_autos_target": origin_autos_target,
+        "origin_publication_id": origin_publication_id,
         "determination": specialist.get("action_text") or row["description"],
         "available_on": available_on,
         "available_on_label": _pt_date(available_on),

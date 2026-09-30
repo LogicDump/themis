@@ -25106,9 +25106,9 @@ function adaptLegalEventToUI(evt) {
 		status = evt.status === "ABERTO" ? "Em aberto" : evt.status || "Calculado";
 		teor = evt.determination || evt.description || "Sem determinação cadastrada.";
 		if (evt.deadline_type_label) meta.push({ label: "Natureza", value: evt.deadline_type_label });
-		if (evt.origin_label) meta.push({ label: "Origem do prazo", value: evt.origin_label });
-		if (evt.origin_act_date_label) meta.push({ label: "Ato judicial", value: "Despacho de " + evt.origin_act_date_label });
-		if (evt.published_on_label) meta.push({ label: "Publicação", value: evt.published_on_label });
+		if (evt.origin_label) meta.push({ label: "Origem do prazo", value: evt.origin_label, action: evt.origin_publication_id ? "publication" : null, target: evt.origin_publication_id || null });
+		if (evt.origin_act_date_label) meta.push({ label: "Ato judicial", value: "Despacho de " + evt.origin_act_date_label + (evt.origin_folio ? " — fl. " + evt.origin_folio : ""), action: evt.origin_autos_target ? "autos" : null, target: evt.origin_autos_target || null });
+		if (evt.published_on_label) meta.push({ label: "Publicação", value: evt.published_on_label, action: evt.origin_publication_id ? "publication" : null, target: evt.origin_publication_id || null });
 		if (evt.counting_start_label) meta.push({ label: "Início da contagem", value: evt.counting_start_label });
 		if (evt.term_label) meta.push({ label: "Prazo", value: evt.term_label });
 		if (evt.due_date_label || relevantAt) meta.push({ label: "Vencimento", value: evt.due_date_label || dataExibicao });
@@ -27847,7 +27847,7 @@ function ThemisShell({ ctx }) {
 	const [filterProcess, setFilterProcess] = useState("todos");
 	const [filterType, setFilterType] = useState("todos");
 	const [search, setSearch] = useState("");
-	const [listWidthPct, setListWidthPct] = useState(38);
+	const [listWidthPct, setListWidthPct] = useState(45);
 	const [isDragging, setIsDragging] = useState(false);
 	const splitContainerRef = useRef(null);
 	const handleNavigateAutos = (target) => {
@@ -27991,6 +27991,39 @@ function ThemisShell({ ctx }) {
 		}
 		return sortedEventos[0] || null;
 	}, [selectedId, sortedEventos]);
+	const handleNavigatePublication = (eventId) => {
+		if (!eventId) return;
+		setFilterType("todos");
+		setSelectedId(eventId);
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				const rows = Array.from(document.querySelectorAll("[data-themis-event-id]"));
+				const target = rows.find((node) => node.dataset.themisEventId === eventId);
+				target?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+			});
+		});
+	};
+	const selectedMetaRows = useMemo(() => (selectedEvent?.meta || []).map((row, index) => {
+		if (row.action === "autos" && row.target) return {
+			...row,
+			value: jsx("button", {
+				type: "button",
+				className: "inline-flex items-center gap-1 text-left text-primary hover:underline underline-offset-2 cursor-pointer",
+				onClick: () => handleNavigateAutos(row.target),
+				children: [row.value, jsx(Codicon, { name: "go-to-file", size: "0.72rem", className: "shrink-0 opacity-70" }, "icon")]
+			})
+		};
+		if (row.action === "publication" && row.target) return {
+			...row,
+			value: jsx("button", {
+				type: "button",
+				className: "inline-flex items-center gap-1 text-left text-primary hover:underline underline-offset-2 cursor-pointer",
+				onClick: () => handleNavigatePublication(row.target),
+				children: [row.value, jsx(Codicon, { name: "arrow-right", size: "0.72rem", className: "shrink-0 opacity-70" }, "icon")]
+			})
+		};
+		return row;
+	}), [selectedEvent]);
 	const handlePointerDown = (e) => {
 		e.preventDefault();
 		setIsDragging(true);
@@ -28016,7 +28049,7 @@ function ThemisShell({ ctx }) {
 		window.addEventListener("pointerup", handlePointerUp);
 	};
 	const handleDoubleClick = () => {
-		setListWidthPct(38);
+		setListWidthPct(45);
 	};
 	const selectedDjenState = useMemo(() => {
 		const states = Array.isArray(djenStatus?.processes) ? djenStatus.processes : [];
@@ -28152,6 +28185,7 @@ function ThemisShell({ ctx }) {
 										type: "button",
 										role: "listitem",
 										"aria-current": active ? "true" : void 0,
+										"data-themis-event-id": evt.id,
 										onClick: () => setSelectedId(evt.id),
 										className: cn("group/row flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors cursor-pointer", active ? "bg-(--ui-row-active-background,var(--muted)) text-foreground font-medium" : "text-(--ui-text-secondary,var(--muted-foreground)) hover:bg-muted/40 hover:text-foreground"),
 										children: [
@@ -28225,7 +28259,7 @@ function ThemisShell({ ctx }) {
 								}),
 								selectedEvent.meta && selectedEvent.meta.length > 0 ? jsxs("div", {
 									className: "shrink-0",
-									children: [jsx(PanelSectionLabel, { children: selectedEvent.tipo === "prazo" ? "Trilha do prazo" : "Metadados & Identificação" }), jsx(PanelMeta, { rows: selectedEvent.meta })]
+									children: [jsx(PanelSectionLabel, { children: selectedEvent.tipo === "prazo" ? "Trilha do prazo" : "Metadados & Identificação" }), jsx(PanelMeta, { rows: selectedMetaRows })]
 								}) : null,
 								jsxs("div", {
 									className: "flex min-h-0 flex-1 flex-col pt-1",
