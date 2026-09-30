@@ -3,3 +3,4 @@
 __pycache__/
 run_embeddinggemma_baseline.py
 run_t5_baseline.py
+run_encoder_probe.py
