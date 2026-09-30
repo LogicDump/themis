@@ -56,6 +56,128 @@ def _json_or_default(raw: Any, default: Any) -> Any:
         return default
 
 
+
+
+def _pt_date(value: Any) -> str | None:
+    text = str(value or "")[:10]
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        return f"{text[8:10]}/{text[5:7]}/{text[0:4]}"
+    return None
+
+
+def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenance: dict[str, Any]) -> dict[str, Any]:
+    calc = provenance.get("calculation_provenance") or {}
+    epistemics = calc.get("communication_date_epistemics") or {}
+    obligation_prov = provenance.get("obligation_provenance") or {}
+    pipeline = obligation_prov.get("deadline_resolution_pipeline") or {}
+    specialist = pipeline.get("specialist") or {}
+    resolution = pipeline.get("rule_resolution") or {}
+
+    available_on = ((epistemics.get("available_on") or {}).get("value"))
+    published_on = ((epistemics.get("published_on") or {}).get("value"))
+    counting_start = ((epistemics.get("counting_start") or {}).get("value"))
+    origin_event_id = calc.get("communication_event_id") or row["triggering_event"]
+
+    origin_date = None
+    source_event_id = obligation_prov.get("source_event_id")
+    if source_event_id and _has_table(db, "process_events"):
+        event_row = db.execute(
+            "SELECT event_date FROM process_events WHERE event_id=?",
+            (source_event_id,),
+        ).fetchone()
+        if event_row:
+            origin_date = event_row["event_date"]
+
+    term_data = _json_or_default(row["term"], {})
+    value = term_data.get("value")
+    unit = str(term_data.get("unit") or "")
+    counting_policy = str(term_data.get("counting_policy_id") or "")
+    if isinstance(value, int):
+        if unit == "DAYS" and counting_policy == "CPC_BUSINESS_DAYS":
+            term_label = f"{value} dias úteis"
+        elif unit == "DAYS":
+            term_label = f"{value} dias"
+        elif unit == "HOURS":
+            term_label = f"{value} horas"
+        elif unit == "MONTHS":
+            term_label = f"{value} meses"
+        else:
+            term_label = str(value)
+    else:
+        term_label = None
+
+    deadline_type_labels = {
+        "JUDICIAL_ORDER": "Prazo judicial",
+        "STATUTORY": "Prazo legal",
+    }
+    deadline_type_label = deadline_type_labels.get(str(row["deadline_type"] or ""), "Prazo processual")
+
+    legal_parts: list[str] = []
+    rule_basis = resolution.get("legal_basis") or {}
+    article = rule_basis.get("article")
+    statute = rule_basis.get("statute")
+    if article and statute:
+        statute_label = "CPC" if "13.105/2015" in str(statute) else str(statute)
+        legal_parts.append(f"Prazo fixado pelo juízo com fundamento no art. {article} do {statute_label}.")
+    if counting_policy == "CPC_BUSINESS_DAYS":
+        legal_parts.append("Contagem em dias úteis, conforme arts. 219 e 224 do CPC.")
+    if available_on:
+        legal_parts.append("Publicação e início da contagem pelo regime do DJEN (Lei 11.419/2006, art. 4º, §§ 3º e 4º).")
+
+    origin_label = None
+    if available_on:
+        origin_label = f"Intimação DJEN — disponibilizada em {_pt_date(available_on)}"
+    elif origin_date:
+        origin_label = f"Ato judicial de {_pt_date(origin_date)}"
+
+    counted_days: list[str] = []
+    excluded_days: list[str] = []
+    calculation_ref = provenance.get("deadline_calculation") or {}
+    calculation_id = calculation_ref.get("calculation_id")
+    if calculation_id and _has_table(db, "deadline_calculations"):
+        calc_row = db.execute(
+            "SELECT calculation_json FROM deadline_calculations WHERE calculation_id=?",
+            (calculation_id,),
+        ).fetchone()
+        calc_json = _json_or_default(calc_row["calculation_json"], {}) if calc_row else {}
+        for step in calc_json.get("calculation_trace") or []:
+            if step.get("action") == "COUNTED" and step.get("date"):
+                ordinal = step.get("ordinal")
+                label = _pt_date(step.get("date")) or str(step.get("date"))
+                counted_days.append(f"{label} ({ordinal}º)" if ordinal else label)
+            elif step.get("action") == "EXCLUDED" and step.get("date"):
+                label = _pt_date(step.get("date")) or str(step.get("date"))
+                reason = str(step.get("reason") or "")
+                reason_labels = {
+                    "HOLIDAY": "não útil",
+                    "SUSPENDED": "suspensão",
+                    "RECESS": "recesso",
+                    "COMMUNICATION_START_RULE": "regra de início",
+                }
+                reason_label = reason_labels.get(reason, reason.lower().replace("_", " ") if reason else "")
+                excluded_days.append(f"{label} ({reason_label})" if reason_label else label)
+
+    return {
+        "deadline_type_label": deadline_type_label,
+        "term_label": term_label,
+        "origin_label": origin_label,
+        "origin_event_id": origin_event_id,
+        "origin_act_date": origin_date,
+        "origin_act_date_label": _pt_date(origin_date),
+        "determination": specialist.get("action_text") or row["description"],
+        "available_on": available_on,
+        "available_on_label": _pt_date(available_on),
+        "published_on": published_on,
+        "published_on_label": _pt_date(published_on),
+        "counting_start": counting_start,
+        "counting_start_label": _pt_date(counting_start),
+        "due_date_label": _pt_date(row["due_at"]),
+        "counted_days_label": ", ".join(counted_days) or None,
+        "excluded_days_label": ", ".join(excluded_days) or None,
+        "legal_basis_label": " ".join(legal_parts) or None,
+    }
+
+
 def _has_table(db: sqlite3.Connection, table_name: str) -> bool:
     row = db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -120,6 +242,8 @@ class LegalEventProjection:
         for r in rows:
             due_at = r["due_at"]
             date_str = str(due_at)[:10] if due_at else None
+            provenance = _json_or_default(r["provenance_json"], {})
+            display_details = _deadline_display_details(db, r, provenance)
             events.append({
                 "id": f"deadline:{r['deadline_id']}",
                 "kind": "DEADLINE",
@@ -145,7 +269,8 @@ class LegalEventProjection:
                 "confidence": r["confidence"],
                 "confirmation_status": r["confirmation_status"],
                 "source_refs": _json_or_default(r["source_refs_json"], []),
-                "provenance": _json_or_default(r["provenance_json"], {}),
+                "provenance": provenance,
+                **display_details,
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
             })

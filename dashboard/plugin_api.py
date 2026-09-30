@@ -48,6 +48,7 @@ from dashboard.summary_worker_process import (
     mark_worker_start_failed,
     worker_is_alive,
 )
+from dashboard.djen_sync_worker_process import launch_djen_sync_worker, mark_start_failed as mark_djen_worker_start_failed
 
 # Backend bootstrap: migrations finish on the canonical writable database
 # before any route can open its read-only query connection.
@@ -743,14 +744,66 @@ def get_process_procedural_acts(process_id: str):
 
 @router.get("/djen/status")
 def get_djen_status():
-    return core_api.djen_status()
+    value = core_api.djen_status()
+    job = value.get("active_job")
+    if job:
+        alive = worker_is_alive(job.get("worker_pid"), job.get("worker_started_at"))
+        if job.get("status") == "PENDING" and not alive:
+            try:
+                launch_djen_sync_worker(job)
+            except Exception as exc:
+                mark_djen_worker_start_failed(job, exc)
+        elif job.get("status") == "RUNNING" and not alive:
+            from core.process_storage import connect_workspace
+            from core.documentos import djen_sync_job_store_v1 as jobs
+            db = connect_workspace()
+            try:
+                job.update(status="FAILED", error="Worker DJEN encerrou antes de concluir.", completed_at=_utc_now())
+                jobs.save(db, job)
+            finally:
+                db.close()
+        value = core_api.djen_status()
+    return value
+
+
+@router.get("/djen/jobs/{job_id}")
+def get_djen_sync_job(job_id: str):
+    job = core_api.djen_sync_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job DJEN não encontrado")
+    if job.get("status") in {"PENDING", "RUNNING"}:
+        alive = worker_is_alive(job.get("worker_pid"), job.get("worker_started_at"))
+        if job.get("status") == "PENDING" and not alive:
+            try:
+                job = launch_djen_sync_worker(job)
+            except Exception as exc:
+                job = mark_djen_worker_start_failed(job, exc)
+        elif job.get("status") == "RUNNING" and not alive:
+            from core.process_storage import connect_workspace
+            from core.documentos import djen_sync_job_store_v1 as jobs
+            db = connect_workspace()
+            try:
+                job.update(status="FAILED", error="Worker DJEN encerrou antes de concluir.", completed_at=_utc_now())
+                job = jobs.save(db, job)
+            finally:
+                db.close()
+    return job
 
 
 @router.post("/djen/sync-now")
-def sync_djen_now(payload: dict[str, Any] | None = None):
+async def sync_djen_now(payload: dict[str, Any] | None = None):
     process_id = str((payload or {}).get("process_id") or "").strip() or None
+    available_to = str((payload or {}).get("available_to") or "").strip() or None
     try:
-        return core_api.sync_djen_now(process_id=process_id)
+        def create_and_launch():
+            job, created = core_api.create_djen_sync_job(process_id, available_to)
+            if created or job.get("status") == "PENDING":
+                try:
+                    job = launch_djen_sync_worker(job)
+                except Exception as exc:
+                    job = mark_djen_worker_start_failed(job, exc)
+            return {"job": job, "job_id": job["job_id"], "status": job["status"], "reused": not created}
+        return await asyncio.to_thread(create_and_launch)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

@@ -25059,6 +25059,18 @@ var AutosPageItem = React.memo(function AutosPageItem({ page, idx, onOpenPdfInsi
 		]
 	});
 });
+function deadlineUrgency(dateKey) {
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ""))) return { level: "normal", className: "" };
+	const [year, month, day] = dateKey.split("-").map(Number);
+	const due = new Date(year, month - 1, day);
+	const now = new Date();
+	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+	const days = Math.round((due.getTime() - today.getTime()) / 86400000);
+	if (days < 0) return { level: "past", className: "" };
+	if (days === 0) return { level: "today", className: "text-red-400" };
+	if (days < 3) return { level: "near", className: "text-orange-400" };
+	return { level: "open", className: "text-yellow-400" };
+}
 function adaptLegalEventToUI(evt) {
 	const kind = (evt.kind || "").toUpperCase();
 	const relevantAt = evt.relevant_at || evt.due_at || evt.scheduled_at || evt.date || "";
@@ -25076,6 +25088,8 @@ function adaptLegalEventToUI(evt) {
 	let teor = evt.description || evt.outcome_notes || "Sem descrição cadastrada.";
 	const meta = [];
 	let providencias = "";
+	let urgencyClass = "";
+	let urgencyLevel = "normal";
 	if (processo) meta.push({
 		label: "Processo",
 		value: processo
@@ -25083,36 +25097,26 @@ function adaptLegalEventToUI(evt) {
 	if (kind === "DEADLINE") {
 		tipo = "prazo";
 		tipoLabel = "Prazo";
-		tone = evt.priority === "ALTA" || evt.priority === "CRITICA" || evt.status === "ABERTO" ? "bad" : "muted";
+		const urgency = deadlineUrgency(dateKey);
+		urgencyClass = urgency.className;
+		urgencyLevel = urgency.level;
+		tone = urgency.level === "today" ? "bad" : urgency.level === "near" || urgency.level === "open" ? "warn" : "muted";
 		codicon = "clock";
-		dotClass = "bg-red-500/70";
-		status = evt.status === "ABERTO" ? evt.priority === "ALTA" || evt.priority === "CRITICA" ? "Em aberto (Crítico)" : "Em aberto" : evt.status || "Em aberto";
-		const naturezaParts = [evt.deadline_type, evt.term ? `(${evt.term})` : ""].filter(Boolean);
-		if (naturezaParts.length > 0) meta.push({
-			label: "Natureza",
-			value: naturezaParts.join(" ")
-		});
-		if (relevantAt) meta.push({
-			label: "Termo Final",
-			value: `${dataExibicao}${horario ? " às " + horario : ""}`
-		});
-		if (evt.legal_basis) meta.push({
-			label: "Base Legal",
-			value: evt.legal_basis
-		});
-		if (evt.responsible) meta.push({
-			label: "Responsável",
-			value: evt.responsible
-		});
-		if (evt.triggering_event) meta.push({
-			label: "Evento Desencadeador",
-			value: evt.triggering_event
-		});
-		if (evt.status) meta.push({
-			label: "Status",
-			value: evt.status
-		});
-		providencias = evt.priority ? `Prioridade: ${evt.priority}. Acompanhar cumprimento tempestivo do prazo.` : "";
+		dotClass = urgency.level === "today" ? "bg-red-500/70" : urgency.level === "near" ? "bg-orange-500/70" : urgency.level === "open" ? "bg-yellow-500/70" : "bg-muted-foreground/40";
+		status = evt.status === "ABERTO" ? "Em aberto" : evt.status || "Calculado";
+		teor = evt.determination || evt.description || "Sem determinação cadastrada.";
+		if (evt.deadline_type_label) meta.push({ label: "Natureza", value: evt.deadline_type_label });
+		if (evt.origin_label) meta.push({ label: "Origem do prazo", value: evt.origin_label });
+		if (evt.origin_act_date_label) meta.push({ label: "Ato judicial", value: "Despacho de " + evt.origin_act_date_label });
+		if (evt.published_on_label) meta.push({ label: "Publicação", value: evt.published_on_label });
+		if (evt.counting_start_label) meta.push({ label: "Início da contagem", value: evt.counting_start_label });
+		if (evt.term_label) meta.push({ label: "Prazo", value: evt.term_label });
+		if (evt.due_date_label || relevantAt) meta.push({ label: "Vencimento", value: evt.due_date_label || dataExibicao });
+		if (evt.counted_days_label) meta.push({ label: "Dias contados", value: evt.counted_days_label });
+		if (evt.excluded_days_label) meta.push({ label: "Dias não contados", value: evt.excluded_days_label });
+		if (evt.legal_basis_label) meta.push({ label: "Fundamento", value: evt.legal_basis_label });
+		if (evt.responsible) meta.push({ label: "Responsável", value: evt.responsible });
+		providencias = "";
 	} else if (kind === "HEARING") {
 		tipo = "audiencia";
 		tipoLabel = "Audiência";
@@ -25239,6 +25243,8 @@ function adaptLegalEventToUI(evt) {
 		tone,
 		codicon,
 		dotClass,
+		urgencyClass,
+		urgencyLevel,
 		teor,
 		meta,
 		providencias
@@ -27829,6 +27835,7 @@ function ThemisShell({ ctx }) {
 	const [djenStatus, setDjenStatus] = useState(null);
 	const [djenSyncing, setDjenSyncing] = useState(false);
 	const [djenError, setDjenError] = useState(null);
+	const djenPollRef = useRef(false);
 	const [loading, setLoading] = useState(true);
 	const [fetchError, setFetchError] = useState(null);
 	useEffect(() => {
@@ -27870,24 +27877,45 @@ function ThemisShell({ ctx }) {
 		setLoading(false);
 		return adapted;
 	}, [ctx]);
-	const refreshDjen = useCallback(async (automatic = false) => {
-		if (djenSyncing) return;
+	const watchDjenJob = useCallback(async (job) => {
+		if (!job?.job_id || djenPollRef.current) return;
+		djenPollRef.current = true;
 		setDjenSyncing(true);
 		setDjenError(null);
 		try {
-			const body = filterProcess === "todos" ? {} : { process_id: filterProcess };
-			const result = await ctx.rest("/djen/sync-now", { method: "POST", body });
-			setDjenStatus(result?.status || await ctx.rest("/djen/status"));
+			let current = job;
+			while (["PENDING", "RUNNING"].includes(String(current?.status || "").toUpperCase())) {
+				setDjenStatus((previous) => ({ ...previous, active_job: current, latest_job: current }));
+				await new Promise((resolve) => setTimeout(resolve, 1200));
+				current = await ctx.rest(`/djen/jobs/${encodeURIComponent(job.job_id)}`);
+				const status = await ctx.rest("/djen/status");
+				setDjenStatus(status);
+			}
+			if (String(current?.status || "").toUpperCase() === "FAILED") throw new Error(current.error || "Falha ao atualizar DJEN.");
+			if (String(current?.status || "").toUpperCase() !== "COMPLETED") throw new Error("O job DJEN terminou em estado inválido.");
+			setDjenStatus(await ctx.rest("/djen/status"));
 			await loadEvents();
-			return result;
+			return current;
 		} catch (error) {
 			console.error("[Themis] Falha ao sincronizar DJEN:", error);
 			setDjenError(error.message || String(error));
-			if (!automatic) throw error;
+			throw error;
 		} finally {
+			djenPollRef.current = false;
 			setDjenSyncing(false);
 		}
-	}, [ctx, djenSyncing, filterProcess, loadEvents]);
+	}, [ctx, loadEvents]);
+	const refreshDjen = useCallback(async (automatic = false) => {
+		if (djenPollRef.current) return;
+		try {
+			const body = filterProcess === "todos" ? {} : { process_id: filterProcess };
+			const response = await ctx.rest("/djen/sync-now", { method: "POST", body });
+			return await watchDjenJob(response?.job || response);
+		} catch (error) {
+			if (!automatic) throw error;
+			return null;
+		}
+	}, [ctx, filterProcess, watchDjenJob]);
 	useEffect(() => {
 		let cancelled = false;
 		setLoading(true);
@@ -27895,7 +27923,8 @@ function ThemisShell({ ctx }) {
 			if (cancelled) return;
 			setProcesses(Array.isArray(tree?.processes) ? tree.processes : []);
 			setDjenStatus(status);
-			if (status?.needs_sync) await refreshDjen(true);
+			if (status?.active_job) await watchDjenJob(status.active_job).catch(() => null);
+			else if (status?.needs_sync) await refreshDjen(true);
 		}).catch((err) => {
 			if (cancelled) return;
 			console.error("[Themis Plugin] Erro ao carregar Eventos/DJEN:", err);
@@ -27943,16 +27972,16 @@ function ThemisShell({ ctx }) {
 	]);
 	const sortedEventos = useMemo(() => {
 		return [...filteredEventos].sort((a, b) => {
+			const aDate = a.data || "0000-00-00";
+			const bDate = b.data || "0000-00-00";
+			const dateCompare = bDate.localeCompare(aDate);
+			if (dateCompare !== 0) return dateCompare;
 			const aDeadline = a.tipo === "prazo";
 			const bDeadline = b.tipo === "prazo";
 			if (aDeadline !== bDeadline) return aDeadline ? -1 : 1;
-			const aDate = a.data || (aDeadline ? "9999-99-99" : "0000-00-00");
-			const bDate = b.data || (bDeadline ? "9999-99-99" : "0000-00-00");
-			const dateCompare = aDate.localeCompare(bDate);
-			if (dateCompare !== 0) return aDeadline ? dateCompare : -dateCompare;
-			const timeCompare = (a.horario || "").localeCompare(b.horario || "");
-			if (timeCompare !== 0) return aDeadline ? timeCompare : -timeCompare;
-			return String(a.id || "").localeCompare(String(b.id || ""));
+			const timeCompare = (b.horario || "").localeCompare(a.horario || "");
+			if (timeCompare !== 0) return timeCompare;
+			return String(b.id || "").localeCompare(String(a.id || ""));
 		});
 	}, [filteredEventos]);
 	const selectedEvent = useMemo(() => {
@@ -28129,14 +28158,14 @@ function ThemisShell({ ctx }) {
 											jsx(Codicon, {
 												name: evt.codicon || "circle-outline",
 												size: "0.8rem",
-												className: cn("shrink-0", active ? "text-foreground/85" : "text-muted-foreground/75")
+												className: cn("shrink-0", evt.urgencyClass || (active ? "text-foreground/85" : "text-muted-foreground/75"))
 											}),
 											jsx("span", {
-												className: "w-24 shrink-0 font-mono text-[0.68rem] tabular-nums text-muted-foreground/80",
+												className: cn("w-24 shrink-0 font-mono text-[0.68rem] tabular-nums", evt.urgencyClass || "text-muted-foreground/80"),
 												children: dateLabel
 											}),
 											jsx("span", {
-												className: "min-w-0 flex-1 truncate text-[0.75rem]",
+												className: cn("min-w-0 flex-1 truncate text-[0.75rem]", evt.urgencyClass),
 												title: evt.titulo,
 												children: evt.titulo
 											}),
@@ -28196,11 +28225,11 @@ function ThemisShell({ ctx }) {
 								}),
 								selectedEvent.meta && selectedEvent.meta.length > 0 ? jsxs("div", {
 									className: "shrink-0",
-									children: [jsx(PanelSectionLabel, { children: "Metadados & Identificação" }), jsx(PanelMeta, { rows: selectedEvent.meta })]
+									children: [jsx(PanelSectionLabel, { children: selectedEvent.tipo === "prazo" ? "Trilha do prazo" : "Metadados & Identificação" }), jsx(PanelMeta, { rows: selectedEvent.meta })]
 								}) : null,
 								jsxs("div", {
 									className: "flex min-h-0 flex-1 flex-col pt-1",
-									children: [jsx(PanelSectionLabel, { children: "Teor / Conteúdo do Ato" }), jsx("div", {
+									children: [jsx(PanelSectionLabel, { children: selectedEvent.tipo === "prazo" ? "Determinação judicial" : "Teor / Conteúdo do Ato" }), jsx("div", {
 										className: "themis-scroll-visible min-h-0 flex-1 overflow-y-auto rounded-md bg-muted/20 p-3",
 										"data-themis-page-scroll": "true",
 										children: jsxs("div", {

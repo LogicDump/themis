@@ -1758,7 +1758,51 @@ def get_event(
 
 def djen_status() -> dict[str, Any]:
     from core.documentos.djen_sync_v1 import status
-    return status()
+    value = status()
+    from core.process_storage import connect_workspace
+    from core.documentos import djen_sync_job_store_v1 as jobs
+    try:
+        db = connect_workspace()
+    except FileNotFoundError:
+        value.update(active_job=None, latest_job=None)
+        return value
+    try:
+        jobs.migrate(db)
+        active, latest = jobs.latest(db)
+        value.update(active_job=active, latest_job=latest)
+        return value
+    finally:
+        db.close()
+
+
+def create_djen_sync_job(process_id: str | None = None, available_to: str | None = None) -> tuple[dict, bool]:
+    from datetime import date
+    from core.process_storage import connect_workspace, process_db_path
+    from core.documentos import djen_sync_job_store_v1 as jobs
+    target_date = str(available_to or date.today().isoformat())
+    try:
+        date.fromisoformat(target_date)
+    except ValueError as exc:
+        raise ValueError("available_to deve usar YYYY-MM-DD") from exc
+    if process_id and not process_db_path(process_id).is_file():
+        raise FileNotFoundError(f"Process Package ausente para {process_id}")
+    db = connect_workspace(create=True)
+    try:
+        jobs.migrate(db)
+        return jobs.create_or_reuse(db, process_id, target_date)
+    finally:
+        db.close()
+
+
+def djen_sync_job(job_id: str) -> dict | None:
+    from core.process_storage import connect_workspace
+    from core.documentos import djen_sync_job_store_v1 as jobs
+    db = connect_workspace()
+    try:
+        jobs.migrate(db)
+        return jobs.get(db, job_id)
+    finally:
+        db.close()
 
 
 def sync_djen_now(process_id: str | None = None) -> dict[str, Any]:
