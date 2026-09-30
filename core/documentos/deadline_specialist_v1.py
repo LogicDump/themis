@@ -388,7 +388,12 @@ def deadline_candidate_windows(text: str) -> tuple[str, ...]:
     # its own semantic unit.
     item_starts = [m.start() for m in re.finditer(r"(?:^|\s)(?:\(?\d{1,2}[.)]|[IVXLCDM]{1,6}[.)])\s+", source, re.I)]
     boundaries = {0, len(source)}
-    boundaries.update(m.end() for m in re.finditer(r"[.;!?](?=\s|$)", source))
+    for match in re.finditer(r"[.;!?](?=\s|$)", source):
+        if match.group(0) == ".":
+            prefix = source[max(0, match.start() - 16):match.start()].casefold()
+            if re.search(r"\b(?:art|fls?|n|nº|dr|dra|etc)$", prefix):
+                continue
+        boundaries.add(match.end())
     boundaries.update(item_starts)
     ordered = sorted(boundaries)
     segments: list[str] = []
