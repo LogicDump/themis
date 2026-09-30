@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -72,7 +73,12 @@ _UNSPECIFIED_RE = re.compile(
     r"(?P<prefix>.{0,260}?)(?:aguarde-se\s+o\s+decurso\s+do\s+prazo|decorrido\s+o\s+prazo|prazo\s+para\s+(?:manifestação|resposta|cumprimento))(?P<suffix>.{0,260})",
     re.IGNORECASE | re.DOTALL,
 )
-_TRIGGER_RE = re.compile(r"(?:a\s+contar\s+de|após|apos|da\s+intima(?:ção|cao)|da\s+ciência|da\s+ciencia|da\s+publicação|da\s+publicacao)([^.;\n]{0,160})", re.IGNORECASE)
+_TRIGGER_RE = re.compile(
+    r"(?:a\s+contar\s+de|contad[oa]s?\s+a\s+partir\s+d[aeo]|após|apos|"
+    r"da\s+intima(?:ção|cao)|da\s+ciência|da\s+ciencia|da\s+publicação|da\s+publicacao)"
+    r"([^.;\n]{0,160})",
+    re.IGNORECASE,
+)
 _ROLE_RECIPIENT_RE = re.compile(r"(?:o|a)?\s*(requerido|requerente|partes?|minist[eé]rio\s+p[úu]blico|genitor|genitora)\b", re.IGNORECASE)
 _RECIPIENT_RE = re.compile(r"(?:intimad[oa]|destinatário|destinatario)\s*[:\s]+([^,.;\n]{2,120})", re.IGNORECASE)
 
@@ -110,6 +116,12 @@ def _clean(value: Any) -> str | None:
     return result or None
 
 
+def _norm(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return " ".join(text.split()).casefold()
+
+
 def _excerpt(text: str, start: int, end: int) -> str:
     left = max(0, start - 180)
     right = min(len(text), end + 260)
@@ -129,9 +141,11 @@ def _trigger(text: str, window: str, *, portal_trigger: str | None = None) -> tu
 
 def _counting_qualifier(window: str, raw_unit: str | None, trigger_text: str | None) -> str | None:
     unit = " ".join((raw_unit or "").split()).lower()
-    if "útil" in unit or "util" in unit or "corrido" in unit:
-        return unit
-    return trigger_text
+    if any(marker in unit for marker in ("útil", "util", "úteis", "uteis")):
+        return "BUSINESS_DAYS"
+    if "corrido" in unit:
+        return "CONTINUOUS_DAYS"
+    return None
 
 
 def _recipient(window: str, explicit: str | None = None) -> str | None:

@@ -40,11 +40,17 @@ _PARTY_REQUEST = re.compile(r"\b(?:a\s+parte\s+)?(?:autor[ae]?|r[eé]u|r[eé]|re
 _JUDICIAL_VERB = re.compile(r"\b(?:intim(?:e-se|em-se|ar)|cite-se|oficie-se|determino|determina-se|faculto|concedo|d[eê]-se\s+vista|vista\s+[aà]|apresentem|manifeste-se|manifeste-se)\b", re.I)
 _CLERICAL_ONLY = re.compile(r"^\s*(?:junte-se|anote-se|certifique-se|ap[oó]s,?\s*conclusos|voltem\s+conclusos|arquive-se)[\s.;,-]*(?:(?:junte-se|anote-se|certifique-se|ap[oó]s,?\s*conclusos|voltem\s+conclusos|arquive-se)[\s.;,-]*)*$", re.I)
 _TERM = re.compile(
-    r"\b(?:prazo(?:\s+comum)?\s+de|prazo\s+para\s+[^.;]{1,120}?\s+ser[aá�]\s+de|em|dentro\s+de)"
-    r"\s*(\d{1,3})(?:\s*\([^)]*\))?\s*(dias\s+[uú�]teis|dias\s+corridos|dias|horas|meses)\b",
+    r"\b(?:prazo(?:\s+comum)?\s+de|prazo\s+para\s+[^.;]{1,120}?\s+ser[a\u00e1\uFFFD]\s+de|em|dentro\s+de)"
+    r"\s*(\d{1,3})(?:\s*\([^)]*\))?\s*(dias\s+(?:úteis|uteis|\uFFFDteis)|dias\s+corridos|dias|horas|meses)\b",
     re.I,
 )
 _DATE = re.compile(r"\bat[eé]\s+(\d{1,2})/(\d{1,2})/(\d{4})\b", re.I)
+_EXPLICIT_TRIGGER = re.compile(
+    r"\b(?:a\s+contar\s+de|contad[oa]s?\s+a\s+partir\s+d[aeo]|"
+    r"ap[oó]s\s+(?:a|o)|da\s+intima[cç][aã]o|da\s+ci[eê]ncia|da\s+publica[cç][aã]o)"
+    r"[^.;]{0,180}",
+    re.I,
+)
 _PARTY_ACTION = re.compile(
     r"\b(?:manifeste-se|manifestem-se|manifeste[m]?|conteste[m]?|apresente[m]?\s+(?:a\s+)?(?:contesta[cç][aã]o|defesa|manifesta[cç][aã]o|documentos?)|"
     r"(?:para|sobre)\s+manifesta[cç][aã]o|contesta.{0,2}o|"
@@ -61,7 +67,7 @@ _DIRECT_ROLES = (
 )
 _INDIRECT_PARTICIPANT = re.compile(r"\b(?:mencionad[oa]\s+na\s+capa|cadastrad[oa]\s+no\s+polo|indicad[oa]\s+na\s+capa|constante\s+da\s+capa)\b", re.I)
 _ACT_PATTERNS = (
-    (re.compile(r"\b(?:contesta.{0,2}o|ofere[cç�]a\s+defesa|apresente\s+defesa|responda\s+[aà]\s+demanda)\b", re.I), "FILE_DEFENSE"),
+    (re.compile(r"\b(?:contesta.{0,2}o|ofere[c\u00e7\uFFFD]a\s+defesa|apresente\s+defesa|responda\s+[aà]\s+demanda)\b", re.I), "FILE_DEFENSE"),
     (re.compile(r"\b(?:memoriais|alega[cç][oõ]es\s+finais)\b", re.I), "FILE_MEMORIALS"),
     (re.compile(r"\b(?:especifi(?:que|quem)|indiquem?|digam)\b.{0,80}\bprovas?\b", re.I | re.S), "SPECIFY_EVIDENCE"),
     (re.compile(r"\b(?:ap[oó]s|depois\s+de).{0,90}\b(?:medida|dilig[eê]ncia|cumprimento|efetiva[cç][aã]o)\b", re.I | re.S), "MANIFEST_AFTER_MEASURE"),
@@ -98,7 +104,7 @@ def _explicit_term(text: str) -> tuple[int | None, str, str | None]:
     if match:
         value = int(match.group(1))
         raw = _norm(match.group(2))
-        if "util" in raw or "uteis" in raw or "�teis" in raw:
+        if "util" in raw or "uteis" in raw or "úteis" in raw or "\ufffdteis" in raw:
             unit = "BUSINESS_DAYS"
         elif "dia" in raw:
             unit = "DAYS"
@@ -249,6 +255,8 @@ def analyze_deadline_text(
         ))
 
     participant_ids = _participant_ids(db, process_id, recipient_role)
+    trigger_match = _EXPLICIT_TRIGGER.search(excerpt)
+    trigger_text = trigger_match.group(0).strip() if trigger_match else None
     return DeadlineSpecialistOutput(
         operative_instruction=True,
         context_sufficiency=sufficiency,
@@ -260,7 +268,7 @@ def analyze_deadline_text(
         explicit_term_value=term_value,
         explicit_term_unit=term_unit,
         explicit_term_date=term_marker if term_unit == "DATE_CERTAIN" else None,
-        trigger_text=None,
+        trigger_text=trigger_text,
         antecedent_source_event_id=antecedent_id,
         candidate_antecedent_event_ids=candidate_antecedents,
         context_requests=tuple(requests),

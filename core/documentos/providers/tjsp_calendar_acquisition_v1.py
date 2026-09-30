@@ -1,13 +1,17 @@
 """Automatic acquisition/parser for TJSP's official holiday JSON endpoints."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Mapping
 
+from core.documentos.court_calendar_composer_v1 import (
+    CalendarComposition, CalendarCompositionRequest, compose_calendar,
+)
 from core.documentos.court_calendar_provider_v1 import (
     CalendarProviderRequest, RawSourceSnapshot, fetch_official_snapshot,
 )
@@ -172,6 +176,81 @@ def parse_suspensions(snapshot: RawSourceSnapshot,
             output.append(_base_event(snapshot=snapshot, request=request, raw_row=row, day=day,
                 status=status, endpoint=SUSPENSIONS_ENDPOINT, source_type="TJSP_JSON_SUSPENSION"))
     return tuple(output)
+
+
+
+def compose_effective_tjsp_calendar(
+    holiday_snapshot: RawSourceSnapshot,
+    suspension_snapshot: RawSourceSnapshot,
+    request: TjspAcquisitionRequest,
+    *,
+    start_date: str,
+    end_date: str,
+    proceeding_medium: str = "ELECTRONIC",
+) -> CalendarComposition:
+    """Build a complete effective calendar from the two official exception registries.
+
+    A weekday becomes BUSINESS_DAY only when both official TJSP registries for
+    the exact municipality/year are present and parse successfully. Official
+    holiday/suspension events then override that derived baseline by normal
+    calendar-composer precedence. This is intentionally fail-closed: callers
+    cannot derive business weekdays from a partial registry.
+    """
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if start > end:
+        raise ValueError("start_date deve ser anterior ou igual a end_date")
+    if start.year != request.ano or end.year != request.ano:
+        raise ValueError("intervalo efetivo deve permanecer no ano solicitado")
+
+    # Parsing validates endpoint identity, query params, dates and known
+    # suspension classifications before any positive BUSINESS_DAY is derived.
+    holidays = parse_holidays(holiday_snapshot, request)
+    suspensions = parse_suspensions(suspension_snapshot, request)
+    snapshots = (holiday_snapshot, suspension_snapshot)
+    hashes = tuple(sorted(snapshot.content_hash for snapshot in snapshots))
+    baseline_version = "tjsp-weekday-baseline-v1:" + hashlib.sha256(
+        ("|".join(hashes) + "|" + json.dumps(request.query_params, sort_keys=True)).encode("utf-8")
+    ).hexdigest()[:20]
+    verified_at = max(snapshot.fetched_at[:10] for snapshot in snapshots)
+    snapshot_provenance = tuple({
+        "endpoint": snapshot.source_endpoint,
+        "source_url": snapshot.source_url,
+        "content_hash": snapshot.content_hash,
+        "fetched_at": snapshot.fetched_at,
+        "parser_version": snapshot.parser_version,
+        "request_params": dict(snapshot.request_params),
+    } for snapshot in snapshots)
+
+    baseline: list[CourtCalendar] = []
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            baseline.append(CourtCalendar(
+                jurisdiction="SP", court="TJSP", locality_unit=request.nome_municipio.strip(),
+                date=current.isoformat(), status="BUSINESS_DAY", scope="COMARCA",
+                official_source="derived:tjsp-complete-exception-registry",
+                verified_at=verified_at, version=baseline_version,
+                source_type="DERIVED_WEEKDAY_BASELINE_FROM_TJSP_EXCEPTION_REGISTRY",
+                authority="Themis deterministic calendar composer",
+                applicability=proceeding_medium.upper(),
+                notes="Dia útil derivado de dia de semana após validação dos cadastros oficiais completos de feriados e suspensões do TJSP.",
+                provenance={
+                    "derivation": "weekday() < 5 after successful parse of both TJSP exception registries",
+                    "official_exception_snapshots": snapshot_provenance,
+                    "institutional_source": INSTITUTIONAL_SOURCE,
+                    "parser_version": PARSER_VERSION,
+                },
+            ))
+        current += timedelta(days=1)
+
+    return compose_calendar(
+        CalendarCompositionRequest(
+            "TJSP", "SP", request.nome_municipio.strip(), start_date, end_date,
+            proceeding_medium=proceeding_medium,
+        ),
+        (*baseline, *holidays, *suspensions),
+    )
 
 
 def acquire_tjsp_calendar(db: Any, request: TjspAcquisitionRequest, *,

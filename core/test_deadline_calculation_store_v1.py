@@ -185,3 +185,54 @@ def test_calculation_preserves_full_result_and_foreign_key_integrity():
     full = json.loads(stored["calculation_json"])
     assert {"counted_days", "excluded_days", "applied_suspensions", "calculation_trace", "reason", "calendar_provenance"} <= full.keys()
     assert not db.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_nested_resolution_pipeline_legal_context_is_accepted():
+    db = setup_db()
+    provenance = {"source_event_id": "ev1", "deadline_resolution_pipeline": {"legal_context": {
+        "legal_domain": "CIVIL", "base_regime": "CPC", "applicable_regimes": ["CPC"],
+        "procedure_class": "SYNTHETIC", "jurisdiction": "SYNTHETIC"}}}
+    db.execute("UPDATE deadline_obligations SET provenance_json=? WHERE obligation_id='ob1'", (json.dumps(provenance),))
+    db.commit()
+    result = run(db)
+    assert result["status"] == "CALCULATED"
+    assert result["due_date"] == "2026-03-06"
+
+
+def test_statutory_rule_supplies_term_when_instruction_has_no_explicit_number():
+    db = setup_db()
+    db.execute(
+        "UPDATE deadline_obligations SET term_value=NULL,term_unit='UNSPECIFIED',"
+        "resolved_rule_id='CPC_ART_437_P1_DOCUMENT_RESPONSE',recipient_role='DEFENDANT',review_required=0 "
+        "WHERE obligation_id='ob1'"
+    )
+    db.commit()
+    result = run(db, calendar_entries=synthetic_calendar(start="2026-03-02", end="2026-03-31"))
+    assert result["status"] == "CALCULATED"
+    calculation = list_calculations(db, "p1", "ob1")[-1]["calculation"]
+    assert calculation["term_value"] == 15
+    assert calculation["term_unit"] == "DAYS"
+
+
+def test_explicit_hearing_trigger_is_not_replaced_by_djen_publication():
+    db = setup_db()
+    db.execute(
+        "UPDATE deadline_obligations SET trigger_text='contados a partir da audiência',"
+        "trigger_status='EXPLICIT',resolved_rule_id='CPC_ART_335_CONTESTATION',"
+        "term_value=15,term_unit='BUSINESS_DAYS',counting_qualifier='BUSINESS_DAYS' "
+        "WHERE obligation_id='ob1'"
+    )
+    db.commit()
+    result = run(db, calendar_entries=synthetic_calendar(start="2026-03-02", end="2026-03-31"))
+    assert result["status"] == "UNRESOLVED"
+    assert result["reason"]["code"] == "HEARING_TRIGGER_NOT_CONFIRMED"
+    assert result["deadline_id"] is None
+
+
+def test_calculate_process_returns_fail_closed_status_summary():
+    from core.documentos.deadline_calculation_store_v1 import calculate_process
+    db = setup_db()
+    result = calculate_process(db, process_id="p1", calendar_entries=synthetic_calendar())
+    assert result["obligations"] == 1
+    assert result["status_counts"] == {"CALCULATED": 1}
+    assert result["results"][0]["due_date"] == "2026-03-06"

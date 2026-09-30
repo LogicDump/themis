@@ -148,3 +148,30 @@ def test_store_migrates_existing_v1_snapshot_schema_additively():
     row = db.execute("SELECT source_endpoint,request_params_json FROM court_calendar_snapshots WHERE snapshot_id='old'").fetchone()
     assert row["source_endpoint"] == "https://www.tjsp.jus.br/old" and json.loads(row["request_params_json"]) == {}
     assert not db.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_effective_calendar_derives_weekdays_only_from_both_complete_official_registries():
+    from core.documentos.providers.tjsp_calendar_acquisition_v1 import compose_effective_tjsp_calendar
+    result = compose_effective_tjsp_calendar(
+        snapshot_for(HOLIDAYS_ENDPOINT), snapshot_for(SUSPENSIONS_ENDPOINT), REQUEST,
+        start_date="2026-06-11", end_date="2026-06-17", proceeding_medium="ELECTRONIC",
+    )
+    states = {item.date: item for item in result.entries}
+    assert result.coverage_complete is True
+    assert result.missing_dates == ()
+    assert states["2026-06-11"].status == "BUSINESS_DAY"
+    assert states["2026-06-11"].source_type == "DERIVED_WEEKDAY_BASELINE_FROM_TJSP_EXCEPTION_REGISTRY"
+    assert states["2026-06-13"].status == "HOLIDAY"
+    assert states["2026-06-16"].status == "HOLIDAY"
+    assert states["2026-06-16"].source_type == "TJSP_JSON_HOLIDAY"
+    assert len(states["2026-06-11"].provenance["official_exception_snapshots"]) == 2
+
+
+def test_effective_calendar_rejects_snapshot_from_wrong_registry():
+    from core.documentos.providers.tjsp_calendar_acquisition_v1 import compose_effective_tjsp_calendar
+    holidays = snapshot_for(HOLIDAYS_ENDPOINT)
+    with pytest.raises(ValueError):
+        compose_effective_tjsp_calendar(
+            holidays, holidays, REQUEST,
+            start_date="2026-06-11", end_date="2026-06-17",
+        )

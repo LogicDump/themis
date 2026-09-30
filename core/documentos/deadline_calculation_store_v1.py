@@ -411,10 +411,24 @@ def calculate_and_materialize(
     obligation_provenance = json.loads(obligation.get("provenance_json") or "{}")
     rule: dict[str, Any] = {}
     resolved_communication_policy_id = communication_policy_id
-    context = obligation_provenance.get("legal_context")
-    fact, communication_error = _publication_communication(
-        db, process_id=process_id, obligation=obligation, communication_event_id=communication_event_id
+    pipeline_provenance = obligation_provenance.get("deadline_resolution_pipeline") or {}
+    context = obligation_provenance.get("legal_context") or pipeline_provenance.get("legal_context")
+
+    # An explicit non-communication trigger from the judicial act cannot be
+    # silently replaced by DJEN. Example: "contados a partir da audiência".
+    # Until that factual event/outcome is independently confirmed, fail closed.
+    trigger_text = str(obligation.get("trigger_text") or "")
+    trigger_normalized = trigger_text.casefold()
+    nonpublication_trigger = (
+        bool(trigger_text)
+        and any(marker in trigger_normalized for marker in ("audiência", "audiencia"))
     )
+    if nonpublication_trigger:
+        fact, communication_error = None, "HEARING_TRIGGER_NOT_CONFIRMED"
+    else:
+        fact, communication_error = _publication_communication(
+            db, process_id=process_id, obligation=obligation, communication_event_id=communication_event_id
+        )
     event_id = fact.source_event_id if fact else None
 
     if (not context or not isinstance(context, dict)
@@ -429,9 +443,6 @@ def calculate_and_materialize(
                                    communication_event_id=event_id, context=context)
     elif not obligation.get("resolved_rule_id"):
         result = _unresolved_result(obligation=obligation, code="RESOLVED_RULE_MISSING", process_id=process_id,
-                                   communication_event_id=event_id, context=context)
-    elif not isinstance(obligation.get("term_value"), int) or obligation["term_value"] <= 0 or obligation.get("term_unit") in (None, "", "UNSPECIFIED"):
-        result = _unresolved_result(obligation=obligation, code="TERM_INPUT_MISSING", process_id=process_id,
                                    communication_event_id=event_id, context=context)
     else:
         try:
@@ -457,7 +468,21 @@ def calculate_and_materialize(
                         "communication_policy_id": None, "counting_policy_id": None}
             else:
                 rule = matching_rules[0]
-            if rule.get("recipient_roles") and obligation.get("recipient_role") not in rule["recipient_roles"]:
+            term_value = obligation.get("term_value")
+            term_unit = obligation.get("term_unit")
+            if (not isinstance(term_value, int) or isinstance(term_value, bool) or term_value <= 0
+                    or term_unit in (None, "", "UNSPECIFIED")):
+                rule_term_value = rule.get("term_value", rule.get("default_term_value"))
+                rule_term_unit = rule.get("term_unit")
+                if isinstance(rule_term_value, int) and rule_term_value > 0 and rule_term_unit not in (None, "", "UNSPECIFIED"):
+                    term_value, term_unit = rule_term_value, rule_term_unit
+                else:
+                    result = _unresolved_result(obligation=obligation, code="TERM_INPUT_MISSING",
+                                               process_id=process_id, communication_event_id=event_id, context=context)
+                    rule = {}
+            if rule == {}:
+                pass
+            elif rule.get("recipient_roles") and obligation.get("recipient_role") not in rule["recipient_roles"]:
                 result = _unresolved_result(obligation=obligation, code="RECIPIENT_ROLE_MISSING_OR_INCOMPATIBLE",
                                            process_id=process_id, communication_event_id=event_id, context=context)
             elif rule.get("procedure_classes") and legal_context.procedure_class not in rule["procedure_classes"]:
@@ -480,7 +505,7 @@ def calculate_and_materialize(
                         relevant_date = observed_dates[0]
                         calculation = DeadlineCalculationInput(
                             legal_context=context, resolved_rule_id=str(obligation["resolved_rule_id"]),
-                            term_value=obligation["term_value"], term_unit=str(obligation["term_unit"]),
+                            term_value=int(term_value), term_unit=str(term_unit),
                             counting_policy_id=rule.get("counting_policy_id"), communication_policy_id=policy_id,
                             communication_fact=fact, calendar_entries=tuple(calendar_entries), relevant_date=relevant_date,
                             rule_version=rule.get("rule_version"),
@@ -560,3 +585,44 @@ def calculate_and_materialize(
     return {"process_id": process_id, "obligation_id": obligation_id, "calculation_id": calculation_id,
             "status": result["status"], "due_date": result.get("due_date"), "deadline_id": deadline_id,
             "reason": result.get("reason")}
+
+
+def calculate_process(
+    db: sqlite3.Connection,
+    *,
+    process_id: str,
+    calendar_entries: Iterable[Any],
+    commit: bool = True,
+) -> dict[str, Any]:
+    """Calculate every current deadline obligation for one process.
+
+    Each obligation keeps its own fail-closed status. A single unresolved
+    trigger or review-required case never prevents independent obligations from
+    being calculated and projected.
+    """
+    rows = db.execute(
+        "SELECT obligation_id FROM deadline_obligations WHERE process_id=? ORDER BY obligation_id",
+        (process_id,),
+    ).fetchall()
+    results: list[dict[str, Any]] = []
+    calendar = tuple(calendar_entries)
+    for row in rows:
+        results.append(calculate_and_materialize(
+            db,
+            process_id=process_id,
+            obligation_id=str(row["obligation_id"]),
+            calendar_entries=calendar,
+            commit=False,
+        ))
+    if commit:
+        db.commit()
+    counts: dict[str, int] = {}
+    for result in results:
+        status = str(result.get("status") or "UNKNOWN")
+        counts[status] = counts.get(status, 0) + 1
+    return {
+        "process_id": process_id,
+        "obligations": len(results),
+        "status_counts": counts,
+        "results": results,
+    }

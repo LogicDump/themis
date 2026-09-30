@@ -150,3 +150,19 @@ def test_resolution_write_accepts_same_process_refs():
     assert row["recipient_participant_ids_json"] == '["part_p1"]'
     assert row["candidate_rule_ids_json"] == '["R1","R2"]'
     assert row["review_required"] == 0
+
+
+def test_support_match_can_use_exact_folio_and_relational_clause_without_numeric_term():
+    from core.documentos.deadline_obligation_store_v1 import _supports
+    origin = {
+        "term_value": None, "term_unit": "UNSPECIFIED",
+        "action_text": "Cabeçalho sintético. Fls. 120/125: Manifeste-se a parte contrária.",
+        "source_excerpt": "Juízo sintético. Fls. 120/125: Manifeste-se a parte contrária.",
+    }
+    publication = {
+        "term_value": None, "term_unit": "UNSPECIFIED",
+        "source_excerpt": "Vistos. Fls. 120/125: Manifeste-se a parte contrária.",
+    }
+    assert _supports(origin, publication, origin_sequence=0, candidate_sequence=1)
+    other = dict(publication, source_excerpt="Vistos. Fls. 130/135: Manifeste-se a parte contrária.")
+    assert not _supports(origin, other, origin_sequence=0, candidate_sequence=1)

@@ -72,3 +72,10 @@ def test_existing_movement_instruction_survives_migration():
     row = db.execute("SELECT * FROM deadline_instructions WHERE instruction_id='i'").fetchone()
     assert row["source_entity"] == "MOVEMENT" and row["movement_id"] == "m" and row["source_event_id"]
     assert not db.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_counting_qualifier_never_reuses_trigger_narrative():
+    from core.documentos.deadline_instruction_store_v1 import _counting_qualifier
+    assert _counting_qualifier("fixture", "dias uteis", "apos a audiencia") == "BUSINESS_DAYS"
+    assert _counting_qualifier("fixture", "dias corridos", "apos a audiencia") == "CONTINUOUS_DAYS"
+    assert _counting_qualifier("fixture", "dias", "apos a audiencia") is None

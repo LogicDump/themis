@@ -199,6 +199,7 @@ def _supports(origin: dict[str, Any], candidate: dict[str, Any], *, origin_seque
         return False
     anchor = _anchor(origin.get("action_text"))
     excerpt = _norm(candidate.get("source_excerpt"))
+    origin_excerpt = _norm(origin.get("source_excerpt"))
     if not anchor:
         return False
     if anchor in excerpt:
@@ -208,7 +209,24 @@ def _supports(origin: dict[str, Any], candidate: dict[str, Any], *, origin_seque
     strip_unit = lambda value: _norm(re.sub(r"\b(?:dias|horas|meses)\b", "", value))
     if strip_unit(anchor) in strip_unit(excerpt):
         return True
-    return any(term_anchor in excerpt for term_anchor in _term_anchors(origin))
+    if any(term_anchor in excerpt for term_anchor in _term_anchors(origin)):
+        return True
+
+    # Non-numeric orders can be reproduced with different PDF headers. Merge
+    # only when both sources contain the same explicit folio reference and the
+    # same operative relational clause. This is documentary identity, not
+    # semantic/fuzzy similarity.
+    folio = re.compile(r"\bfls?\.?\s*(\d{1,6})\s*[/\-–]\s*(\d{1,6})", re.I)
+    origin_folio = folio.search(origin_excerpt)
+    candidate_folio = folio.search(excerpt)
+    relational = re.compile(r"\bmanifeste-se\s+a\s+parte\s+(?:contraria|adversa)\b", re.I)
+    return bool(
+        origin.get("term_value") is None
+        and origin_folio and candidate_folio
+        and origin_folio.groups() == candidate_folio.groups()
+        and relational.search(origin_excerpt)
+        and relational.search(excerpt)
+    )
 
 
 def migrate_connection(db: sqlite3.Connection) -> dict[str, Any]:
