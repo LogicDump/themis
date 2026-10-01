@@ -354,8 +354,14 @@ def _pending_deadline_title(obligation: dict[str, Any], rule: dict[str, Any]) ->
     ]
     if procedural and procedural[0] in labels:
         return labels[procedural[0]]
-    term = _deadline_term_label(obligation.get("term_value"), obligation.get("term_unit"), rule)
-    return f"Obrigação processual — {term}" if term else "Obrigação processual"
+    source_label = str(
+        obligation.get("origin_event_title")
+        or obligation.get("origin_event_subtype")
+        or ""
+    ).strip()
+    source_label = re.sub(r"\s*\(pag(?:s)?\.?[^)]*\)\.pdf\s*$", "", source_label, flags=re.IGNORECASE)
+    source_label = re.sub(r"\.pdf\s*$", "", source_label, flags=re.IGNORECASE)
+    return source_label or "Pendência"
 
 
 def _pending_deadline_status(reason_code: str | None, review_required: Any) -> str:
@@ -776,7 +782,9 @@ class LegalEventProjection:
                 i.source_refs_json AS instruction_source_refs_json,
                 e.event_date AS origin_event_date,
                 e.event_time AS origin_event_time,
-                e.date_precision AS origin_date_precision
+                e.date_precision AS origin_date_precision,
+                e.title AS origin_event_title,
+                e.event_subtype AS origin_event_subtype
             FROM deadline_obligations o
             JOIN deadline_instructions i
               ON i.instruction_id=o.originating_instruction_id
@@ -859,8 +867,7 @@ class LegalEventProjection:
                 )
 
             event_date = obligation.get("origin_event_date")
-            event_time = obligation.get("origin_event_time")
-            relevant_at = f"{event_date}T{event_time}" if event_date and event_time else event_date
+            relevant_at = event_date
             legal_basis = rule.get("legal_basis") or {}
             article = legal_basis.get("article")
             paragraph = legal_basis.get("paragraph")
@@ -898,7 +905,7 @@ class LegalEventProjection:
                 "status": status_label,
                 "priority": "NORMAL",
                 "responsible": None,
-                "source_origin": "Obrigação processual",
+                "source_origin": obligation.get("origin_event_subtype"),
                 "resolved_at": None,
                 "source_refs": source_refs,
                 "provenance": _json_or_default(obligation.get("provenance_json"), {}),

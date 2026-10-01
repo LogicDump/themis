@@ -329,3 +329,5 @@ def test_measure_effectiveness_trigger_is_not_replaced_by_djen_publication():
     assert len(pending) == 1
     assert pending[0]["status"] == "Aguardando efetivação da medida"
     assert pending[0]["due_at"] is None
+    assert "T" not in str(pending[0]["relevant_at"])
+    assert "Obrigação processual" not in pending[0]["title"]
