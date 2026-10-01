@@ -202,6 +202,21 @@ def list_relations(process_id: str | None = None, *, root: Path | None = None) -
         db.close()
 
 
+def _cnj_from_sanitized_dom(cpopg: dict[str, Any], class_name: str) -> str | None:
+    fragments = cpopg.get("sanitized_dom_fragments") or {}
+    if not isinstance(fragments, dict):
+        return None
+    for fragment in fragments.values():
+        text = str(fragment or "")
+        marker = text.find(class_name)
+        if marker < 0:
+            continue
+        candidate = extract_cnj(text[marker:marker + 600])
+        if candidate:
+            return candidate
+    return None
+
+
 def relations_from_cpopg(
     process_id: str,
     cpopg: dict[str, Any],
@@ -216,6 +231,8 @@ def relations_from_cpopg(
 
     basic = cpopg.get("basic_data") or {}
     principal = extract_cnj(basic.get("processo_principal"))
+    if not principal or principal == current:
+        principal = _cnj_from_sanitized_dom(cpopg, "processoPrinc")
     if principal and principal != current:
         created.append(
             upsert_relation(
@@ -226,12 +243,14 @@ def relations_from_cpopg(
                 source_type="PROCESS_COVER",
                 source_process_id=current,
                 source_ref={"provider": "TJSP_CPOPG", "field": "processo_principal"},
-                excerpt=str(basic.get("processo_principal") or ""),
+                excerpt=principal,
                 observed_at=stamp,
             )
         )
 
     attached_to = extract_cnj(basic.get("apensado_ao"))
+    if not attached_to or attached_to == current:
+        attached_to = _cnj_from_sanitized_dom(cpopg, "processoPaiApenso")
     if attached_to and attached_to != current:
         created.append(
             upsert_relation(
@@ -242,7 +261,7 @@ def relations_from_cpopg(
                 source_type="PROCESS_COVER",
                 source_process_id=current,
                 source_ref={"provider": "TJSP_CPOPG", "field": "apensado_ao"},
-                excerpt=str(basic.get("apensado_ao") or ""),
+                excerpt=attached_to,
                 observed_at=stamp,
             )
         )

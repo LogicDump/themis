@@ -546,8 +546,8 @@
       area: getText("#areaProcesso") || getText("#area"),
       valor_acao: getText("#valorAcaoProcesso") || getText("#valorAcao"),
       outros_numeros: getText("#outrosNumerosProcesso") || getText("#outrosNumeros"),
-      processo_principal: findCnjByLabel(/processo\s+principal/i, currentCnj),
-      apensado_ao: findCnjByLabel(/apensad[oa]\s+ao/i, currentCnj)
+      processo_principal: getText(".processoPrinc") || findCnjByLabel(/processo\s+principal/i, currentCnj),
+      apensado_ao: getText(".processoPaiApenso") || findCnjByLabel(/apensad[oa]\s+ao/i, currentCnj)
     };
 
     // 2. Partes e Advogados. tableTodasPartes contém o quadro completo, mesmo
