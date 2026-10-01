@@ -126,6 +126,9 @@ def _direct_role(text: str) -> str | None:
     return None
 
 def _act_type(text: str, model_value: str | None) -> str | None:
+    normalized = _norm(text)
+    if _OPPOSING.search(text) and "embargos de declaracao" in normalized:
+        return "DECLARATORY_EMBARGOS_RESPONSE"
     if _OPPOSING.search(text):
         return "RESPOND_TO_OPPOSING_SUBMISSION"
     for pattern, value in _ACT_PATTERNS:
@@ -312,6 +315,8 @@ def _catalog_act(output: DeadlineSpecialistOutput, context: Iterable[Mapping[str
     act = output.procedural_act_type
     if act == "FILE_DEFENSE":
         return "CONTESTATION", ("CPC_ART_335_CONTESTATION",)
+    if act == "DECLARATORY_EMBARGOS_RESPONSE":
+        return "DECLARATORY_EMBARGOS_RESPONSE", ("CPC_ART_1023_P2_EMBARGOS_RESPONSE",)
     if act == "RESPOND_TO_OPPOSING_SUBMISSION":
         antecedent = " ".join(str(x.get("text") or "") for x in context)
         normalized = _norm(antecedent)

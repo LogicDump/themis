@@ -236,3 +236,30 @@ def test_calculate_process_returns_fail_closed_status_summary():
     assert result["obligations"] == 1
     assert result["status_counts"] == {"CALCULATED": 1}
     assert result["results"][0]["due_date"] == "2026-03-06"
+
+
+def test_pending_resolved_obligation_projects_as_undated_deadline():
+    db = setup_db()
+    db.execute(
+        """UPDATE deadline_obligations
+           SET term_value=NULL,term_unit='UNSPECIFIED',
+               recipient_role='PLAINTIFF',
+               resolved_rule_id='CPC_ART_1023_P2_EMBARGOS_RESPONSE',
+               review_required=0,status='ACTIVE'
+           WHERE obligation_id='ob1'"""
+    )
+    db.execute(
+        "UPDATE process_events SET event_date='2026-10-01',event_time='08:34' WHERE event_id='ev1'"
+    )
+    db.commit()
+
+    events = LegalEventProjection.project_deadlines(db, process_id="p1")
+    pending = next(event for event in events if event["id"] == "deadline-pending:ob1")
+
+    assert pending["kind"] == "DEADLINE"
+    assert pending["title"] == "Manifestação sobre embargos de declaração — polo ativo"
+    assert pending["term_label"] == "5 dias"
+    assert pending["due_at"] is None
+    assert pending["date"] == "2026-10-01"
+    assert pending["status"] == "Aguardando publicação/intimação"
+    assert pending["legal_basis_label"] == "CPC art. 1023, § 2º."

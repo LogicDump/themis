@@ -372,7 +372,7 @@ def extract_for_movement(db: sqlite3.Connection, movement_id: str) -> list[dict[
             "source_refs_json": _json({"pages": [{"document_id": p["document_id"], "page_number": p["page_number"]} for p in pages], "extraction_method": "DEADLINE_SPECIALIST_V1"}),
             "source_hash": source_hash,
             "extraction_method": "DEADLINE_SPECIALIST_V1",
-            "status": "INFERRED" if output.explicit_term_value is None and output.explicit_term_unit != "DATE_CERTAIN" else "EXPLICIT",
+            "status": "EXPLICIT" if output.procedural_act_type == "DECLARATORY_EMBARGOS_RESPONSE" or output.explicit_term_value is not None or output.explicit_term_unit == "DATE_CERTAIN" else "INFERRED",
         })
 
     unique: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -458,7 +458,7 @@ def materialize_publication_instructions(db: sqlite3.Connection, process_id: str
                 counting_qualifier="BUSINESS_DAYS" if output.explicit_term_unit == "BUSINESS_DAYS" else None,
                 trigger_text=output.trigger_text,
                 trigger_status="EXPLICIT" if output.trigger_text else "UNSPECIFIED",
-                status="INFERRED" if output.explicit_term_value is None and output.explicit_term_unit != "DATE_CERTAIN" else "EXPLICIT",
+                status="EXPLICIT" if output.procedural_act_type == "DECLARATORY_EMBARGOS_RESPONSE" or output.explicit_term_value is not None or output.explicit_term_unit == "DATE_CERTAIN" else "INFERRED",
                 extraction_method="DEADLINE_SPECIALIST_V1",
             )
             desired.add(instruction_id)

@@ -25111,7 +25111,7 @@ function adaptLegalEventToUI(evt) {
 		if (evt.published_on_label) meta.push({ label: "Publicação", value: evt.published_on_label, action: evt.origin_publication_id ? "publication" : null, target: evt.origin_publication_id || null });
 		if (evt.counting_start_label) meta.push({ label: "Início da contagem", value: evt.counting_start_label });
 		if (evt.term_label) meta.push({ label: "Prazo", value: evt.term_label });
-		if (evt.due_date_label || relevantAt) meta.push({ label: "Vencimento", value: evt.due_date_label || dataExibicao });
+		if (evt.due_date_label || evt.due_at) meta.push({ label: "Vencimento", value: evt.due_date_label || formatDateDisplay(evt.due_at) });
 		if (evt.counted_days_label) meta.push({ label: "Dias contados", value: evt.counted_days_label });
 		if (evt.excluded_days_label) meta.push({ label: "Dias não contados", value: evt.excluded_days_label });
 		if (evt.legal_basis_label) meta.push({ label: "Fundamento", value: evt.legal_basis_label });

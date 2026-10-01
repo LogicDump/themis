@@ -153,7 +153,7 @@ def _source_role(movement_type: str | None, title: str | None, excerpt: str | No
     text = _norm(excerpt)
     if "peticao" in value or "contestacao" in value or "manifestacao" in value or "parecer" in value:
         return "PARTY_REQUEST"
-    if "decisao" in value or "despacho" in value:
+    if "decisao" in value or "despacho" in value or "ato ordinatorio" in value:
         return "ORIGINATING_ORDER"
     if "certidao de publicacao" in value:
         return "PUBLICATION"

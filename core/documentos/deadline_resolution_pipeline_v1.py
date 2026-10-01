@@ -130,14 +130,13 @@ def _movement_rule_features(db: sqlite3.Connection, row: Mapping[str, Any]) -> d
     label = _norm(" ".join(str(row.get(k) or "") for k in ("movement_type", "title", "summary_text")))
     features = {
         "is_contestation": "contestacao" in label,
+        "is_declaratory_embargos": "embargos de declaracao" in label,
         "mentions_preliminary": "preliminar" in label or "art. 337" in label or "artigo 337" in label,
         "mentions_new_fact": any(x in label for x in ("impeditivo", "modificativo", "extintivo")),
         "document_submission": any(x in label for x in ("juntada", "juntando", "documentos", "documento novo")),
     }
-    if not features["is_contestation"] or features["mentions_preliminary"]:
-        return features
-    # For a contestation, inspect the canonical extracted pages only to derive
-    # compact rule features; full pleading text is never persisted in provenance.
+    # Generic provider titles such as "Petição (Outras)" hide the act subtype.
+    # Inspect canonical pages to derive only compact rule features.
     try:
         payload = json.loads(str(row.get("payload_json") or "{}"))
     except (TypeError, ValueError):
@@ -154,8 +153,10 @@ def _movement_rule_features(db: sqlite3.Connection, row: Mapping[str, Any]) -> d
         document_ids,
     ).fetchall()
     normalized = _norm(" ".join(str(part[0] or "") for part in parts))
-    features["mentions_preliminary"] = "preliminar" in normalized or "art. 337" in normalized or "artigo 337" in normalized
-    features["mentions_new_fact"] = any(x in normalized for x in ("impeditivo", "modificativo", "extintivo"))
+    features["is_contestation"] = features["is_contestation"] or "contestacao" in normalized
+    features["is_declaratory_embargos"] = features["is_declaratory_embargos"] or "embargos de declaracao" in normalized
+    features["mentions_preliminary"] = features["mentions_preliminary"] or "preliminar" in normalized or "art. 337" in normalized or "artigo 337" in normalized
+    features["mentions_new_fact"] = features["mentions_new_fact"] or any(x in normalized for x in ("impeditivo", "modificativo", "extintivo"))
     return features
 
 
@@ -222,6 +223,16 @@ def _antecedent_context(
             # referenced range is genuinely ambiguous.
             return [dict(item, retrieval_method="EXPLICIT_FOLIO_REFERENCE") for item in folio_matches[:max_candidates]]
     normalized_query = _norm(query)
+    if "embargos de declaracao" in normalized_query:
+        declaratory = [
+            item for item in candidates
+            if bool((item.get("rule_features") or {}).get("is_declaratory_embargos"))
+        ]
+        if declaratory:
+            nearest_sequence = max(int(item.get("sequence") or 0) for item in declaratory)
+            nearest = [item for item in declaratory if int(item.get("sequence") or 0) == nearest_sequence]
+            if len(nearest) == 1:
+                return [dict(nearest[0], retrieval_method="EXPLICIT_ACT_REFERENCE")]
     if "contestacao" in normalized_query:
         contestations = [
             item for item in candidates

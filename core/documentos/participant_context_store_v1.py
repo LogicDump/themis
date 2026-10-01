@@ -115,9 +115,9 @@ def _stable(prefix: str, *values: Any) -> str:
 
 def _role(raw: str | None) -> str:
     value = _norm_name(raw or "")
-    if value in {"REQTE", "REQUERENTE", "AUTOR", "AUTORA", "CLAIMANT"}:
+    if value in {"REQTE", "REQUERENTE", "AUTOR", "AUTORA", "EXEQTE", "EXEQUENTE", "CLAIMANT"}:
         return "CLAIMANT"
-    if value in {"REQDO", "REQDA", "REQUERIDO", "REQUERIDA", "REU", "RE", "RESPONDENT"}:
+    if value in {"REQDO", "REQDA", "REQUERIDO", "REQUERIDA", "REU", "RE", "EXECTDO", "EXECUTADO", "EXECUTADA", "RESPONDENT"}:
         return "RESPONDENT"
     if "PROMOTOR" in value or "MINISTERIO PUBLICO" in value or value in {"MP", "PUBLIC PROSECUTOR"}:
         return "PUBLIC_PROSECUTOR"
