@@ -11,6 +11,8 @@ from core.runtime_paths import process_db_path, workspace_db_path
 from core.documentos.process_event_store_v1 import materialize_process_events
 from core.documentos.publications_v1 import sync_djen
 
+DEADLINE_PIPELINE_REVISION = "deadline-pipeline-v2"
+
 SYNC_STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS djen_sync_state(
   process_id TEXT PRIMARY KEY,
@@ -19,9 +21,18 @@ CREATE TABLE IF NOT EXISTS djen_sync_state(
   last_available_from TEXT,
   last_available_to TEXT,
   last_count INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT
+  last_error TEXT,
+  deadline_pipeline_revision TEXT
 );
 """
+
+
+def _ensure_sync_state_schema(db: sqlite3.Connection) -> None:
+    db.executescript(SYNC_STATE_SCHEMA)
+    columns = {str(row[1]) for row in db.execute("PRAGMA table_info(djen_sync_state)").fetchall()}
+    if "deadline_pipeline_revision" not in columns:
+        db.execute("ALTER TABLE djen_sync_state ADD COLUMN deadline_pipeline_revision TEXT")
+        db.commit()
 
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -79,7 +90,7 @@ def _read_state(process_id: str) -> dict[str, Any] | None:
         return None
     db = connect_workspace()
     try:
-        db.executescript(SYNC_STATE_SCHEMA)
+        _ensure_sync_state_schema(db)
         row = db.execute(
             "SELECT * FROM djen_sync_state WHERE process_id=?",
             (process_id,),
@@ -93,21 +104,22 @@ def _write_success(
 ) -> dict[str, Any]:
     db = connect_workspace(create=True)
     try:
-        db.executescript(SYNC_STATE_SCHEMA)
+        _ensure_sync_state_schema(db)
         now = _now()
         db.execute(
             """INSERT INTO djen_sync_state(
                  process_id,last_successful_sync_date,last_successful_sync_at,
-                 last_available_from,last_available_to,last_count,last_error
-               ) VALUES(?,?,?,?,?,?,NULL)
+                 last_available_from,last_available_to,last_count,last_error,deadline_pipeline_revision
+               ) VALUES(?,?,?,?,?,?,NULL,?)
                ON CONFLICT(process_id) DO UPDATE SET
                  last_successful_sync_date=excluded.last_successful_sync_date,
                  last_successful_sync_at=excluded.last_successful_sync_at,
                  last_available_from=excluded.last_available_from,
                  last_available_to=excluded.last_available_to,
                  last_count=excluded.last_count,
-                 last_error=NULL""",
-            (process_id, available_to, now, available_from, available_to, int(count)),
+                 last_error=NULL,
+                 deadline_pipeline_revision=excluded.deadline_pipeline_revision""",
+            (process_id, available_to, now, available_from, available_to, int(count), DEADLINE_PIPELINE_REVISION),
         )
         db.commit()
         return dict(db.execute(
@@ -118,7 +130,7 @@ def _write_success(
 def _write_error(process_id: str, message: str) -> None:
     db = connect_workspace(create=True)
     try:
-        db.executescript(SYNC_STATE_SCHEMA)
+        _ensure_sync_state_schema(db)
         db.execute(
             """INSERT INTO djen_sync_state(process_id,last_count,last_error)
                VALUES(?,0,?)
@@ -135,7 +147,11 @@ def status(*, as_of: str | None = None) -> dict[str, Any]:
     states = []
     for process_id in process_ids:
         state = _read_state(process_id) or {"process_id": process_id}
-        state["needs_sync"] = state.get("last_successful_sync_date") != today
+        state["deadline_pipeline_revision_current"] = DEADLINE_PIPELINE_REVISION
+        state["needs_sync"] = (
+            state.get("last_successful_sync_date") != today
+            or state.get("deadline_pipeline_revision") != DEADLINE_PIPELINE_REVISION
+        )
         states.append(state)
     return {
         "date": today,

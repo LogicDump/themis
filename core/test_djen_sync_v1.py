@@ -80,6 +80,50 @@ def test_daily_state_uses_distribution_date_and_marks_success():
             assert result["status"]["needs_sync"] is False
             state = result["status"]["processes"][0]
             assert state["last_successful_sync_date"] == "2026-09-29"
+            assert state["deadline_pipeline_revision"] == djen.DEADLINE_PIPELINE_REVISION
+
+
+def test_same_day_state_from_older_pipeline_requires_resync():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        workspace = root / "workspace.db"
+        process_db = root / "process.db"
+        process_db.touch()
+
+        db = _connect(workspace)
+        db.execute("""CREATE TABLE djen_sync_state(
+          process_id TEXT PRIMARY KEY,
+          last_successful_sync_date TEXT,
+          last_successful_sync_at TEXT,
+          last_available_from TEXT,
+          last_available_to TEXT,
+          last_count INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT
+        )""")
+        db.execute(
+            "INSERT INTO djen_sync_state VALUES(?,?,?,?,?,?,?)",
+            (PROCESS_ID, "2026-10-01", "2026-10-01T12:00:00+00:00",
+             "2026-09-01", "2026-10-01", 0, None),
+        )
+        db.commit()
+        db.close()
+
+        def connect_workspace(*, create=False):
+            return _connect(workspace)
+
+        with (
+            patch.object(djen, "workspace_db_path", return_value=workspace),
+            patch.object(djen, "connect_workspace", side_effect=connect_workspace),
+            patch.object(djen, "known_process_ids", return_value=[PROCESS_ID]),
+            patch.object(djen, "process_db_path", return_value=process_db),
+        ):
+            status = djen.status(as_of="2026-10-01")
+
+        state = status["processes"][0]
+        assert state["last_successful_sync_date"] == "2026-10-01"
+        assert state["deadline_pipeline_revision"] is None
+        assert state["deadline_pipeline_revision_current"] == djen.DEADLINE_PIPELINE_REVISION
+        assert state["needs_sync"] is True
 
 
 def test_global_djen_skips_reference_only_processes():
