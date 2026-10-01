@@ -64,6 +64,7 @@ def test_daily_state_uses_distribution_date_and_marks_success():
             patch.object(djen, "connect_workspace", side_effect=connect_workspace),
             patch.object(djen, "connect_process", side_effect=connect_process),
             patch.object(djen, "known_process_ids", return_value=[PROCESS_ID]),
+            patch.object(djen, "process_db_path", return_value=process_db),
             patch.object(djen, "sync_djen", side_effect=fake_sync),
             patch.object(
                 djen,
@@ -78,3 +79,22 @@ def test_daily_state_uses_distribution_date_and_marks_success():
             assert result["status"]["needs_sync"] is False
             state = result["status"]["processes"][0]
             assert state["last_successful_sync_date"] == "2026-09-29"
+
+
+def test_global_djen_skips_reference_only_processes():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        materialized = root / "materialized.db"
+        materialized.touch()
+        missing = root / "missing.db"
+        reference_id = "7654321-00.2020.8.26.0001"
+
+        with (
+            patch.object(djen, "known_process_ids", return_value=[PROCESS_ID, reference_id]),
+            patch.object(
+                djen,
+                "process_db_path",
+                side_effect=lambda pid: materialized if pid == PROCESS_ID else missing,
+            ),
+        ):
+            assert djen._materialized_process_ids() == [PROCESS_ID]

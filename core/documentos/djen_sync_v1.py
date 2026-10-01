@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from core.process_storage import connect_process, connect_workspace, known_process_ids
-from core.runtime_paths import workspace_db_path
+from core.runtime_paths import process_db_path, workspace_db_path
 from core.documentos.process_event_store_v1 import materialize_process_events
 from core.documentos.publications_v1 import sync_djen
 
@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS djen_sync_state(
 
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _materialized_process_ids() -> list[str]:
+    return [pid for pid in known_process_ids() if process_db_path(pid).is_file()]
 
 def _parse_distribution_date(raw: object) -> str | None:
     text = str(raw or "").strip()
@@ -127,7 +131,7 @@ def _write_error(process_id: str, message: str) -> None:
 
 def status(*, as_of: str | None = None) -> dict[str, Any]:
     today = as_of or date.today().isoformat()
-    process_ids = known_process_ids()
+    process_ids = _materialized_process_ids()
     states = []
     for process_id in process_ids:
         state = _read_state(process_id) or {"process_id": process_id}
@@ -221,7 +225,7 @@ def sync_now(
     *, process_id: str | None = None, available_to: str | None = None
 ) -> dict[str, Any]:
     target_date = available_to or date.today().isoformat()
-    targets = [process_id] if process_id else known_process_ids()
+    targets = [process_id] if process_id else _materialized_process_ids()
     results: list[dict[str, Any]] = []
     for pid in targets:
         state = _read_state(pid)
