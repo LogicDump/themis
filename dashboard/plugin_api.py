@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
@@ -77,6 +78,32 @@ async def _plugin_lifespan(app):
 
 router = APIRouter(lifespan=_plugin_lifespan)
 _LOGGER = logging.getLogger(__name__)
+
+_FONT_ASSETS = {
+    "fonts.css": "text/css; charset=utf-8",
+    "InterVariable.woff2": "font/woff2",
+    "InterVariable-Italic.woff2": "font/woff2",
+    "RobotoMonoVariable.woff2": "font/woff2",
+    "RobotoMonoVariable-Italic.woff2": "font/woff2",
+}
+
+
+@router.get("/assets/fonts/{filename}")
+def get_font_asset(filename: str):
+    """Serve bundled Themis fonts over the plugin HTTP origin.
+
+    Desktop Chromium blocks direct file:// stylesheet loads. Restrict the route
+    to the shipped font bundle so theme assets remain local without exposing an
+    arbitrary filesystem path.
+    """
+    media_type = _FONT_ASSETS.get(filename)
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="Font asset not found")
+    path = PLUGIN_ROOT / "assets" / "fonts" / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Font asset not found")
+    return FileResponse(path, media_type=media_type, filename=None)
+
 
 _SUMMARY_JOBS_LOCK = threading.RLock()
 _PROCESS_SYNC_TASKS: set[asyncio.Task[Any]] = set()

@@ -28386,17 +28386,7 @@ function ThemisShell({ ctx }) {
 		})]
 	});
 }
-var themisDesktopPluginsRoot = await window.hermesDesktop.desktopPluginsRoot();
-var themisPathSep = themisDesktopPluginsRoot.includes("\\") ? "\\" : "/";
-var themisHermesRoot = themisDesktopPluginsRoot.replace(/[\\/]desktop-plugins[\\/]?$/, "");
-var themisFontsCss = [
-	themisHermesRoot,
-	"plugins",
-	"themis",
-	"assets",
-	"fonts",
-	"fonts.css"
-].join(themisPathSep);
+var themisFontsCss = "/api/plugins/themis/assets/fonts/fonts.css";
 var themisTheme = {
 	name: "themis",
 	label: "Themis",
