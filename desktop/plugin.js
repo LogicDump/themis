@@ -26012,9 +26012,9 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 					pipeline_revision: process.pipeline_revision || "",
 					updated_at: process.updated_at || "",
 					label: process.label || "",
-					movements: process.children?.find((child) => child.node_type === "movement_collection")?.children?.length || 0,
-						documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0
-					})),
+					documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0,
+					movements: process.children?.find((child) => child.node_type === "movement_collection")?.children?.length || 0
+				})),
 					structure: structure.map((row) => ({
 						id: row.process_id || "",
 						parent: row.parent_process_id || "",
@@ -26866,18 +26866,19 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	const v2PendingTotal = Number(selectedSummaryStatus?.v2_pending ?? selectedSummaryJob?.pending ?? 0);
 	const summaryJobMessage = movementAnalysisJobMessage(selectedSummaryJob);
 	const pipelineStatus = String(currentProcess?.pipeline_status || "").toUpperCase();
+	const rawPipelineProgress = currentProcess?.pipeline_progress;
+	const pipelineHasProgress = Boolean(rawPipelineProgress && typeof rawPipelineProgress === "object" && Object.keys(rawPipelineProgress).length > 0);
 	const pipelineDocumentBusy = [
-		"CAPTURED",
 		"QUEUED",
 		"PROCESSING",
 		"INGESTING",
 		"VALIDATED",
 		"EXTRACTING",
 		"STRUCTURING"
-	].includes(pipelineStatus);
+	].includes(pipelineStatus) || pipelineStatus === "CAPTURED" && pipelineHasProgress;
 	const pipelineIndexing = ["INDEXING", "FINALIZING"].includes(pipelineStatus);
 	const pipelineRunning = pipelineDocumentBusy || pipelineIndexing;
-	const pipelineProgress = currentProcess?.pipeline_progress || {};
+	const pipelineProgress = rawPipelineProgress || {};
 	const pipelinePercent = Math.max(0, Math.min(100, Number(pipelineProgress.percentage) || 0));
 	const currentAutos = autos[selectedPid] || null;
 	const renderedAutosCount = activeSection === "autos" && currentAutos?.pages?.length > 0 ? Math.min(currentAutos.pages.length, visibleAutosPages[selectedPid] || AUTOS_INITIAL_BATCH) : 0;
@@ -28121,7 +28122,8 @@ function ThemisShell({ ctx }) {
 				pipeline_status: process.pipeline_status || process.status || "",
 				pipeline_revision: process.pipeline_revision || "",
 				updated_at: process.updated_at || "",
-				documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0
+				documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0,
+				movements: process.children?.find((child) => child.node_type === "movement_collection")?.children?.length || 0
 			})));
 			setProcesses(initialProcesses);
 			setDjenStatus(status);
@@ -28153,7 +28155,8 @@ function ThemisShell({ ctx }) {
 					pipeline_status: process.pipeline_status || process.status || "",
 					pipeline_revision: process.pipeline_revision || "",
 					updated_at: process.updated_at || "",
-					documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0
+					documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0,
+					movements: process.children?.find((child) => child.node_type === "movement_collection")?.children?.length || 0
 				})));
 				const changed = Boolean(eventsTreeSignatureRef.current && eventsTreeSignatureRef.current !== signature);
 				eventsTreeSignatureRef.current = signature;

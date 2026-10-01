@@ -469,7 +469,7 @@
     return clone.innerHTML.trim();
   }
 
-  function extractCpopgFromHtml(htmlText, cpopgUrl) {
+  function extractCpopgFromHtml(htmlText, cpopgUrl, processCnj = "") {
     if (!htmlText || typeof htmlText !== "string") return null;
 
     const doc = new DOMParser().parseFromString(htmlText, "text/html");
@@ -529,8 +529,8 @@
       (mainContainer && /segredo\s+de\s+justi[çc]a/i.test(mainContainer.textContent || ""))
     );
 
-    const currentCnjText = getText("#numeroProcesso") || getText("#numeroDigitoAnoUnificado") || getText(".numeroProcesso");
-    const currentCnj = (currentCnjText.match(cnjPattern) || [currentCnjText])[0] || "";
+    const currentCnjText = processCnj || getText("#numeroProcesso") || getText("#numeroDigitoAnoUnificado") || getText(".numeroProcesso");
+    const currentCnj = (String(currentCnjText).match(cnjPattern) || [String(currentCnjText).trim()])[0] || "";
     const basicData = {
       cnj: currentCnj,
       segredo_justica: segredoJustica,
@@ -881,7 +881,7 @@
 
           if (cpopgResp.ok) {
             const htmlText = await cpopgResp.text();
-            cpopgData = extractCpopgFromHtml(htmlText, cpopgUrl);
+            cpopgData = extractCpopgFromHtml(htmlText, cpopgUrl, cnj);
             console.info(`[Themis Bridge] [CPOPG_FETCH] SUCESSO: HTTP ${cpopgResp.status} (${cpopgDur}ms)`, {
               classe: cpopgData?.basic_data?.classe,
               parties: cpopgData?.parties?.length,

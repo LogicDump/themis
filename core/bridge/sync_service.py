@@ -1229,6 +1229,9 @@ def plan_process_sync(
             if movement_projection_repair.get("projection_repair_applied"):
                 from core.documentos.participant_context_store_v1 import materialize_all as materialize_participant_context
                 participant_context_materialization = materialize_participant_context(db)
+                db.close()
+                db = None
+                _finalize_process_package(store, cnj)
 
         return {
             "status": "ok",
@@ -1254,10 +1257,12 @@ def plan_process_sync(
             "needs_download": len(needed) > 0,
         }
     except Exception:
-        db.rollback()
+        if db is not None:
+            db.rollback()
         raise
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 def ingest_bridge_document(
