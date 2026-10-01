@@ -121,13 +121,18 @@ def migrate_catalog(*, root: Path | None = None) -> dict[str, Any]:
     db = _open_writable(target)
     try:
         db.executescript(CATALOG_SCHEMA)
-        changed = _record(db, CATALOG_BASELINE_MIGRATION)
+        baseline_changed = _record(db, CATALOG_BASELINE_MIGRATION)
         db.commit()
+
+        from core import process_relations
+        relation_result = process_relations.migrate_connection(db)
+
         return {
             "scope": "catalog",
             "path": str(target),
-            "changed": changed,
+            "changed": baseline_changed or not relation_result.get("already_applied", False),
             "versions": sorted(applied_versions(db)),
+            "process_relations": relation_result,
         }
     except Exception:
         db.rollback()

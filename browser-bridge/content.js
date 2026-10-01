@@ -485,6 +485,17 @@
       const el = doc.querySelector(selector);
       return el ? (el.textContent || "").trim().replace(/\s+/g, " ") : "";
     };
+    const cnjPattern = /\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/;
+    const findCnjByLabel = (labelRegex) => {
+      const candidates = doc.querySelectorAll("tr, .secaoFormBody, .secaoFormGrid, div, li");
+      for (const el of candidates) {
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+        if (!text || !labelRegex.test(text)) continue;
+        const match = text.match(cnjPattern);
+        if (match) return match[0];
+      }
+      return "";
+    };
 
     // 1. Dados Principais
     const mainContainer = doc.querySelector("#containerDadosPrincipaisProcesso, .secaoFormGrid, #dadosProcesso");
@@ -507,7 +518,11 @@
       controle: getText("#numeroControleProcesso") || getText("#controleProcesso"),
       area: getText("#areaProcesso") || getText("#area"),
       valor_acao: getText("#valorAcaoProcesso") || getText("#valorAcao"),
-      outros_numeros: getText("#outrosNumerosProcesso") || getText("#outrosNumeros")
+      outros_numeros: getText("#outrosNumerosProcesso") || getText("#outrosNumeros"),
+      processo_principal:
+        getText("#processoPrincipal") ||
+        getText("#numeroProcessoPrincipal") ||
+        findCnjByLabel(/processo\s+principal/i)
     };
 
     // 2. Partes e Advogados. tableTodasPartes contém o quadro completo, mesmo

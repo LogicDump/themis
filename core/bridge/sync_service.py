@@ -1101,6 +1101,25 @@ def plan_process_sync(
             root=store.root,
         )
 
+        process_relations_synced = 0
+        process_relations_error = None
+        if cpopg:
+            try:
+                from core.process_relations import relations_from_cpopg
+                process_relations_synced = len(
+                    relations_from_cpopg(
+                        cnj,
+                        cpopg,
+                        root=store.root,
+                        observed_at=capture_time,
+                    )
+                )
+            except Exception as rel_err:
+                # Relation discovery is metadata enrichment. Keep the Process
+                # Package sync valid and retry on the next cover refresh.
+                process_relations_error = str(rel_err)
+                print(f"[Themis Bridge Sync] Aviso ao persistir relações processuais: {rel_err}")
+
         return {
             "status": "ok",
             "cnj": cnj,
@@ -1117,6 +1136,8 @@ def plan_process_sync(
             "hearings_synced": hearings_synced,
             "cpopg_parties_synced": cpopg_parties_synced,
             "cpopg_lawyers_synced": cpopg_lawyers_synced,
+            "process_relations_synced": process_relations_synced,
+            "process_relations_error": process_relations_error,
             "cpopg_snapshot_path": str(cpopg_snap_path) if cpopg_snap_path else None,
             "participant_context": participant_context_materialization,
             "needs_download": len(needed) > 0,

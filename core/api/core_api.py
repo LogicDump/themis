@@ -463,6 +463,37 @@ def movements(pid: str, path: Path | None = None) -> list[dict] | None:
     finally:
         db.close()
 
+def process_relations(process_id: str) -> dict:
+    from core.process_relations import list_relations
+    from core.process_storage import catalog_discovery
+    from core.runtime_paths import validate_process_id
+
+    pid = validate_process_id(process_id)
+    relations = list_relations(pid)
+    nodes: dict[str, dict] = {}
+    for relation in relations:
+        for endpoint in (relation["from_process_id"], relation["to_process_id"]):
+            if endpoint in nodes:
+                continue
+            nodes[endpoint] = {
+                "process_id": endpoint,
+                "discovery": catalog_discovery(endpoint),
+                "materialized": process_db_path(endpoint).is_file(),
+            }
+    if pid not in nodes:
+        nodes[pid] = {
+            "process_id": pid,
+            "discovery": catalog_discovery(pid),
+            "materialized": process_db_path(pid).is_file(),
+        }
+    return {
+        "process_id": pid,
+        "nodes": list(nodes.values()),
+        "relations": relations,
+        "read_only": True,
+    }
+
+
 def process_participants(pid: str, path: Path | None = None) -> list[dict] | None:
     db = _process_db(pid,path)
     try:

@@ -221,6 +221,14 @@ def list_deadline_obligations(
     )
 
 
+@router.get("/processes/{process_id}/relations")
+def list_process_relations(process_id: str):
+    try:
+        return core_api.process_relations(process_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/processes/{process_id}/participants")
 def list_process_participants(process_id: str):
     """Structured participants only; textual mentions are not promoted here."""
