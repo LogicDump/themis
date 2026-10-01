@@ -73,3 +73,61 @@ def test_graph_can_represent_unmaterialized_intermediate_and_multiple_children(t
     assert len(all_rels) == 3
     assert not (tmp_path / "processos" / P_PRINCIPAL / "process.db").exists()
     assert catalog_discovery(P_PRINCIPAL, root=tmp_path)["discovery_status"] == "REFERENCE"
+
+def test_tree_keeps_reference_only_nodes_out_of_materialized_processes(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THEMIS_DATA_ROOT", str(tmp_path))
+    migrate_all(root=tmp_path)
+    upsert_relation(
+        P_ACTIVE,
+        P_PRINCIPAL,
+        "HAS_PRINCIPAL",
+        root=tmp_path,
+        source_type="PROCESS_COVER",
+        source_process_id=P_ACTIVE,
+        source_ref={"field": "processo_principal"},
+    )
+
+    from core.api import core_api
+    result = core_api.tree()
+
+    assert result["processes"] == []
+    rows = {row["process_id"]: row for row in result["process_structure"]}
+    assert rows[P_PRINCIPAL]["depth"] == 0
+    assert rows[P_ACTIVE]["depth"] == 1
+    assert rows[P_ACTIVE]["parent_process_id"] == P_PRINCIPAL
+    assert rows[P_ACTIVE]["materialized"] is False
+
+
+def test_visual_parent_prefers_explicit_principal_and_preserves_other_edge(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THEMIS_DATA_ROOT", str(tmp_path))
+    migrate_all(root=tmp_path)
+    upsert_relation(
+        P_ACTIVE,
+        P_ROOT,
+        "ATTACHED_TO",
+        root=tmp_path,
+        source_type="PROCESS_COVER",
+        source_process_id=P_ACTIVE,
+        source_ref={"section": "apensos"},
+    )
+    upsert_relation(
+        P_ACTIVE,
+        P_PRINCIPAL,
+        "HAS_PRINCIPAL",
+        root=tmp_path,
+        source_type="PROCESS_COVER",
+        source_process_id=P_ACTIVE,
+        source_ref={"field": "processo_principal"},
+    )
+
+    from core.api import core_api
+    rows = {row["process_id"]: row for row in core_api.tree()["process_structure"]}
+    active = rows[P_ACTIVE]
+
+    assert active["parent_process_id"] == P_PRINCIPAL
+    assert active["relation_kind"] == "HAS_PRINCIPAL"
+    assert any(
+        item["relation_kind"] == "ATTACHED_TO"
+        and item["other_process_id"] == P_ROOT
+        for item in active["secondary_relations"]
+    )

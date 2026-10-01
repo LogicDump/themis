@@ -25818,6 +25818,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	const activeSessionId = useValue(host.state.activeSessionId);
 	const modelSessionId = focusedSessionId || activeSessionId || null;
 	const [processes, setProcesses] = useState([]);
+	const [processStructure, setProcessStructure] = useState([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState(null);
 	const [selectedPid, setSelectedPid] = useState(() => navTarget?.process_id || ctx.storage.get("workspace.process.selectedId", ""));
@@ -25992,7 +25993,18 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 			ctx.rest("/tree").then((data) => {
 				if (!isMounted) return;
 				const procs = Array.isArray(data?.processes) ? data.processes : [];
-				const signature = JSON.stringify(procs.map((process) => ({
+				const structure = Array.isArray(data?.process_structure) ? data.process_structure : procs.map((process) => ({
+					process_id: process.process_id || process.id || "",
+					label: process.label || process.process_id || process.id || "",
+					depth: 0,
+					parent_process_id: null,
+					relation_kind: null,
+					materialized: true,
+					discovery_status: "KNOWN",
+					secondary_relations: []
+				}));
+				const signature = JSON.stringify({
+					processes: procs.map((process) => ({
 					id: process.process_id || process.id || "",
 					status: process.status || "",
 					pipeline_status: process.pipeline_status || "",
@@ -26000,11 +26012,20 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 					updated_at: process.updated_at || "",
 					label: process.label || "",
 					movements: process.children?.find((child) => child.node_type === "movement_collection")?.children?.length || 0,
-					documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0
-				})));
+						documents: process.children?.find((child) => child.node_type === "document_collection")?.children?.length || 0
+					})),
+					structure: structure.map((row) => ({
+						id: row.process_id || "",
+						parent: row.parent_process_id || "",
+						relation: row.relation_kind || "",
+						materialized: row.materialized !== false,
+						depth: Number(row.depth || 0)
+					}))
+				});
 				const treeChanged = Boolean(processTreeSignatureRef.current && processTreeSignatureRef.current !== signature);
 				processTreeSignatureRef.current = signature;
 				setProcesses(procs);
+				setProcessStructure(structure);
 				setError(null);
 				setLoading(false);
 				firstLoad = false;
@@ -26417,6 +26438,32 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 			return pid.toLowerCase().includes(q) || label.toLowerCase().includes(q);
 		});
 	}, [processes, search]);
+	const filteredProcessStructure = useMemo(() => {
+		const rows = processStructure.length > 0 ? processStructure : processes.map((process) => ({
+			process_id: process.process_id || process.id || "",
+			label: process.label || process.process_id || process.id || "",
+			depth: 0,
+			parent_process_id: null,
+			relation_kind: null,
+			materialized: true,
+			discovery_status: "KNOWN",
+			secondary_relations: []
+		}));
+		if (!search) return rows;
+		const q = search.toLowerCase();
+		const byId = new Map(rows.map((row) => [row.process_id, row]));
+		const keep = new Set();
+		for (const row of rows) {
+			const haystack = (String(row.process_id || "") + " " + String(row.label || "") + " " + String(row.discovery_status || "")).toLowerCase();
+			if (!haystack.includes(q)) continue;
+			let current = row;
+			while (current && !keep.has(current.process_id)) {
+				keep.add(current.process_id);
+				current = current.parent_process_id ? byId.get(current.parent_process_id) : null;
+			}
+		}
+		return rows.filter((row) => keep.has(row.process_id));
+	}, [processStructure, processes, search]);
 	const handlePointerDown = (e) => {
 		e.preventDefault();
 		setIsDragging(true);
@@ -26894,7 +26941,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 				className: "flex items-start justify-between gap-3",
 				children: [jsx(PanelHeader, {
 					title: "Gestão Processual",
-					subtitle: `Acervo de processos judiciais indexados (${filteredProcesses.length})`
+					subtitle: `Acervo: ${processes.length} indexado(s) · ${Math.max(0, processStructure.filter((row) => row.materialized === false).length)} referência(s)`
 				}), jsxs("div", {
 					className: "flex items-center gap-2 shrink-0",
 					children: [jsxs(DropdownMenu, {
@@ -26955,27 +27002,44 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 									className: "text-[0.6875rem] text-muted-foreground",
 									children: error
 								})]
-							}) : filteredProcesses.length === 0 ? jsx("div", {
+							}) : filteredProcessStructure.length === 0 ? jsx("div", {
 								className: "p-4 text-center text-xs text-muted-foreground",
 								children: "Nenhum processo correspondente"
 							}) : jsx("div", {
 								className: "flex flex-col gap-1 p-1",
-								children: filteredProcesses.map((proc) => {
-									const pid = proc.process_id || proc.id;
-									return jsxs(PanelListRow, {
-										active: pid === selectedPid,
-										icon: "folder",
-										onSelect: () => selectProcess(pid),
-										rowKey: pid,
-										title: jsxs("span", {
-											className: "flex min-w-0 flex-col gap-0.5",
-											children: [jsx("span", {
-												className: "truncate font-mono text-xs font-semibold",
-												children: pid
-											}), proc.label ? jsx("span", {
-												className: "truncate text-[0.68rem] font-normal text-muted-foreground",
-												children: proc.label
-											}) : null]
+								children: filteredProcessStructure.map((row) => {
+									const pid = row.process_id;
+									const materialized = row.materialized !== false;
+									const relationLabels = {
+										HAS_PRINCIPAL: "principal",
+										ATTACHED_TO: "apensado",
+										ENFORCEMENT_OF: "cumprimento",
+										INCIDENT_OF: "incidente",
+										APPEAL_OF: "recurso"
+									};
+									const relationLabel = row.relation_kind ? relationLabels[row.relation_kind] || row.relation_kind : null;
+									return jsx("div", {
+										className: materialized ? "" : "opacity-70",
+										style: { paddingLeft: `${Math.max(0, Number(row.depth || 0)) * 14}px` },
+										children: jsxs(PanelListRow, {
+											active: materialized && pid === selectedPid,
+											icon: materialized ? "folder" : "references",
+											onSelect: materialized ? () => selectProcess(pid) : () => {},
+											rowKey: pid,
+											meta: !materialized ? jsx("span", {
+												className: "text-[0.62rem] text-muted-foreground/70 whitespace-nowrap",
+												children: "referência"
+											}) : null,
+											title: jsxs("span", {
+												className: "flex min-w-0 flex-col gap-0.5",
+												children: [jsx("span", {
+													className: `truncate font-mono text-xs ${materialized ? "font-semibold" : "font-medium"}`,
+													children: pid
+												}), jsx("span", {
+													className: "truncate text-[0.66rem] font-normal text-muted-foreground",
+													children: relationLabel ? `${relationLabel} · ${materialized ? "indexado" : "somente referência"}` : materialized ? "indexado" : "somente referência"
+												})]
+											})
 										})
 									}, pid);
 								})

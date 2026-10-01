@@ -219,19 +219,161 @@ def _process_node(db: sqlite3.Connection, pid: str) -> dict:
         "children": [autos, movement_collection, docs],
     }
 
+def _process_structure(materialized_nodes: list[dict]) -> list[dict]:
+    from core.process_relations import list_relations
+    from core.process_storage import catalog_discovery, known_process_ids
+
+    materialized_by_id = {
+        str(node.get("process_id") or node.get("id")): node
+        for node in materialized_nodes
+        if node.get("process_id") or node.get("id")
+    }
+    relations = list_relations()
+    ids = set(known_process_ids())
+    for relation in relations:
+        ids.add(str(relation["from_process_id"]))
+        ids.add(str(relation["to_process_id"]))
+
+    parent_priority = {
+        "HAS_PRINCIPAL": 0,
+        "ATTACHED_TO": 1,
+        "ENFORCEMENT_OF": 2,
+        "INCIDENT_OF": 3,
+        "APPEAL_OF": 4,
+    }
+    candidates: dict[str, list[dict]] = {pid: [] for pid in ids}
+    edges_by_pid: dict[str, list[dict]] = {pid: [] for pid in ids}
+    for relation in relations:
+        child = str(relation["from_process_id"])
+        parent = str(relation["to_process_id"])
+        edges_by_pid.setdefault(child, []).append(relation)
+        edges_by_pid.setdefault(parent, []).append(relation)
+        if relation["relation_kind"] in parent_priority:
+            candidates.setdefault(child, []).append(relation)
+
+    chosen_parent: dict[str, dict] = {}
+    for child, rels in candidates.items():
+        if not rels:
+            continue
+        chosen_parent[child] = sorted(
+            rels,
+            key=lambda rel: (
+                parent_priority.get(str(rel["relation_kind"]), 99),
+                str(rel["to_process_id"]),
+                str(rel["relation_id"]),
+            ),
+        )[0]
+
+    # A malformed/cyclic provider graph must not make the UI projection recurse
+    # forever. Break only the visual parent edge; the canonical relation stays.
+    def _parent_of(pid: str) -> str | None:
+        rel = chosen_parent.get(pid)
+        return str(rel["to_process_id"]) if rel else None
+
+    for pid in sorted(ids):
+        seen: set[str] = set()
+        current = pid
+        while current:
+            if current in seen:
+                chosen_parent.pop(pid, None)
+                break
+            seen.add(current)
+            current = _parent_of(current)
+
+    children: dict[str, list[str]] = {pid: [] for pid in ids}
+    roots: list[str] = []
+    for pid in sorted(ids):
+        parent = _parent_of(pid)
+        if parent and parent in ids and parent != pid:
+            children.setdefault(parent, []).append(pid)
+        else:
+            roots.append(pid)
+
+    for values in children.values():
+        values.sort(key=lambda child: (
+            parent_priority.get(str(chosen_parent.get(child, {}).get("relation_kind") or ""), 99),
+            child,
+        ))
+
+    rows: list[dict] = []
+
+    def visit(pid: str, depth: int) -> None:
+        discovery = catalog_discovery(pid)
+        materialized = pid in materialized_by_id
+        primary = chosen_parent.get(pid)
+        secondary = []
+        primary_id = primary.get("relation_id") if primary else None
+        for rel in edges_by_pid.get(pid, []):
+            if rel.get("relation_id") == primary_id:
+                continue
+            secondary.append({
+                "relation_id": rel["relation_id"],
+                "relation_kind": rel["relation_kind"],
+                "direction": "OUT" if rel["from_process_id"] == pid else "IN",
+                "other_process_id": rel["to_process_id"] if rel["from_process_id"] == pid else rel["from_process_id"],
+                "status": rel["status"],
+                "confidence": rel["confidence"],
+            })
+        rows.append({
+            "process_id": pid,
+            "label": materialized_by_id.get(pid, {}).get("label") or pid,
+            "depth": depth,
+            "parent_process_id": str(primary["to_process_id"]) if primary else None,
+            "relation_kind": str(primary["relation_kind"]) if primary else None,
+            "materialized": materialized,
+            "discovery_status": (discovery or {}).get("discovery_status"),
+            "access_status": (discovery or {}).get("access_status"),
+            "secondary_relations": secondary,
+        })
+        for child in children.get(pid, []):
+            visit(child, depth + 1)
+
+    for root in sorted(set(roots)):
+        visit(root, 0)
+    return rows
+
+
 def tree(path=None):
     if path is not None:
         db=_db(path)
-        try: return {"processes":[_process_node(db,row["process_id"]) for row in db.execute("SELECT process_id FROM processes ORDER BY process_id")],"read_only":True}
+        try:
+            nodes=[_process_node(db,row["process_id"]) for row in db.execute("SELECT process_id FROM processes ORDER BY process_id")]
+            return {
+                "processes": nodes,
+                "process_structure": [
+                    {
+                        "process_id": node["process_id"],
+                        "label": node.get("label") or node["process_id"],
+                        "depth": 0,
+                        "parent_process_id": None,
+                        "relation_kind": None,
+                        "materialized": True,
+                        "discovery_status": "KNOWN",
+                        "access_status": None,
+                        "secondary_relations": [],
+                    }
+                    for node in nodes
+                ],
+                "read_only": True,
+            }
         finally: db.close()
     from core.process_storage import known_process_ids
     nodes=[]
     for pid in known_process_ids():
+        target = process_db_path(pid)
+        if not target.is_file():
+            continue
         db=_process_db(pid)
         try:
-            if db.execute("SELECT 1 FROM processes WHERE process_id=?",(pid,)).fetchone(): nodes.append(_process_node(db,pid))
-        finally: db.close()
-    return {"processes":nodes,"read_only":True}
+            if db.execute("SELECT 1 FROM processes WHERE process_id=?",(pid,)).fetchone():
+                nodes.append(_process_node(db,pid))
+        finally:
+            db.close()
+    return {
+        "processes": nodes,
+        "process_structure": _process_structure(nodes),
+        "read_only": True,
+    }
 
 def overview(pid: str, path: Path | None = None) -> dict | None:
     db = _process_db(pid,path)
