@@ -20,6 +20,7 @@ from urllib.request import urlopen
 try:
     from .core.process_storage import connect_catalog
     from .core.runtime_paths import themis_data_root
+    from .core.migration_manager import migrate_all
 except (ImportError, ValueError):
     _PLUGIN_ROOT = Path(__file__).resolve().parent
     _plugin_root_str = str(_PLUGIN_ROOT)
@@ -27,6 +28,7 @@ except (ImportError, ValueError):
         sys.path.insert(0, _plugin_root_str)
     from core.process_storage import connect_catalog
     from core.runtime_paths import themis_data_root
+    from core.migration_manager import migrate_all
 
 
 class ThemisSetupError(RuntimeError):
@@ -359,10 +361,14 @@ def run_themis_setup(
     else:
         log_fn("  [OK] config/bridge_token.json preservado.")
 
-    # 3. Bancos de dados e esquemas vigentes (catalog.db soberano)
-    catalog_conn = connect_catalog(root=data_root, create=True)
-    catalog_conn.close()
-    log_fn("  [OK] catalog.db verificado/inicializado.")
+    # 3. Bancos de dados e esquemas vigentes.
+    # O mesmo Migration Manager é usado no bootstrap automático do plugin,
+    # portanto setup é bootstrap/recuperação manual, não um caminho paralelo.
+    migration_result = migrate_all(root=data_root)
+    log_fn(
+        "  [OK] schemas verificados/migrados: "
+        f"catalog.db, workspace.db e {len(migration_result.get('processes', {}))} Process Package(s)."
+    )
 
     # 4. Native Messaging Host para Browser Bridge
     skip_native = getattr(args, "skip_native_host", False) if args else False
@@ -385,8 +391,37 @@ def run_themis_setup(
         "status": "ready",
         "data_root": str(data_root),
         "permissions": permissions_result,
+        "migrations": migration_result,
         "models": models_result,
     }
+
+
+
+
+def run_themis_migrate(
+    args: argparse.Namespace | None = None,
+    *,
+    data_root_override: Path | str | None = None,
+    log_fn: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """Run only schema migrations; no model/native-host provisioning."""
+    data_root = (
+        Path(data_root_override).expanduser().resolve()
+        if data_root_override
+        else _resolve_plugin_data_dir()
+    )
+    log_fn(f"[Themis] Verificando migrations em: {data_root}")
+    result = migrate_all(root=data_root)
+    changed_processes = sum(
+        1 for item in result.get("processes", {}).values() if item.get("changed")
+    )
+    log_fn(
+        "  [OK] migrations concluídas: "
+        f"catalog={'alterado' if result['catalog'].get('changed') else 'ok'}, "
+        f"workspace={'alterado' if result['workspace'].get('changed') else 'ok'}, "
+        f"processos alterados={changed_processes}/{len(result.get('processes', {}))}."
+    )
+    return {"status": "ready", "data_root": str(data_root), "migrations": result}
 
 
 def register_cli(subparser: argparse.ArgumentParser) -> None:
@@ -408,3 +443,13 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         help="Pula o registro do Native Messaging Host no registro do Windows",
     )
     setup_parser.set_defaults(func=run_themis_setup)
+
+    migrate_parser = subs.add_parser(
+        "migrate",
+        help="Aplica migrations pendentes dos bancos do Themis",
+        description=(
+            "Atualiza schemas de catalog.db, workspace.db e Process Packages "
+            "sem provisionar modelos nem alterar o Native Messaging Host."
+        ),
+    )
+    migrate_parser.set_defaults(func=run_themis_migrate)

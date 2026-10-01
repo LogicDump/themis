@@ -118,38 +118,13 @@ def _process_package_schema_is_current(target: Path) -> bool:
 
 
 def bootstrap_database() -> dict:
-    """Ensure Core schemas, without materializing derived data across packages."""
-    from core.process_storage import known_process_ids
-    results={}
-    for pid in known_process_ids():
-        target=process_db_path(pid)
-        if not target.is_file():
-            continue
-        if _process_package_schema_is_current(target):
-            results[pid] = {"already_applied": True, "schema_ready": True, "skipped": True}
-            continue
-        db = sqlite3.connect(str(target))
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA foreign_keys=ON")
-        try:
-            from core.documentos.movement_summary_store_v1 import migrate_connection
-            result = migrate_connection(db)
-            result["case_synthesis"] = migrate_case_synthesis(db)
-            from core.documentos.process_event_store_v1 import migrate_connection as migrate_process_events
-            result["process_events"] = migrate_process_events(db)
-            from core.documentos.deadline_instruction_store_v1 import migrate_connection as migrate_deadline_instructions
-            result["deadline_instructions"] = migrate_deadline_instructions(db)
-            from core.documentos.deadline_obligation_store_v1 import migrate_connection as migrate_deadline_obligations
-            result["deadline_obligations"] = migrate_deadline_obligations(db)
-            result["participant_context"] = migrate_participant_context(db)
-            from core.documentos.publications_v1 import migrate_connection as migrate_publications
-            result["publications"] = migrate_publications(db)
-            from core.documentos.deadline_calculation_store_v1 import migrate_connection as migrate_deadline_calculations
-            result["deadline_calculations"] = migrate_deadline_calculations(db)
-            results[pid]=result
-        finally:
-            db.close()
-    return {"processes":results}
+    """Bring all materialized Themis stores to the current schema.
+
+    Compatibility facade: dashboard/plugin_api.py historically invokes this
+    during plugin import. Migration orchestration now lives in one module.
+    """
+    from core.migration_manager import migrate_all
+    return migrate_all()
 
 def _movement_node(row: dict, process_id: str) -> dict:
     source_datetime = row.get("source_datetime")
