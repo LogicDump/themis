@@ -588,6 +588,103 @@ def _ensure_process(db: sqlite3.Connection, process_id: str) -> None:
     )
 
 
+def _materialize_movements_with_projection_policy(
+    db: sqlite3.Connection,
+    process_id: str,
+    *,
+    manifest_or_root: Any,
+) -> dict[str, Any]:
+    """Materialize Movements and safely repair the provider-boundary projection once.
+
+    The historical manifest projection promoted unidentified pieces to Movements.
+    A one-time stale prune is safe only before AI-derived movement summaries/case
+    synthesis exist.  Otherwise preserve rows and expose a pending repair flag.
+    """
+    from core.documentos.movement_store_v1 import materialize_movements
+
+    repair_version = "movement-projection-provider-boundaries-v2"
+    repair_applied = bool(
+        db.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?",
+            (repair_version,),
+        ).fetchone()
+    )
+    existing_count = db.execute(
+        "SELECT count(*) FROM movements WHERE process_id=?",
+        (process_id,),
+    ).fetchone()[0]
+    summary_count = (
+        db.execute(
+            """SELECT count(*) FROM movement_summaries s
+               JOIN movements m ON m.movement_id=s.movement_id
+               WHERE m.process_id=?""",
+            (process_id,),
+        ).fetchone()[0]
+        if db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_summaries'"
+        ).fetchone()
+        else 0
+    )
+    synthesis_count = (
+        db.execute(
+            "SELECT count(*) FROM case_syntheses WHERE process_id=?",
+            (process_id,),
+        ).fetchone()[0]
+        if db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='case_syntheses'"
+        ).fetchone()
+        else 0
+    )
+    safe_repair = (
+        not repair_applied
+        and existing_count > 0
+        and summary_count == 0
+        and synthesis_count == 0
+    )
+    repair_pending = bool(
+        not repair_applied and existing_count > 0 and not safe_repair
+    )
+
+    if repair_pending:
+        # Never mix old and new movement identities after AI-derived content
+        # already exists. Reconciliation must preserve/re-map those derivatives
+        # explicitly before the projection can advance.
+        return {
+            "process_id": process_id,
+            "projected": existing_count,
+            "inserted": 0,
+            "updated": 0,
+            "unchanged": existing_count,
+            "deleted": 0,
+            "projection_repair_applied": False,
+            "projection_repair_pending": True,
+            "projection_repair_blocked_by": {
+                "movement_summaries": summary_count,
+                "case_syntheses": synthesis_count,
+            },
+        }
+
+    result = materialize_movements(
+        db,
+        process_id,
+        manifest_or_root=manifest_or_root,
+        prune_stale=safe_repair,
+    )
+    result["projection_repair_applied"] = safe_repair
+    result["projection_repair_pending"] = False
+
+    if not repair_applied and (safe_repair or existing_count == 0):
+        db.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+            (
+                repair_version,
+                datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            ),
+        )
+        db.commit()
+    return result
+
+
 def plan_process_sync(
     store: Store,
     cnj: str,
@@ -1120,6 +1217,19 @@ def plan_process_sync(
                 process_relations_error = str(rel_err)
                 print(f"[Themis Bridge Sync] Aviso ao persistir relações processuais: {rel_err}")
 
+        movement_projection_repair = None
+        if not needed:
+            # 0-NEW is still a synchronization point. It must be able to repair
+            # a stale derived Movement projection without re-downloading PDFs.
+            movement_projection_repair = _materialize_movements_with_projection_policy(
+                db,
+                cnj,
+                manifest_or_root=store.root,
+            )
+            if movement_projection_repair.get("projection_repair_applied"):
+                from core.documentos.participant_context_store_v1 import materialize_all as materialize_participant_context
+                participant_context_materialization = materialize_participant_context(db)
+
         return {
             "status": "ok",
             "cnj": cnj,
@@ -1140,6 +1250,7 @@ def plan_process_sync(
             "process_relations_error": process_relations_error,
             "cpopg_snapshot_path": str(cpopg_snap_path) if cpopg_snap_path else None,
             "participant_context": participant_context_materialization,
+            "movement_projection_repair": movement_projection_repair,
             "needs_download": len(needed) > 0,
         }
     except Exception:
@@ -2461,16 +2572,15 @@ def process_captured_sync(
     # Materializa o read model atual de Movements depois que páginas,
     # manifesto e contexto documental já estão disponíveis. Isso mantém a
     # fronteira de atos consistente para summaries e síntese posteriores.
-    from core.documentos.movement_store_v1 import materialize_movements
     from core.documentos.participant_context_store_v1 import materialize_all as materialize_participant_context
     db = store.connect()
     try:
-        movement_materialization = materialize_movements(
+        movement_materialization = _materialize_movements_with_projection_policy(
             db,
             cnj,
             manifest_or_root=store.root,
-            prune_stale=False,
         )
+
         # Movements/movement_pieces are the semantic boundary for documentary
         # representation discovery.  Run the existing idempotent projector
         # after that boundary is available, including 0-NEW syncs.
