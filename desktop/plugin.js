@@ -28545,7 +28545,37 @@ function ThemisShell({ ctx }) {
 		})]
 	});
 }
-var themisFontsCss = "/api/plugins/themis/assets/fonts/fonts.css";
+var themisFontBlobUrls = [];
+async function installThemisBundledFonts(ctx) {
+	if (document.querySelector("style[data-themis-bundled-fonts]")) return;
+	const specs = [
+		["Inter", "normal", "fonts/InterVariable.woff2"],
+		["Inter", "italic", "fonts/InterVariable-Italic.woff2"],
+		["RobotoMono", "normal", "fonts/RobotoMonoVariable.woff2"],
+		["RobotoMono", "italic", "fonts/RobotoMonoVariable-Italic.woff2"]
+	];
+	try {
+		const faces = [];
+		for (const [family, style, path] of specs) {
+			const asset = await ctx.rest(`/assets/${path}`);
+			const base64 = asset?.content_base64;
+			if (!base64) throw new Error(`Asset de fonte sem conteúdo: ${path}`);
+			const binary = atob(base64);
+			const bytes = new Uint8Array(binary.length);
+			for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+			const url = URL.createObjectURL(new Blob([bytes], { type: "font/woff2" }));
+			themisFontBlobUrls.push(url);
+			faces.push(`@font-face{font-family:"${family}";src:url("${url}") format("woff2");font-style:${style};font-weight:100 900;font-display:swap;}`);
+		}
+		const style = document.createElement("style");
+		style.dataset.themisBundledFonts = "true";
+		style.textContent = faces.join("\n");
+		document.head.appendChild(style);
+	} catch (error) {
+		for (const url of themisFontBlobUrls.splice(0)) URL.revokeObjectURL(url);
+		console.warn("[Themis] Falha ao carregar fontes empacotadas; usando fallback do sistema.", error);
+	}
+}
 var themisTheme = {
 	name: "themis",
 	label: "Themis",
@@ -28607,14 +28637,14 @@ var themisTheme = {
 	},
 	typography: {
 		fontSans: "\"Inter\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, system-ui, sans-serif",
-		fontMono: "\"RobotoMono\", \"SF Mono\", Menlo, Consolas, \"Liberation Mono\", monospace",
-		fontUrl: themisFontsCss
+		fontMono: "\"RobotoMono\", \"SF Mono\", Menlo, Consolas, \"Liberation Mono\", monospace"
 	}
 };
 var plugin_default = {
 	id: "themis",
 	name: "Themis",
 	register(ctx) {
+		void installThemisBundledFonts(ctx);
 		ctx.registerMany([
 			{
 				id: "page",
