@@ -281,6 +281,78 @@ def project_procedural_acts(
     return acts
 
 
+
+
+def _bridge_internal_piece_identity_gaps(piece_records: list[dict[str, Any]]) -> None:
+    """Fill only bounded identity gaps inside the same provider occurrence.
+
+    A piece with no lateral marker is not a new act merely because its local
+    provenance is incomplete.  It may inherit an identity only when the nearest
+    attested piece immediately before the gap and the nearest attested piece
+    immediately after the gap carry the exact same factual identity
+    (actor, datetime, protocol).  Unbounded or conflicting gaps remain unknown.
+    """
+    index = 0
+    while index < len(piece_records):
+        if piece_records[index].get("identity") is not None:
+            index += 1
+            continue
+
+        start = index
+        end = index
+        while end + 1 < len(piece_records) and piece_records[end + 1].get("identity") is None:
+            end += 1
+
+        previous = piece_records[start - 1] if start > 0 else None
+        following = piece_records[end + 1] if end + 1 < len(piece_records) else None
+        previous_identity = previous.get("identity") if previous else None
+        following_identity = following.get("identity") if following else None
+
+        if previous_identity is not None and previous_identity == following_identity:
+            actor, occurred_at, protocol = previous_identity
+            for gap_piece in piece_records[start:end + 1]:
+                gap_piece["identity"] = previous_identity
+                gap_piece["actor"] = actor
+                gap_piece["occurred_at"] = occurred_at
+                gap_piece["protocol"] = protocol
+                provenance = dict(gap_piece.get("provenance") or {})
+                provenance["identity_recovery"] = {
+                    "method": "BOUNDED_SAME_IDENTITY_GAP",
+                    "actor": actor,
+                    "datetime": occurred_at,
+                    "protocol": protocol,
+                    "previous_piece_order": previous.get("order") if previous else None,
+                    "following_piece_order": following.get("order") if following else None,
+                }
+                gap_piece["provenance"] = provenance
+
+        index = end + 1
+
+
+def _group_piece_records(piece_records: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Group only provider-attested pieces into Movements."""
+    _bridge_internal_piece_identity_gaps(piece_records)
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_identity = None
+    for piece in piece_records:
+        identity = piece.get("identity")
+        if identity is None:
+            if current:
+                groups.append(current)
+                current = []
+                current_identity = None
+            continue
+        if current and identity != current_identity:
+            groups.append(current)
+            current = []
+        current.append(piece)
+        current_identity = identity
+    if current:
+        groups.append(current)
+    return groups
+
+
 def movement_projection(
     db: sqlite3.Connection,
     process_id: str,
@@ -420,27 +492,7 @@ def movement_projection(
                 },
             })
 
-        grouped_movements = []
-        current_pieces = []
-        current_identity = None
-
-        for piece in piece_records:
-            ident = piece["identity"]
-            if ident is None:
-                if current_pieces:
-                    grouped_movements.append(current_pieces)
-                    current_pieces = []
-                    current_identity = None
-                grouped_movements.append([piece])
-                continue
-            if current_pieces and ident != current_identity:
-                grouped_movements.append(current_pieces)
-                current_pieces = []
-            current_pieces.append(piece)
-            current_identity = ident
-
-        if current_pieces:
-            grouped_movements.append(current_pieces)
+        grouped_movements = _group_piece_records(piece_records)
 
         results = []
         for seq, pieces in enumerate(grouped_movements, 1):
