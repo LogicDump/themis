@@ -522,7 +522,11 @@
       processo_principal:
         getText("#processoPrincipal") ||
         getText("#numeroProcessoPrincipal") ||
-        findCnjByLabel(/processo\s+principal/i)
+        findCnjByLabel(/processo\s+principal/i),
+      apensado_ao:
+        getText("#processoApensadoAo") ||
+        getText("#numeroProcessoApensadoAo") ||
+        findCnjByLabel(/apensad[oa]\s+ao/i)
     };
 
     // 2. Partes e Advogados. tableTodasPartes contém o quadro completo, mesmo

@@ -231,14 +231,35 @@ def relations_from_cpopg(
             )
         )
 
+    attached_to = extract_cnj(basic.get("apensado_ao"))
+    if attached_to and attached_to != current:
+        created.append(
+            upsert_relation(
+                current,
+                attached_to,
+                "ATTACHED_TO",
+                root=root,
+                source_type="PROCESS_COVER",
+                source_process_id=current,
+                source_ref={"provider": "TJSP_CPOPG", "field": "apensado_ao"},
+                excerpt=str(basic.get("apensado_ao") or ""),
+                observed_at=stamp,
+            )
+        )
+
     for raw in cpopg.get("related_processes") or []:
         related = extract_cnj(raw.get("numero"))
         if not related or related == current:
             continue
+        raw_label = str(raw.get("tipo") or "").casefold()
+        if "apensad" in raw_label and " ao" in raw_label:
+            relation_from, relation_to = current, related
+        else:
+            relation_from, relation_to = related, current
         created.append(
             upsert_relation(
-                related,
-                current,
+                relation_from,
+                relation_to,
                 "ATTACHED_TO",
                 root=root,
                 source_type="PROCESS_COVER",

@@ -131,3 +131,34 @@ def test_visual_parent_prefers_explicit_principal_and_preserves_other_edge(tmp_p
         and item["other_process_id"] == P_ROOT
         for item in active["secondary_relations"]
     )
+
+def test_explicit_attached_to_field_points_current_process_to_parent(tmp_path: Path):
+    migrate_all(root=tmp_path)
+    cpopg = {
+        "captured_at": "2026-10-01T12:00:00+00:00",
+        "basic_data": {"apensado_ao": P_ROOT},
+        "related_processes": [],
+        "incidents": [],
+    }
+    relations_from_cpopg(P_ACTIVE, cpopg, root=tmp_path)
+    signatures = {
+        (r["from_process_id"], r["to_process_id"], r["relation_kind"])
+        for r in list_relations(P_ACTIVE, root=tmp_path)
+    }
+    assert (P_ACTIVE, P_ROOT, "ATTACHED_TO") in signatures
+
+
+def test_related_process_row_labeled_attached_to_preserves_direction(tmp_path: Path):
+    migrate_all(root=tmp_path)
+    cpopg = {
+        "captured_at": "2026-10-01T12:00:00+00:00",
+        "basic_data": {},
+        "related_processes": [{"tipo": "Apensado ao", "numero": P_ROOT}],
+        "incidents": [],
+    }
+    relations_from_cpopg(P_ACTIVE, cpopg, root=tmp_path)
+    signatures = {
+        (r["from_process_id"], r["to_process_id"], r["relation_kind"])
+        for r in list_relations(P_ACTIVE, root=tmp_path)
+    }
+    assert (P_ACTIVE, P_ROOT, "ATTACHED_TO") in signatures
