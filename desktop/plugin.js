@@ -26947,7 +26947,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 				className: "flex items-start justify-between gap-3",
 				children: [jsx(PanelHeader, {
 					title: "Gestão Processual",
-					subtitle: `Acervo: ${processes.length} processo(s) · ${Math.max(0, processStructure.filter((row) => row.materialized === false).length)} referência(s)`
+					subtitle: `Acervo: ${processes.length} processo(s)`
 				}), jsxs("div", {
 					className: "flex items-center gap-2 shrink-0",
 					children: [jsxs(DropdownMenu, {
@@ -27016,39 +27016,22 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 								children: filteredProcessStructure.map((row) => {
 									const pid = row.process_id;
 									const materialized = row.materialized !== false;
-									const relationLabels = {
-										HAS_PRINCIPAL: "principal",
-										ATTACHED_TO: "apensado",
-										ENFORCEMENT_OF: "cumprimento",
-										INCIDENT_OF: "incidente",
-										APPEAL_OF: "recurso"
-									};
-									const relationLabel = row.relation_kind ? relationLabels[row.relation_kind] || row.relation_kind : null;
 									return jsx("div", {
-										className: materialized ? "" : "opacity-70",
+										className: materialized ? "" : "opacity-55",
 										style: { paddingLeft: `${Math.max(0, Number(row.depth || 0)) * 14}px` },
-										children: jsxs(PanelListRow, {
+										children: jsx(PanelListRow, {
 											active: materialized ? pid === selectedPid && !selectedReferencePid : pid === selectedReferencePid,
-											icon: materialized ? "folder" : "references",
+											icon: "file",
 											onSelect: materialized ? () => selectProcess(pid) : () => setSelectedReferencePid(pid),
 											rowKey: pid,
-											meta: !materialized ? jsx("span", {
-												className: "text-[0.62rem] text-muted-foreground/70 whitespace-nowrap",
-												children: "referência"
-											}) : null,
-											title: jsxs("span", {
-												className: "flex min-w-0 flex-col gap-0.5",
-												children: [jsx("span", {
-													className: `truncate font-mono text-xs ${materialized ? "font-semibold" : "font-medium"}`,
-													children: pid
-												}), materialized && !relationLabel ? null : jsx("span", {
-													className: "truncate text-[0.66rem] font-normal text-muted-foreground",
-													children: relationLabel ? materialized ? relationLabel : `${relationLabel} · somente referência` : "somente referência"
-												})]
+											title: jsx("span", {
+												className: `truncate font-mono text-xs ${materialized ? "font-semibold" : "font-medium"}`,
+												children: pid
 											})
 										})
 									}, pid);
 								})
+
 							})
 						})
 					}),
@@ -27071,9 +27054,9 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 						className: "flex min-h-0 min-w-0 flex-col overflow-hidden pl-2",
 						children: selectedReference ? jsxs("div", {
 							className: "flex min-h-0 flex-1 flex-col overflow-hidden",
-							children: [jsxs("div", {
-								className: "flex flex-wrap items-center justify-between gap-3 border-b border-border/40 pb-3 mb-3",
-								children: [jsxs("div", {
+							children: [jsx("div", {
+								className: "border-b border-border/40 pb-3 mb-3",
+								children: jsxs("div", {
 									className: "min-w-0 space-y-0.5",
 									children: [jsx("span", {
 										className: "text-[0.6875rem] font-semibold text-muted-foreground uppercase tracking-wider",
@@ -27082,81 +27065,14 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 										className: "font-mono text-base font-bold text-foreground truncate",
 										children: selectedReference.process_id
 									})]
-								}), jsx(PanelPill, {
-									tone: "neutral",
-									children: "Somente referência"
-								})]
-							}), jsxs(PanelDetail, {
-								className: "themis-scroll-visible min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 space-y-4",
+								})
+							}), jsx(PanelDetail, {
+								className: "themis-scroll-visible min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1",
 								"data-themis-page-scroll": "true",
-								children: [jsx(PanelSectionLabel, {
-									children: "Estrutura processual"
-								}), jsxs("div", {
-									className: "grid gap-x-4 gap-y-2 text-xs",
-									style: { gridTemplateColumns: "10rem minmax(0, 1fr)" },
-									children: [jsx("span", {
-										className: "whitespace-nowrap text-muted-foreground/55",
-										children: "Processo"
-									}), jsx("span", {
-										className: "min-w-0 break-words font-mono text-foreground/85",
-										children: selectedReference.process_id
-									}), jsx("span", {
-										className: "whitespace-nowrap text-muted-foreground/55",
-										children: "Estado local"
-									}), jsx("span", {
-										className: "min-w-0 break-words text-foreground/85",
-										children: "Não indexado"
-									}), jsx("span", {
-										className: "whitespace-nowrap text-muted-foreground/55",
-										children: "Descoberta"
-									}), jsx("span", {
-										className: "min-w-0 break-words text-foreground/85",
-										children: selectedReference.discovery_status || "REFERENCE"
-									}), selectedReference.parent_process_id ? jsx("span", {
-										className: "whitespace-nowrap text-muted-foreground/55",
-										children: "Relacionado a"
-									}) : null, selectedReference.parent_process_id ? jsx("span", {
-										className: "min-w-0 break-words font-mono text-foreground/85",
-										children: selectedReference.parent_process_id
-									}) : null, selectedReference.relation_kind ? jsx("span", {
-										className: "whitespace-nowrap text-muted-foreground/55",
-										children: "Relação"
-									}) : null, selectedReference.relation_kind ? jsx("span", {
-										className: "min-w-0 break-words text-foreground/85",
-										children: {
-											HAS_PRINCIPAL: "Processo principal",
-											ATTACHED_TO: "Apensado a",
-											ENFORCEMENT_OF: "Cumprimento de",
-											INCIDENT_OF: "Incidente de",
-											APPEAL_OF: "Recurso de"
-										}[selectedReference.relation_kind] || selectedReference.relation_kind
-									}) : null]
-								}), jsx("div", {
-									className: "rounded-md bg-muted/30 px-3 py-2 text-[0.72rem] leading-relaxed text-muted-foreground",
-									children: "O Themis conhece este processo por uma relação processual, mas ainda não possui Autos ou Process Package local. A estrutura permanece navegável sem exigir o download do processo relacionado."
-								}), Array.isArray(selectedReference.secondary_relations) && selectedReference.secondary_relations.length > 0 ? jsxs(React.Fragment, {
-									children: [jsx(PanelSectionLabel, {
-										children: "Outras relações conhecidas"
-									}), jsx("div", {
-										className: "space-y-1.5",
-										children: selectedReference.secondary_relations.map((relation) => jsxs("div", {
-											className: "flex items-center justify-between gap-3 rounded-md bg-muted/25 px-3 py-2 text-xs",
-											children: [jsxs("div", {
-												className: "min-w-0",
-												children: [jsx("div", {
-													className: "truncate font-mono text-foreground/85",
-													children: relation.other_process_id
-												}), jsx("div", {
-													className: "text-[0.66rem] text-muted-foreground",
-													children: relation.relation_kind
-												})]
-											}), jsx(PanelPill, {
-												tone: relation.confidence === "HIGH" ? "good" : "neutral",
-												children: relation.confidence || "—"
-											})]
-										}, relation.relation_id))
-									})]
-								}) : null]
+								children: jsx("div", {
+									className: "text-xs text-muted-foreground",
+									children: "Processo ainda não carregado no acervo local."
+								})
 							})]
 						}) : selectedPid ? jsxs("div", {
 							className: "flex min-h-0 flex-1 flex-col overflow-hidden",

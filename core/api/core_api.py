@@ -264,18 +264,58 @@ def _process_structure(materialized_nodes: list[dict]) -> list[dict]:
             ),
         )[0]
 
+    # Project paired cover relations as one readable process chain. If a case
+    # says both "Processo principal = P" and "Apensado ao = A", the legal graph
+    # keeps both original edges (case->P and case->A), while the visual tree
+    # renders A -> P -> case. This is display-only and never creates P->A in
+    # process_relations.
+    visual_parent: dict[str, str] = {
+        child: str(rel["to_process_id"])
+        for child, rel in chosen_parent.items()
+    }
+    visual_relation_kind: dict[str, str] = {
+        child: str(rel["relation_kind"])
+        for child, rel in chosen_parent.items()
+    }
+    outgoing_by_child: dict[str, list[dict]] = {}
+    for relation in relations:
+        outgoing_by_child.setdefault(str(relation["from_process_id"]), []).append(relation)
+
+    for child, rels in outgoing_by_child.items():
+        principal_targets = [
+            str(rel["to_process_id"])
+            for rel in rels
+            if rel["relation_kind"] == "HAS_PRINCIPAL"
+        ]
+        attached_targets = [
+            str(rel["to_process_id"])
+            for rel in rels
+            if rel["relation_kind"] == "ATTACHED_TO"
+        ]
+        if not principal_targets or not attached_targets:
+            continue
+        principal = principal_targets[0]
+        attached = attached_targets[0]
+        if principal == attached or principal == child or attached == child:
+            continue
+        # Respect any explicit parent already known for the principal. Only use
+        # this projection bridge when the principal is otherwise a visual root.
+        if principal not in visual_parent:
+            visual_parent[principal] = attached
+            visual_relation_kind[principal] = "DERIVED_PROCESS_CHAIN"
+
     # A malformed/cyclic provider graph must not make the UI projection recurse
     # forever. Break only the visual parent edge; the canonical relation stays.
     def _parent_of(pid: str) -> str | None:
-        rel = chosen_parent.get(pid)
-        return str(rel["to_process_id"]) if rel else None
+        return visual_parent.get(pid)
 
     for pid in sorted(ids):
         seen: set[str] = set()
         current = pid
         while current:
             if current in seen:
-                chosen_parent.pop(pid, None)
+                visual_parent.pop(pid, None)
+                visual_relation_kind.pop(pid, None)
                 break
             seen.add(current)
             current = _parent_of(current)
@@ -291,7 +331,7 @@ def _process_structure(materialized_nodes: list[dict]) -> list[dict]:
 
     for values in children.values():
         values.sort(key=lambda child: (
-            parent_priority.get(str(chosen_parent.get(child, {}).get("relation_kind") or ""), 99),
+            parent_priority.get(str(visual_relation_kind.get(child) or ""), 99),
             child,
         ))
 
@@ -318,8 +358,8 @@ def _process_structure(materialized_nodes: list[dict]) -> list[dict]:
             "process_id": pid,
             "label": materialized_by_id.get(pid, {}).get("label") or pid,
             "depth": depth,
-            "parent_process_id": str(primary["to_process_id"]) if primary else None,
-            "relation_kind": str(primary["relation_kind"]) if primary else None,
+            "parent_process_id": _parent_of(pid),
+            "relation_kind": visual_relation_kind.get(pid),
             "materialized": materialized,
             "discovery_status": (discovery or {}).get("discovery_status"),
             "access_status": (discovery or {}).get("access_status"),
