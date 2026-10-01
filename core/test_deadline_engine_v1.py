@@ -110,6 +110,35 @@ def test_cpc_suspension_policy_skips_recess_days():
     assert any(x["policy_id"] == "CPC_ART_220_GENERAL" for x in result.applied_suspensions)
 
 
+def test_calendar_allows_distinct_versions_for_distinct_years():
+    days_2026 = tuple(
+        CourtCalendar("SYNTHETIC", "SYNTHETIC_COURT", "SYNTHETIC_UNIT", day.isoformat(), "BUSINESS_DAY",
+                      "SYNTHETIC_TEST_ONLY", "fixture://calendar", "2026-01-01", "calendar-2026")
+        for day in (date(2026, 12, 18), date(2026, 12, 19))
+    )
+    days_2027 = tuple(
+        CourtCalendar("SYNTHETIC", "SYNTHETIC_COURT", "SYNTHETIC_UNIT", day.isoformat(), "BUSINESS_DAY",
+                      "SYNTHETIC_TEST_ONLY", "fixture://calendar", "2027-01-01", "calendar-2027")
+        for day in (date(2027, 1, 21), date(2027, 1, 22))
+    )
+    result = calc("CPC", "CIVIL", trigger="2026-12-18", term=2, calendar=days_2026 + days_2027)
+    assert result.status == "CALCULATED"
+    assert result.calendar_version == "2026:calendar-2026|2027:calendar-2027"
+
+
+def test_calendar_rejects_conflicting_versions_within_same_year():
+    days = (
+        CourtCalendar("SYNTHETIC", "SYNTHETIC_COURT", "SYNTHETIC_UNIT", "2026-03-03", "BUSINESS_DAY",
+                      "SYNTHETIC_TEST_ONLY", "fixture://calendar", "2026-01-01", "calendar-a"),
+        CourtCalendar("SYNTHETIC", "SYNTHETIC_COURT", "SYNTHETIC_UNIT", "2026-03-04", "BUSINESS_DAY",
+                      "SYNTHETIC_TEST_ONLY", "fixture://calendar", "2026-01-01", "calendar-b"),
+    )
+    result = calc("CPC", "CIVIL", trigger="2026-03-02", term=2, calendar=days)
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason["code"] == "CALENDAR_VERSION_MISMATCH"
+    assert result.reason["versions_by_year"] == {2026: ["calendar-a", "calendar-b"]}
+
+
 def test_cpp_recess_without_exception_resolution_requires_review():
     days = (
         calendar_day(date(2026, 12, 19), "HOLIDAY"),

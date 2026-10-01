@@ -11,7 +11,7 @@ from core.runtime_paths import process_db_path, workspace_db_path
 from core.documentos.process_event_store_v1 import materialize_process_events
 from core.documentos.publications_v1 import sync_djen
 
-DEADLINE_PIPELINE_REVISION = "deadline-pipeline-v2"
+DEADLINE_PIPELINE_REVISION = "deadline-pipeline-v3"
 
 SYNC_STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS djen_sync_state(

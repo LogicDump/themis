@@ -135,9 +135,27 @@ def _calendar_index(entries: Iterable[Any], context: LegalContext) -> tuple[dict
         if key in scoped and _record(scoped[key]) != entry:
             raise _Stop("REVIEW_REQUIRED", "CALENDAR_ENTRY_CONFLICT", {"date": key.isoformat()})
         scoped[key] = raw
-    versions = sorted({str(_record(e).get("version") or "") for e in scoped.values()})
-    if len(versions) > 1:
-        raise _Stop("REVIEW_REQUIRED", "CALENDAR_VERSION_MISMATCH", {"versions": versions})
+    versions_by_year: dict[int, set[str]] = {}
+    for day, raw in scoped.items():
+        version = str(_record(raw).get("version") or "")
+        versions_by_year.setdefault(day.year, set()).add(version)
+    conflicting_years = {
+        year: sorted(versions)
+        for year, versions in versions_by_year.items()
+        if len(versions) > 1
+    }
+    if conflicting_years:
+        raise _Stop(
+            "REVIEW_REQUIRED",
+            "CALENDAR_VERSION_MISMATCH",
+            {"versions_by_year": conflicting_years},
+        )
+    year_versions = [
+        f"{year}:{next(iter(versions))}"
+        for year, versions in sorted(versions_by_year.items())
+        if versions
+    ]
+    calendar_version = "|".join(year_versions) if year_versions else None
     provenance = tuple(sorted(({
         "date": _record(e)["date"], "jurisdiction": _record(e).get("jurisdiction"),
         "court": _record(e).get("court"), "locality_unit": _record(e).get("locality_unit"),
@@ -152,7 +170,7 @@ def _calendar_index(entries: Iterable[Any], context: LegalContext) -> tuple[dict
         "forum": _record(e).get("forum"), "unit": _record(e).get("unit"),
         "system_id": _record(e).get("system_id"),
     } for e in scoped.values()), key=lambda x: x["date"]))
-    return scoped, versions[0] if versions else None, list(provenance)
+    return scoped, calendar_version, list(provenance)
 
 
 def _period_contains(day: date, policy: SuspensionPolicy) -> bool:
