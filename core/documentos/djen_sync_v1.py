@@ -197,15 +197,24 @@ def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target
 
     entries = []
     calendars = []
+    calendar_errors = []
     for year in sorted(years):
         request = TjspAcquisitionRequest(locality, "", year)
-        acquired = acquire_tjsp_calendar(db, request)
-        snapshots = {item["endpoint"]: get_snapshot(db, item["snapshot_id"]) for item in acquired["snapshots"]}
-        composition = compose_effective_tjsp_calendar(
-            snapshots[HOLIDAYS_ENDPOINT], snapshots[SUSPENSIONS_ENDPOINT], request,
-            start_date=f"{year:04d}-01-01", end_date=f"{year:04d}-12-31",
-            proceeding_medium="ELECTRONIC",
-        )
+        try:
+            acquired = acquire_tjsp_calendar(db, request)
+            snapshots = {item["endpoint"]: get_snapshot(db, item["snapshot_id"]) for item in acquired["snapshots"]}
+            composition = compose_effective_tjsp_calendar(
+                snapshots[HOLIDAYS_ENDPOINT], snapshots[SUSPENSIONS_ENDPOINT], request,
+                start_date=f"{year:04d}-01-01", end_date=f"{year:04d}-12-31",
+                proceeding_medium="ELECTRONIC",
+            )
+        except Exception as exc:
+            # Calendar evidence is year-scoped. A malformed/uncertain registry
+            # for one year must fail closed for obligations depending on that
+            # year, but it must not suppress independently calculable deadlines
+            # from another year in the same process.
+            calendar_errors.append({"year": year, "error": str(exc)[:2000]})
+            continue
         entries.extend(composition.entries)
         calendars.append({
             "year": year, "calendar_version": composition.calendar_version,
@@ -216,8 +225,12 @@ def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target
 
     result = calculate_process(db, process_id=process_id, calendar_entries=entries)
     return {
-        "process_id": process_id, "status": "OK", "locality": locality,
-        "calendars": calendars, **result,
+        "process_id": process_id,
+        "status": "PARTIAL" if calendar_errors else "OK",
+        "locality": locality,
+        "calendars": calendars,
+        "calendar_errors": calendar_errors,
+        **result,
     }
 
 

@@ -257,9 +257,34 @@ def test_pending_resolved_obligation_projects_as_undated_deadline():
     pending = next(event for event in events if event["id"] == "deadline-pending:ob1")
 
     assert pending["kind"] == "DEADLINE"
-    assert pending["title"] == "Manifestação sobre embargos de declaração — polo ativo"
+    assert pending["title"] == "Manifestação sobre embargos de declaração"
     assert pending["term_label"] == "5 dias"
     assert pending["due_at"] is None
     assert pending["date"] == "2026-10-01"
     assert pending["status"] == "Aguardando publicação/intimação"
     assert pending["legal_basis_label"] == "CPC art. 1023, § 2º."
+
+
+def test_measure_effectiveness_trigger_is_not_replaced_by_djen_publication():
+    db = setup_db()
+    db.execute(
+        "UPDATE deadline_obligations SET "
+        "trigger_text='Após a efetivação da medida, intime-se a parte exequente para que no prazo de 20 dias se manifeste',"
+        "trigger_status='EXPLICIT',resolved_rule_id='JUDICIAL_EXPLICIT_TERM',"
+        "term_value=20,term_unit='DAYS',review_required=0,status='ACTIVE' "
+        "WHERE obligation_id='ob1'"
+    )
+    db.commit()
+    result = run(db, calendar_entries=synthetic_calendar(start="2026-03-02", end="2026-04-30"))
+    assert result["status"] == "UNRESOLVED"
+    assert result["reason"]["code"] == "MEASURE_EFFECTIVENESS_TRIGGER_NOT_CONFIRMED"
+    assert result["due_date"] is None
+    assert result["deadline_id"] is None
+
+    pending = next(
+        event for event in LegalEventProjection.project_deadlines(db, process_id="p1")
+        if event["id"] == "deadline-pending:ob1"
+    )
+    assert pending["status"] == "Aguardando efetivação da medida"
+    assert pending["due_at"] is None
+    assert pending["calculation_reason_code"] == "MEASURE_EFFECTIVENESS_TRIGGER_NOT_CONFIRMED"

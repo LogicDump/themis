@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import core.documentos.djen_sync_v1 as djen
 
@@ -98,3 +99,73 @@ def test_global_djen_skips_reference_only_processes():
             ),
         ):
             assert djen._materialized_process_ids() == [PROCESS_ID]
+
+
+
+def test_calendar_failure_is_isolated_to_its_year():
+    from core.documentos.providers import tjsp_calendar_acquisition_v1 as acquisition
+    from core.documentos import court_calendar_store_v1 as calendar_store
+    from core.documentos import deadline_calculation_store_v1 as calculation_store
+
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute(
+        "CREATE TABLE process_metadata(process_id TEXT PRIMARY KEY,tribunal TEXT,comarca TEXT)"
+    )
+    db.execute(
+        "INSERT INTO process_metadata VALUES(?,?,?)",
+        (PROCESS_ID, "TJSP", "Foro de Piracaia"),
+    )
+    db.execute(
+        "CREATE TABLE publications(publication_id TEXT PRIMARY KEY,available_on TEXT,published_on TEXT,active INTEGER)"
+    )
+    db.execute(
+        "INSERT INTO publications VALUES('pub-2025','2025-09-01',NULL,1)"
+    )
+    db.execute(
+        "CREATE TABLE deadline_instructions(process_id TEXT,source_entity TEXT,source_id TEXT)"
+    )
+    db.execute(
+        "INSERT INTO deadline_instructions VALUES(?,?,?)",
+        (PROCESS_ID, "PUBLICATION", "pub-2025"),
+    )
+    db.commit()
+
+    calls = []
+
+    def fake_acquire(_db, request):
+        calls.append(request.ano)
+        if request.ano == 2025:
+            raise ValueError("uncertain 2025 calendar record")
+        return {"snapshots": [
+            {"endpoint": acquisition.HOLIDAYS_ENDPOINT, "snapshot_id": "hol-2026"},
+            {"endpoint": acquisition.SUSPENSIONS_ENDPOINT, "snapshot_id": "sus-2026"},
+        ]}
+
+    fake_composition = SimpleNamespace(
+        entries=("calendar-2026",),
+        calendar_version="calendar-2026",
+        coverage_complete=True,
+        missing_dates=(),
+    )
+    captured = {}
+
+    def fake_calculate(_db, *, process_id, calendar_entries):
+        captured["process_id"] = process_id
+        captured["entries"] = tuple(calendar_entries)
+        return {"obligations": 1, "status_counts": {"CALCULATED": 1}, "results": []}
+
+    with (
+        patch.object(calendar_store, "migrate_connection", return_value={}),
+        patch.object(calendar_store, "get_snapshot", side_effect=lambda _db, sid: sid),
+        patch.object(acquisition, "acquire_tjsp_calendar", side_effect=fake_acquire),
+        patch.object(acquisition, "compose_effective_tjsp_calendar", return_value=fake_composition),
+        patch.object(calculation_store, "calculate_process", side_effect=fake_calculate),
+    ):
+        result = djen._calculate_tjsp_deadlines(db, PROCESS_ID, target_date="2026-10-01")
+
+    assert calls == [2025, 2026]
+    assert result["status"] == "PARTIAL"
+    assert result["calendar_errors"] == [{"year": 2025, "error": "uncertain 2025 calendar record"}]
+    assert [item["year"] for item in result["calendars"]] == [2026]
+    assert captured == {"process_id": PROCESS_ID, "entries": ("calendar-2026",)}

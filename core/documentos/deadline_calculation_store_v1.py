@@ -337,38 +337,33 @@ def _remove_obligation_projections(db: sqlite3.Connection, *, process_id: str, o
 
 
 def _deadline_title(obligation: Mapping[str, Any], result: Mapping[str, Any], rule: Mapping[str, Any]) -> str:
-    role_labels = {
-        "PLAINTIFF": "polo ativo",
-        "DEFENDANT": "polo passivo",
-        "BOTH_PARTIES": "partes",
-        "PUBLIC_PROSECUTOR": "Ministério Público",
-    }
-    role = role_labels.get(str(obligation.get("recipient_role") or "").upper(), "destinatário")
     rule_id = str(result.get("resolved_rule_id") or "")
     procedural = [x for x in rule.get("procedural_act_types", rule.get("applicable_act_types", [])) if x != "*"]
     act = procedural[0] if procedural else ""
 
     if rule_id == "CPC_ART_335_CONTESTATION" or act == "CONTESTATION":
-        return f"Contestação — {role}"
+        return "Contestação"
     if rule_id == "CPC_ART_351_REPLY_PRELIMINARY" or act == "REPLY_PRELIMINARY":
-        return f"Réplica à contestação — {role}"
+        return "Réplica à contestação"
     if rule_id == "CPC_ART_350_REPLY_NEW_FACT" or act == "REPLY_NEW_FACT":
-        return f"Manifestação sobre fatos novos — {role}"
+        return "Manifestação sobre fatos novos"
     if rule_id == "CPC_ART_437_P1_DOCUMENT_RESPONSE" or act == "DOCUMENT_RESPONSE":
-        return f"Manifestação sobre documentos — {role}"
+        return "Manifestação sobre documentos"
+    if rule_id == "CPC_ART_1023_P2_EMBARGOS_RESPONSE" or act == "DECLARATORY_EMBARGOS_RESPONSE":
+        return "Manifestação sobre embargos de declaração"
 
     value = result.get("term_value")
     unit = str(result.get("term_unit") or "")
     if isinstance(value, int) and value > 0:
         if unit == "BUSINESS_DAYS":
-            return f"Prazo judicial de {value} dias úteis — {role}"
+            return f"Prazo judicial de {value} dias úteis"
         if unit in {"DAYS", "CONTINUOUS_DAYS"}:
-            return f"Prazo judicial de {value} dias — {role}"
+            return f"Prazo judicial de {value} dias"
         if unit == "HOURS":
-            return f"Prazo judicial de {value} horas — {role}"
+            return f"Prazo judicial de {value} horas"
         if unit == "MONTHS":
-            return f"Prazo judicial de {value} meses — {role}"
-    return f"Prazo processual — {role}"
+            return f"Prazo judicial de {value} meses"
+    return "Prazo processual"
 
 
 def _project_deadline(
@@ -454,12 +449,20 @@ def calculate_and_materialize(
     # Until that factual event/outcome is independently confirmed, fail closed.
     trigger_text = str(obligation.get("trigger_text") or "")
     trigger_normalized = trigger_text.casefold()
-    nonpublication_trigger = (
+    hearing_trigger = (
         bool(trigger_text)
         and any(marker in trigger_normalized for marker in ("audiência", "audiencia"))
     )
-    if nonpublication_trigger:
+    measure_effectiveness_trigger = (
+        bool(trigger_text)
+        and any(marker in trigger_normalized for marker in (
+            "efetivação da medida", "efetivacao da medida",
+        ))
+    )
+    if hearing_trigger:
         fact, communication_error = None, "HEARING_TRIGGER_NOT_CONFIRMED"
+    elif measure_effectiveness_trigger:
+        fact, communication_error = None, "MEASURE_EFFECTIVENESS_TRIGGER_NOT_CONFIRMED"
     else:
         fact, communication_error = _publication_communication(
             db, process_id=process_id, obligation=obligation, communication_event_id=communication_event_id

@@ -68,6 +68,89 @@ def _pt_date(value: Any) -> str | None:
     return None
 
 
+
+def _canonical_party_role_label(raw_role: Any, base_role: str | None = None) -> str:
+    value = _norm_match_text(raw_role).upper().replace(" ", "")
+    mapping = {
+        "EXEQTE": "Exequente",
+        "EXEQUENTE": "Exequente",
+        "EXECTDO": "Executado",
+        "EXECUTADO": "Executado",
+        "EXECUTADA": "Executada",
+        "REQTE": "Requerente",
+        "REQUERENTE": "Requerente",
+        "REQDO": "Requerido",
+        "REQUERIDO": "Requerido",
+        "REQDA": "Requerida",
+        "REQUERIDA": "Requerida",
+        "AUTOR": "Autor",
+        "AUTORA": "Autora",
+        "REU": "Réu",
+        "RE": "Ré",
+    }
+    if value in mapping:
+        return mapping[value]
+    return {
+        "CLAIMANT": "Requerente",
+        "RESPONDENT": "Requerido",
+        "PUBLIC_PROSECUTOR": "Ministério Público",
+    }.get(str(base_role or "").upper(), str(raw_role or "").strip() or "Parte")
+
+
+def _deadline_recipient_label(
+    db: sqlite3.Connection,
+    *,
+    process_id: str,
+    recipient_role: str | None,
+    participant_ids_json: Any = None,
+) -> str | None:
+    if recipient_role == "BOTH_PARTIES":
+        return "Partes"
+    if not _has_table(db, "process_participants"):
+        return None
+    ids = _json_or_default(participant_ids_json, [])
+    participant_columns = {str(row[1]) for row in db.execute("PRAGMA table_info(process_participants)").fetchall()}
+    if not {"participant_id", "process_id", "display_name", "base_role"} <= participant_columns:
+        return None
+    entity_expr = "entity_id" if "entity_id" in participant_columns else "NULL AS entity_id"
+    rows: list[sqlite3.Row] = []
+    if isinstance(ids, list) and ids:
+        placeholders = ",".join("?" for _ in ids)
+        rows = db.execute(
+            f"SELECT participant_id,{entity_expr},display_name,base_role FROM process_participants "
+            f"WHERE process_id=? AND participant_id IN ({placeholders}) ORDER BY display_name",
+            [process_id, *ids],
+        ).fetchall()
+    if not rows:
+        base_role = {
+            "PLAINTIFF": "CLAIMANT",
+            "DEFENDANT": "RESPONDENT",
+            "PUBLIC_PROSECUTOR": "PUBLIC_PROSECUTOR",
+        }.get(str(recipient_role or "").upper())
+        if base_role:
+            rows = db.execute(
+                f"SELECT participant_id,{entity_expr},display_name,base_role FROM process_participants "
+                "WHERE process_id=? AND base_role=? ORDER BY display_name",
+                (process_id, base_role),
+            ).fetchall()
+    labels: list[str] = []
+    for row in rows:
+        raw_role = None
+        if row["entity_id"] and _has_table(db, "party_relations"):
+            rel = db.execute(
+                """SELECT role_raw,role FROM party_relations
+                   WHERE owner_type='PROCESS' AND owner_id=? AND entity_id=?
+                     AND upper(role) NOT LIKE 'ADVOG%'
+                   ORDER BY party_relation_id LIMIT 1""",
+                (process_id, row["entity_id"]),
+            ).fetchone()
+            if rel:
+                raw_role = rel["role_raw"] or rel["role"]
+        role_label = _canonical_party_role_label(raw_role, row["base_role"])
+        labels.append(f"{row['display_name']} — {role_label}")
+    return "; ".join(labels) or None
+
+
 def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenance: dict[str, Any]) -> dict[str, Any]:
     calc = provenance.get("calculation_provenance") or {}
     epistemics = calc.get("communication_date_epistemics") or {}
@@ -75,6 +158,22 @@ def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenan
     pipeline = obligation_prov.get("deadline_resolution_pipeline") or {}
     specialist = pipeline.get("specialist") or {}
     resolution = pipeline.get("rule_resolution") or {}
+
+    recipient_label = None
+    calculation_marker = provenance.get("deadline_calculation") or {}
+    obligation_id = calculation_marker.get("obligation_id")
+    if obligation_id and _has_table(db, "deadline_obligations"):
+        obligation_row = db.execute(
+            "SELECT process_id,recipient_role,recipient_participant_ids_json FROM deadline_obligations WHERE obligation_id=?",
+            (obligation_id,),
+        ).fetchone()
+        if obligation_row:
+            recipient_label = _deadline_recipient_label(
+                db,
+                process_id=str(obligation_row["process_id"]),
+                recipient_role=obligation_row["recipient_role"],
+                participant_ids_json=obligation_row["recipient_participant_ids_json"],
+            )
 
     available_on = ((epistemics.get("available_on") or {}).get("value"))
     published_on = ((epistemics.get("published_on") or {}).get("value"))
@@ -209,6 +308,7 @@ def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenan
         "counted_days_label": ", ".join(counted_days) or None,
         "excluded_days_label": ", ".join(excluded_days) or None,
         "legal_basis_label": " ".join(legal_parts) or None,
+        "recipient_label": recipient_label,
     }
 
 
@@ -379,16 +479,9 @@ def _has_table(db: sqlite3.Connection, table_name: str) -> bool:
 
 
 def _pending_deadline_title(obligation: dict[str, Any], rule: dict[str, Any]) -> str:
-    role_labels = {
-        "PLAINTIFF": "polo ativo",
-        "DEFENDANT": "polo passivo",
-        "BOTH_PARTIES": "partes",
-        "PUBLIC_PROSECUTOR": "Ministério Público",
-    }
-    role = role_labels.get(str(obligation.get("recipient_role") or "").upper(), "destinatário")
     rule_id = str(obligation.get("resolved_rule_id") or "")
     if rule_id == "CPC_ART_1023_P2_EMBARGOS_RESPONSE":
-        return f"Manifestação sobre embargos de declaração — {role}"
+        return "Manifestação sobre embargos de declaração"
     procedural = [x for x in rule.get("procedural_act_types", rule.get("applicable_act_types", [])) if x != "*"]
     act = procedural[0] if procedural else ""
     labels = {
@@ -397,8 +490,21 @@ def _pending_deadline_title(obligation: dict[str, Any], rule: dict[str, Any]) ->
         "REPLY_NEW_FACT": "Manifestação sobre fatos novos",
         "DOCUMENT_RESPONSE": "Manifestação sobre documentos",
     }
-    base = labels.get(act, "Prazo processual")
-    return f"{base} — {role}"
+    if act in labels:
+        return labels[act]
+    value = obligation.get("term_value")
+    unit = str(obligation.get("term_unit") or "")
+    if value is None:
+        value = rule.get("term_value")
+        unit = str(rule.get("term_unit") or unit)
+    if isinstance(value, int) and value > 0:
+        if unit == "BUSINESS_DAYS":
+            return f"Prazo judicial de {value} dias úteis"
+        if unit in {"DAYS", "CONTINUOUS_DAYS"}:
+            return f"Prazo judicial de {value} dias"
+        if unit == "HOURS":
+            return f"Prazo judicial de {value} horas"
+    return "Prazo processual"
 
 
 def _project_pending_deadline_obligations(
@@ -482,10 +588,29 @@ def _project_pending_deadline_obligations(
             }
 
         legal_basis = rule.get("legal_basis") or {}
-        description = (
-            f"{term_label} · aguardando publicação/intimação"
-            if term_label
-            else "Aguardando publicação/intimação"
+        latest_calc = db.execute(
+            "SELECT status,calculation_json FROM deadline_calculations "
+            "WHERE process_id=? AND obligation_id=? ORDER BY created_at DESC, calculation_id DESC LIMIT 1",
+            (obligation["process_id"], obligation["obligation_id"]),
+        ).fetchone()
+        reason_code = None
+        if latest_calc:
+            calculation_json = _json_or_default(latest_calc["calculation_json"], {})
+            reason = calculation_json.get("reason") or {}
+            reason_code = reason.get("code") if isinstance(reason, dict) else None
+        waiting_labels = {
+            "MEASURE_EFFECTIVENESS_TRIGGER_NOT_CONFIRMED": "Aguardando efetivação da medida",
+            "HEARING_TRIGGER_NOT_CONFIRMED": "Aguardando audiência",
+            "CALENDAR_COVERAGE_MISSING": "Calendário pendente de validação",
+            "COMMUNICATION_TRIGGER_MISSING": "Aguardando publicação/intimação",
+        }
+        status_label = waiting_labels.get(reason_code, "Aguardando publicação/intimação")
+        description = f"{term_label} · {status_label.lower()}" if term_label else status_label
+        recipient_label = _deadline_recipient_label(
+            db,
+            process_id=str(obligation["process_id"]),
+            recipient_role=obligation.get("recipient_role"),
+            participant_ids_json=obligation.get("recipient_participant_ids_json"),
         )
         event_time = obligation.get("origin_event_time")
         event_date = obligation.get("origin_event_date")
@@ -503,14 +628,11 @@ def _project_pending_deadline_obligations(
             "due_at": None,
             "relevant_at": relevant_at,
             "date": event_date,
-            "status": "Aguardando publicação/intimação",
+            "status": status_label,
             "priority": "NORMAL",
-            "responsible": {
-                "PLAINTIFF": "polo ativo",
-                "DEFENDANT": "polo passivo",
-                "BOTH_PARTIES": "partes",
-                "PUBLIC_PROSECUTOR": "Ministério Público",
-            }.get(str(obligation.get("recipient_role") or "").upper()),
+            "responsible": None,
+            "recipient_label": recipient_label,
+            "calculation_reason_code": reason_code,
             "source_origin": "DEADLINE_OBLIGATION",
             "resolved_at": None,
             "source_refs": refs,

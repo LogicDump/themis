@@ -25076,7 +25076,7 @@ function adaptLegalEventToUI(evt) {
 	const relevantAt = evt.relevant_at || evt.due_at || evt.scheduled_at || evt.date || "";
 	const dateKey = formatDateKey(relevantAt);
 	const dataExibicao = formatDateDisplay(relevantAt);
-	const horario = formatTimeDisplay(relevantAt, evt.date_precision);
+	const horario = kind === "DEADLINE" ? "" : formatTimeDisplay(relevantAt, evt.date_precision);
 	const processo = evt.process_id || (evt.owner_type === "PROCESS" ? evt.owner_id : "") || "";
 	let tipo = "evento";
 	let tipoLabel = "Evento";
@@ -25097,7 +25097,7 @@ function adaptLegalEventToUI(evt) {
 	if (kind === "DEADLINE") {
 		tipo = "prazo";
 		tipoLabel = "Prazo";
-		const urgency = deadlineUrgency(dateKey);
+		const urgency = deadlineUrgency(formatDateKey(evt.due_at || ""));
 		urgencyClass = urgency.className;
 		urgencyLevel = urgency.level;
 		tone = urgency.level === "today" ? "bad" : urgency.level === "near" || urgency.level === "open" ? "warn" : "muted";
@@ -25107,7 +25107,7 @@ function adaptLegalEventToUI(evt) {
 		teor = evt.determination || evt.description || "Sem determinação cadastrada.";
 		if (evt.deadline_type_label) meta.push({ label: "Natureza", value: evt.deadline_type_label });
 		if (evt.origin_label) meta.push({ label: "Origem do prazo", value: evt.origin_label, action: evt.origin_publication_id ? "publication" : null, target: evt.origin_publication_id || null });
-		if (evt.origin_act_date_label) meta.push({ label: "Ato judicial", value: "Despacho de " + evt.origin_act_date_label + (evt.origin_folio ? " — fl. " + evt.origin_folio : ""), action: evt.origin_autos_target ? "autos" : null, target: evt.origin_autos_target || null });
+		if (evt.origin_act_date_label) meta.push({ label: "Ato judicial", value: "Ato de " + evt.origin_act_date_label + (evt.origin_folio ? " — fl. " + evt.origin_folio : ""), action: evt.origin_autos_target ? "autos" : null, target: evt.origin_autos_target || null });
 		if (evt.published_on_label) meta.push({ label: "Publicação", value: evt.published_on_label, action: evt.origin_publication_id ? "publication" : null, target: evt.origin_publication_id || null });
 		if (evt.counting_start_label) meta.push({ label: "Início da contagem", value: evt.counting_start_label });
 		if (evt.term_label) meta.push({ label: "Prazo", value: evt.term_label });
@@ -25115,7 +25115,8 @@ function adaptLegalEventToUI(evt) {
 		if (evt.counted_days_label) meta.push({ label: "Dias contados", value: evt.counted_days_label });
 		if (evt.excluded_days_label) meta.push({ label: "Dias não contados", value: evt.excluded_days_label });
 		if (evt.legal_basis_label) meta.push({ label: "Fundamento", value: evt.legal_basis_label });
-		if (evt.responsible) meta.push({ label: "Responsável", value: evt.responsible });
+		if (evt.recipient_label) meta.push({ label: "Destinatário", value: evt.recipient_label });
+		else if (evt.responsible) meta.push({ label: "Destinatário", value: evt.responsible });
 		providencias = "";
 	} else if (kind === "HEARING") {
 		tipo = "audiencia";
