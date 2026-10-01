@@ -80,6 +80,7 @@ def test_calculated_materializes_one_dated_deadline_and_projection():
     assert tuple(row) == ("2026-03-06", "DAY", "ev1")
     assert len(LegalEventProjection.project_deadlines(db, process_id="p1")) == 1
     assert LegalEventProjection.project_deadlines(db, process_id="p1")[0]["kind"] == "DEADLINE"
+    assert LegalEventProjection.project_pending_deadline_obligations(db, process_id="p1") == []
     assert all(row[0] != "DEADLINE" for row in db.execute("SELECT event_type FROM process_events"))
 
 
@@ -288,6 +289,19 @@ def test_resolved_obligation_without_due_date_is_not_projected_as_deadline():
     db.commit()
 
     assert LegalEventProjection.project_deadlines(db, process_id="p1") == []
+    pending = LegalEventProjection.project_pending_deadline_obligations(db, process_id="p1")
+    assert len(pending) == 1
+    assert pending[0]["kind"] == "PENDING"
+    assert pending[0]["pending_type"] == "DEADLINE_OBLIGATION"
+    assert pending[0]["title"] == "Manifestação sobre embargos de declaração"
+    assert pending[0]["term_label"] == "5 dias úteis"
+    assert pending[0]["status"] == "Aguardando publicação/intimação"
+    assert pending[0]["due_at"] is None
+    assert pending[0]["date"] == "2026-10-01"
+    assert pending[0]["legal_basis_label"] == "CPC art. 1.023, § 2º."
+    pending_list = LegalEventProjection.list_events(db, process_id="p1", kind="PENDING")
+    assert [event["id"] for event in pending_list] == ["pending-obligation:ob1"]
+    assert LegalEventProjection.get_event(db, "pending-obligation:ob1")["source_id"] == "ob1"
     publications = LegalEventProjection.project_publications(db, process_id="p1")
     assert len(publications) == 1
     assert publications[0]["kind"] == "PUBLICATION"
@@ -311,3 +325,7 @@ def test_measure_effectiveness_trigger_is_not_replaced_by_djen_publication():
     assert result["deadline_id"] is None
 
     assert LegalEventProjection.project_deadlines(db, process_id="p1") == []
+    pending = LegalEventProjection.project_pending_deadline_obligations(db, process_id="p1")
+    assert len(pending) == 1
+    assert pending[0]["status"] == "Aguardando efetivação da medida"
+    assert pending[0]["due_at"] is None

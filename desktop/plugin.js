@@ -25157,27 +25157,52 @@ function adaptLegalEventToUI(evt) {
 		codicon = "checklist";
 		dotClass = "bg-amber-500/70";
 		status = evt.status || "Pendente";
-		if (evt.priority) meta.push({
-			label: "Prioridade",
-			value: evt.priority
-		});
-		if (relevantAt) meta.push({
-			label: "Prazo Limite",
-			value: `${dataExibicao}${horario ? " às " + horario : ""}`
-		});
-		if (evt.responsible) meta.push({
-			label: "Responsável",
-			value: evt.responsible
-		});
-		if (evt.source_origin) meta.push({
-			label: "Origem",
-			value: evt.source_origin
-		});
-		if (evt.status) meta.push({
-			label: "Status",
-			value: evt.status
-		});
-		providencias = evt.responsible ? `Atribuído a ${evt.responsible}. Providenciar saneamento da pendência.` : "";
+		if (evt.pending_type === "DEADLINE_OBLIGATION") {
+			teor = evt.description || "Obrigação processual aguardando definição do termo inicial.";
+			if (evt.origin_act_date_label || relevantAt) meta.push({
+				label: "Ato",
+				value: evt.origin_act_date_label || dataExibicao
+			});
+			if (evt.term_label) meta.push({
+				label: "Prazo aplicável",
+				value: evt.term_label
+			});
+			if (evt.recipient_label) meta.push({
+				label: "Destinatário",
+				value: evt.recipient_label
+			});
+			if (evt.legal_basis_label) meta.push({
+				label: "Fundamento",
+				value: evt.legal_basis_label
+			});
+			if (evt.status) meta.push({
+				label: "Status",
+				value: evt.status
+			});
+			providencias = "";
+		} else {
+			if (evt.priority) meta.push({
+				label: "Prioridade",
+				value: evt.priority
+			});
+			if (evt.due_at) meta.push({
+				label: "Prazo Limite",
+				value: `${dataExibicao}${horario ? " às " + horario : ""}`
+			});
+			if (evt.responsible) meta.push({
+				label: "Responsável",
+				value: evt.responsible
+			});
+			if (evt.source_origin) meta.push({
+				label: "Origem",
+				value: evt.source_origin
+			});
+			if (evt.status) meta.push({
+				label: "Status",
+				value: evt.status
+			});
+			providencias = evt.responsible ? `Atribuído a ${evt.responsible}. Providenciar saneamento da pendência.` : "";
+		}
 	} else if (kind === "PUBLICATION") {
 		tipo = "publicacao";
 		const communicationTitle = String(evt.title || "").toLocaleLowerCase("pt-BR");
