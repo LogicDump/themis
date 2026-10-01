@@ -1873,6 +1873,9 @@ def list_events(
     from core.process_storage import known_process_ids
     results=[]
     for pid in known_process_ids():
+        target = process_db_path(pid) if path is None else Path(path)
+        if not target.is_file():
+            continue
         db=_process_db(pid,path)
         try: results.extend(LegalEventProjection.list_events(db,process_id=pid,kind=kind,query=query))
         finally: db.close()

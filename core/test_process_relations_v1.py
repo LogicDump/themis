@@ -178,3 +178,12 @@ def test_visual_tree_projects_principal_under_attached_root(tmp_path: Path, monk
     assert rows[P_PRINCIPAL]["depth"] == 1
     assert rows[P_ACTIVE]["parent_process_id"] == P_PRINCIPAL
     assert rows[P_ACTIVE]["depth"] == 2
+
+
+def test_global_events_skip_reference_only_processes(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("THEMIS_DATA_ROOT", str(tmp_path))
+    migrate_all(root=tmp_path)
+    upsert_relation(P_ACTIVE, P_PRINCIPAL, "HAS_PRINCIPAL", root=tmp_path, source_type="PROCESS_COVER", source_process_id=P_ACTIVE, source_ref={"field": "processo_principal"})
+
+    from core.api import core_api
+    assert core_api.list_events() == []
