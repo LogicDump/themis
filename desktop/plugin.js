@@ -25096,7 +25096,7 @@ function adaptLegalEventToUI(evt) {
 	});
 	if (kind === "DEADLINE") {
 		tipo = "prazo";
-		tipoLabel = "Prazo";
+		tipoLabel = "Vencimento";
 		const urgency = deadlineUrgency(formatDateKey(evt.due_at || ""));
 		urgencyClass = urgency.className;
 		urgencyLevel = urgency.level;
@@ -25180,7 +25180,8 @@ function adaptLegalEventToUI(evt) {
 		providencias = evt.responsible ? `Atribuído a ${evt.responsible}. Providenciar saneamento da pendência.` : "";
 	} else if (kind === "PUBLICATION") {
 		tipo = "publicacao";
-		tipoLabel = "Publicação";
+		const communicationTitle = String(evt.title || "").toLocaleLowerCase("pt-BR");
+		tipoLabel = communicationTitle.includes("intima") ? "Intimação" : communicationTitle.includes("cita") ? "Citação" : communicationTitle.includes("notifica") ? "Notificação" : "Publicação";
 		tone = evt.active === false || evt.canceled_on ? "bad" : "muted";
 		codicon = "megaphone";
 		dotClass = evt.active === false || evt.canceled_on ? "bg-red-500/70" : "bg-blue-500/70";

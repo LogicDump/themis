@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 from core.runtime_paths import index_db_path
-from core.documentos.legal_deadline_rules_v1 import get_catalog
 
 SUPPORTED_KINDS = {"DEADLINE", "HEARING", "PENDING", "PUBLICATION"}
 
@@ -312,6 +311,12 @@ def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenan
     }
 
 
+def _legal_deadline_title(value: Any) -> str:
+    title = str(value or "").strip()
+    title = re.sub(r"\s+(?:\W+\s*)?polo\s+(?:ativo|passivo)\s*$", "", title, flags=re.IGNORECASE)
+    return title or "Vencimento processual"
+
+
 def _norm_match_text(value: Any) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
@@ -477,190 +482,6 @@ def _has_table(db: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
-
-def _pending_deadline_title(obligation: dict[str, Any], rule: dict[str, Any]) -> str:
-    rule_id = str(obligation.get("resolved_rule_id") or "")
-    if rule_id == "CPC_ART_1023_P2_EMBARGOS_RESPONSE":
-        return "Manifestação sobre embargos de declaração"
-    procedural = [x for x in rule.get("procedural_act_types", rule.get("applicable_act_types", [])) if x != "*"]
-    act = procedural[0] if procedural else ""
-    labels = {
-        "CONTESTATION": "Contestação",
-        "REPLY_PRELIMINARY": "Réplica à contestação",
-        "REPLY_NEW_FACT": "Manifestação sobre fatos novos",
-        "DOCUMENT_RESPONSE": "Manifestação sobre documentos",
-    }
-    if act in labels:
-        return labels[act]
-    value = obligation.get("term_value")
-    unit = str(obligation.get("term_unit") or "")
-    if value is None:
-        value = rule.get("term_value")
-        unit = str(rule.get("term_unit") or unit)
-    if isinstance(value, int) and value > 0:
-        if unit == "BUSINESS_DAYS":
-            return f"Prazo judicial de {value} dias úteis"
-        if unit in {"DAYS", "CONTINUOUS_DAYS"}:
-            return f"Prazo judicial de {value} dias"
-        if unit == "HOURS":
-            return f"Prazo judicial de {value} horas"
-    return "Prazo processual"
-
-
-def _project_pending_deadline_obligations(
-    db: sqlite3.Connection,
-    *,
-    process_id: str | None = None,
-) -> list[dict[str, Any]]:
-    required = {"deadline_obligations", "deadline_instructions", "process_events", "deadline_calculations"}
-    if not all(_has_table(db, table) for table in required):
-        return []
-    rules = {str(rule["rule_id"]): rule for rule in get_catalog()}
-    query = """
-        SELECT
-            o.*,
-            i.source_event_id,
-            i.action_text AS instruction_action_text,
-            i.source_refs_json AS instruction_source_refs_json,
-            e.event_date AS origin_event_date,
-            e.event_time AS origin_event_time,
-            e.raw_datetime AS origin_raw_datetime
-        FROM deadline_obligations o
-        JOIN deadline_instructions i ON i.instruction_id=o.originating_instruction_id
-        JOIN process_events e ON e.event_id=i.source_event_id
-        WHERE o.status='ACTIVE'
-          AND coalesce(o.review_required,1)=0
-          AND o.resolved_rule_id IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM deadline_calculations c
-              WHERE c.process_id=o.process_id
-                AND c.obligation_id=o.obligation_id
-                AND c.status='CALCULATED'
-                AND c.due_date IS NOT NULL
-          )
-    """
-    params: list[Any] = []
-    if process_id:
-        query += " AND o.process_id=?"
-        params.append(process_id)
-    query += " ORDER BY e.event_date,e.event_time,o.obligation_id"
-
-    events: list[dict[str, Any]] = []
-    for row in db.execute(query, params).fetchall():
-        obligation = dict(row)
-        rule = rules.get(str(obligation.get("resolved_rule_id") or ""), {})
-        term_value = obligation.get("term_value")
-        term_unit = str(obligation.get("term_unit") or "")
-        if term_value is None:
-            term_value = rule.get("term_value")
-            term_unit = str(rule.get("term_unit") or term_unit)
-        if isinstance(term_value, int) and term_value > 0:
-            if term_unit == "BUSINESS_DAYS":
-                term_label = f"{term_value} dias úteis"
-            elif term_unit in {"DAYS", "CONTINUOUS_DAYS"}:
-                term_label = f"{term_value} dias"
-            elif term_unit == "HOURS":
-                term_label = f"{term_value} horas"
-            else:
-                term_label = str(term_value)
-        else:
-            term_label = None
-
-        refs = _json_or_default(obligation.get("instruction_source_refs_json"), {})
-        page_refs = refs.get("pages") if isinstance(refs, dict) else None
-        autos_target = None
-        if page_refs:
-            first = page_refs[0]
-            document_id = first.get("document_id")
-            pdf_page = first.get("page_number")
-            folio = None
-            if document_id and pdf_page and _has_table(db, "pages"):
-                page_row = db.execute(
-                    "SELECT process_folio FROM pages WHERE document_id=? AND page_number=?",
-                    (document_id, pdf_page),
-                ).fetchone()
-                folio = page_row["process_folio"] if page_row else None
-            autos_target = {
-                "process_id": obligation["process_id"],
-                "document_id": document_id,
-                "pdf_page": pdf_page,
-                "process_folio": folio,
-            }
-
-        legal_basis = rule.get("legal_basis") or {}
-        latest_calc = db.execute(
-            "SELECT status,calculation_json FROM deadline_calculations "
-            "WHERE process_id=? AND obligation_id=? ORDER BY created_at DESC, calculation_id DESC LIMIT 1",
-            (obligation["process_id"], obligation["obligation_id"]),
-        ).fetchone()
-        reason_code = None
-        if latest_calc:
-            calculation_json = _json_or_default(latest_calc["calculation_json"], {})
-            reason = calculation_json.get("reason") or {}
-            reason_code = reason.get("code") if isinstance(reason, dict) else None
-        waiting_labels = {
-            "MEASURE_EFFECTIVENESS_TRIGGER_NOT_CONFIRMED": "Aguardando efetivação da medida",
-            "HEARING_TRIGGER_NOT_CONFIRMED": "Aguardando audiência",
-            "CALENDAR_COVERAGE_MISSING": "Calendário pendente de validação",
-            "COMMUNICATION_TRIGGER_MISSING": "Aguardando publicação/intimação",
-        }
-        status_label = waiting_labels.get(reason_code, "Aguardando publicação/intimação")
-        description = f"{term_label} · {status_label.lower()}" if term_label else status_label
-        recipient_label = _deadline_recipient_label(
-            db,
-            process_id=str(obligation["process_id"]),
-            recipient_role=obligation.get("recipient_role"),
-            participant_ids_json=obligation.get("recipient_participant_ids_json"),
-        )
-        event_time = obligation.get("origin_event_time")
-        event_date = obligation.get("origin_event_date")
-        relevant_at = f"{event_date}T{event_time}" if event_date and event_time else event_date
-        events.append({
-            "id": f"deadline-pending:{obligation['obligation_id']}",
-            "kind": "DEADLINE",
-            "source_entity": "deadline_obligations",
-            "source_id": obligation["obligation_id"],
-            "owner_type": "PROCESS",
-            "owner_id": obligation["process_id"],
-            "process_id": obligation["process_id"],
-            "title": _pending_deadline_title(obligation, rule),
-            "description": description,
-            "due_at": None,
-            "relevant_at": relevant_at,
-            "date": event_date,
-            "status": status_label,
-            "priority": "NORMAL",
-            "responsible": None,
-            "recipient_label": recipient_label,
-            "calculation_reason_code": reason_code,
-            "source_origin": "DEADLINE_OBLIGATION",
-            "resolved_at": None,
-            "source_refs": refs,
-            "autos_target": autos_target,
-            "origin_event_id": obligation.get("source_event_id"),
-            "origin_act_date": event_date,
-            "origin_act_date_label": _pt_date(event_date),
-            "origin_folio": autos_target.get("process_folio") if autos_target else None,
-            "origin_autos_target": autos_target,
-            "origin_label": f"Ato judicial de {_pt_date(event_date)}" if event_date else None,
-            "determination": obligation.get("instruction_action_text"),
-            "term_label": term_label,
-            "deadline_type_label": "Prazo legal" if rule else "Prazo processual",
-            "legal_basis": legal_basis,
-            "legal_basis_label": (
-                f"CPC art. {legal_basis.get('article')}, {legal_basis.get('paragraph')}."
-                if legal_basis.get("article") and legal_basis.get("paragraph")
-                else f"CPC art. {legal_basis.get('article')}."
-                if legal_basis.get("article")
-                else None
-            ),
-            "provenance": _json_or_default(obligation.get("provenance_json"), {}),
-            "created_at": obligation.get("created_at"),
-            "updated_at": obligation.get("updated_at"),
-        })
-    return events
-
-
 class LegalEventProjection:
     """Projeção de leitura que agrega eventos de múltiplas entidades canônicas."""
 
@@ -753,7 +574,7 @@ class LegalEventProjection:
                 "owner_type": r["owner_type"],
                 "owner_id": r["owner_id"],
                 "process_id": r["owner_id"] if r["owner_type"] == "PROCESS" else None,
-                "title": r["title"],
+                "title": _legal_deadline_title(r["title"]),
                 "description": r["description"],
                 "term": r["term"],
                 "deadline_type": r["deadline_type"],
@@ -776,7 +597,6 @@ class LegalEventProjection:
                 "updated_at": r["updated_at"],
             })
 
-        events.extend(_project_pending_deadline_obligations(db, process_id=process_id))
         return events
 
     @classmethod
@@ -965,6 +785,12 @@ class LegalEventProjection:
             published_on = r["published_on"]
             available_on = r["available_on"]
             relevant_at = published_on or available_on
+            publication_type = str(r["publication_type"] or "").strip()
+            publication_title = {
+                "INTIMATION": "Intimação",
+                "CITATION": "Citação",
+                "NOTICE": "Notificação",
+            }.get(publication_type.upper(), publication_type or "Publicação")
             provenance = _json_or_default(r["provenance_json"], {})
             raw_item = provenance.get("raw_item") or {}
             communication_number = raw_item.get("numeroComunicacao") or raw_item.get("numero_comunicacao")
@@ -983,7 +809,8 @@ class LegalEventProjection:
                 "owner_type": "PROCESS",
                 "owner_id": r["process_id"],
                 "process_id": r["process_id"],
-                "title": r["publication_type"] or "Publicação",
+                "title": publication_title,
+                "publication_type": publication_type or None,
                 "description": r["full_text"],
                 "published_at": published_on,
                 "available_at": available_on,

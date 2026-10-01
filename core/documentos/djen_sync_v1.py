@@ -195,6 +195,12 @@ def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target
             if len(value) >= 4 and value[:4].isdigit():
                 years.add(int(value[:4]))
 
+    # A deadline communicated late in December may resume only after the CPC
+    # art. 220 suspension and therefore requires the following year's official
+    # calendar. Calendar acquisition is evidence-scoped, so include the
+    # immediately following year for every relevant communication/target year.
+    years |= {year + 1 for year in tuple(years)}
+
     entries = []
     calendars = []
     calendar_errors = []

@@ -138,16 +138,17 @@ def test_calendar_failure_is_isolated_to_its_year():
         if request.ano == 2025:
             raise ValueError("uncertain 2025 calendar record")
         return {"snapshots": [
-            {"endpoint": acquisition.HOLIDAYS_ENDPOINT, "snapshot_id": "hol-2026"},
-            {"endpoint": acquisition.SUSPENSIONS_ENDPOINT, "snapshot_id": "sus-2026"},
+            {"endpoint": acquisition.HOLIDAYS_ENDPOINT, "snapshot_id": f"hol-{request.ano}"},
+            {"endpoint": acquisition.SUSPENSIONS_ENDPOINT, "snapshot_id": f"sus-{request.ano}"},
         ]}
 
-    fake_composition = SimpleNamespace(
-        entries=("calendar-2026",),
-        calendar_version="calendar-2026",
-        coverage_complete=True,
-        missing_dates=(),
-    )
+    def fake_compose(_holidays, _suspensions, request, **_kwargs):
+        return SimpleNamespace(
+            entries=(f"calendar-{request.ano}",),
+            calendar_version=f"calendar-{request.ano}",
+            coverage_complete=True,
+            missing_dates=(),
+        )
     captured = {}
 
     def fake_calculate(_db, *, process_id, calendar_entries):
@@ -159,13 +160,13 @@ def test_calendar_failure_is_isolated_to_its_year():
         patch.object(calendar_store, "migrate_connection", return_value={}),
         patch.object(calendar_store, "get_snapshot", side_effect=lambda _db, sid: sid),
         patch.object(acquisition, "acquire_tjsp_calendar", side_effect=fake_acquire),
-        patch.object(acquisition, "compose_effective_tjsp_calendar", return_value=fake_composition),
+        patch.object(acquisition, "compose_effective_tjsp_calendar", side_effect=fake_compose),
         patch.object(calculation_store, "calculate_process", side_effect=fake_calculate),
     ):
         result = djen._calculate_tjsp_deadlines(db, PROCESS_ID, target_date="2026-10-01")
 
-    assert calls == [2025, 2026]
+    assert calls == [2025, 2026, 2027]
     assert result["status"] == "PARTIAL"
     assert result["calendar_errors"] == [{"year": 2025, "error": "uncertain 2025 calendar record"}]
-    assert [item["year"] for item in result["calendars"]] == [2026]
-    assert captured == {"process_id": PROCESS_ID, "entries": ("calendar-2026",)}
+    assert [item["year"] for item in result["calendars"]] == [2026, 2027]
+    assert captured == {"process_id": PROCESS_ID, "entries": ("calendar-2026", "calendar-2027")}

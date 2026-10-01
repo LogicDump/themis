@@ -91,6 +91,18 @@ def test_reexecution_is_one_calculation_and_one_operational_projection():
     assert db.execute("SELECT count(*) FROM deadlines").fetchone()[0] == 1
 
 
+def test_projection_never_exposes_legacy_polo_labels():
+    db = setup_db()
+    run(db)
+    db.execute("UPDATE deadlines SET title='Réplica à contestação — polo ativo'")
+    db.commit()
+
+    event = LegalEventProjection.project_deadlines(db, process_id="p1")[0]
+    assert event["title"] == "Réplica à contestação"
+    assert "polo ativo" not in json.dumps(event, ensure_ascii=False).lower()
+    assert "polo passivo" not in json.dumps(event, ensure_ascii=False).lower()
+
+
 def test_new_communication_fact_reconciles_the_existing_projection_in_place():
     db = setup_db()
     first = run(db)
@@ -238,7 +250,29 @@ def test_calculate_process_returns_fail_closed_status_summary():
     assert result["results"][0]["due_date"] == "2026-03-06"
 
 
-def test_pending_resolved_obligation_projects_as_undated_deadline():
+def test_deadline_counting_crosses_year_boundary():
+    db = setup_db(published_on=None)
+    db.execute("UPDATE publications SET available_on='2026-12-28' WHERE publication_id='pub1'")
+    db.execute("UPDATE process_events SET event_date='2026-12-28',date_precision='DATE' WHERE event_id='ev1'")
+    db.execute(
+        "UPDATE deadline_obligations SET term_value=5,term_unit='DAYS',"
+        "resolved_rule_id='JUDICIAL_EXPLICIT_TERM',review_required=0 WHERE obligation_id='ob1'"
+    )
+    db.commit()
+
+    calendar = synthetic_calendar(
+        start="2026-12-28",
+        end="2027-01-31",
+        non_business={"2027-01-23", "2027-01-24"},
+    )
+    result = run(db, calendar_entries=calendar)
+
+    assert result["status"] == "CALCULATED"
+    assert result["due_date"] == "2027-01-27"
+    assert db.execute("SELECT due_at FROM deadlines").fetchone()[0] == "2027-01-27"
+
+
+def test_resolved_obligation_without_due_date_is_not_projected_as_deadline():
     db = setup_db()
     db.execute(
         """UPDATE deadline_obligations
@@ -253,16 +287,11 @@ def test_pending_resolved_obligation_projects_as_undated_deadline():
     )
     db.commit()
 
-    events = LegalEventProjection.project_deadlines(db, process_id="p1")
-    pending = next(event for event in events if event["id"] == "deadline-pending:ob1")
-
-    assert pending["kind"] == "DEADLINE"
-    assert pending["title"] == "Manifestação sobre embargos de declaração"
-    assert pending["term_label"] == "5 dias"
-    assert pending["due_at"] is None
-    assert pending["date"] == "2026-10-01"
-    assert pending["status"] == "Aguardando publicação/intimação"
-    assert pending["legal_basis_label"] == "CPC art. 1023, § 2º."
+    assert LegalEventProjection.project_deadlines(db, process_id="p1") == []
+    publications = LegalEventProjection.project_publications(db, process_id="p1")
+    assert len(publications) == 1
+    assert publications[0]["kind"] == "PUBLICATION"
+    assert publications[0]["title"] == "Intimação"
 
 
 def test_measure_effectiveness_trigger_is_not_replaced_by_djen_publication():
@@ -281,10 +310,4 @@ def test_measure_effectiveness_trigger_is_not_replaced_by_djen_publication():
     assert result["due_date"] is None
     assert result["deadline_id"] is None
 
-    pending = next(
-        event for event in LegalEventProjection.project_deadlines(db, process_id="p1")
-        if event["id"] == "deadline-pending:ob1"
-    )
-    assert pending["status"] == "Aguardando efetivação da medida"
-    assert pending["due_at"] is None
-    assert pending["calculation_reason_code"] == "MEASURE_EFFECTIVENESS_TRIGGER_NOT_CONFIRMED"
+    assert LegalEventProjection.project_deadlines(db, process_id="p1") == []
