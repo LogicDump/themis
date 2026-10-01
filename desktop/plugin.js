@@ -26671,7 +26671,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		setSelectedPid(pid);
 	};
 	const changeProcessSection = (section) => {
-		if (section === "pesquisa" && pipelineRunning) return;
 		if (activeSection === "autos") saveAutosReading();
 		autosRestoreKeyRef.current = "";
 		setActiveSection(section);
@@ -26867,32 +26866,32 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	const v2PendingTotal = Number(selectedSummaryStatus?.v2_pending ?? selectedSummaryJob?.pending ?? 0);
 	const summaryJobMessage = movementAnalysisJobMessage(selectedSummaryJob);
 	const pipelineStatus = String(currentProcess?.pipeline_status || "").toUpperCase();
-	const pipelineRunning = [
+	const pipelineDocumentBusy = [
 		"CAPTURED",
 		"QUEUED",
 		"PROCESSING",
 		"INGESTING",
 		"VALIDATED",
 		"EXTRACTING",
-		"STRUCTURING",
-		"INDEXING",
-		"FINALIZING"
+		"STRUCTURING"
 	].includes(pipelineStatus);
+	const pipelineIndexing = ["INDEXING", "FINALIZING"].includes(pipelineStatus);
+	const pipelineRunning = pipelineDocumentBusy || pipelineIndexing;
 	const pipelineProgress = currentProcess?.pipeline_progress || {};
 	const pipelinePercent = Math.max(0, Math.min(100, Number(pipelineProgress.percentage) || 0));
 	const currentAutos = autos[selectedPid] || null;
 	const renderedAutosCount = activeSection === "autos" && currentAutos?.pages?.length > 0 ? Math.min(currentAutos.pages.length, visibleAutosPages[selectedPid] || AUTOS_INITIAL_BATCH) : 0;
 	return jsxs("main", {
-		className: "flex min-h-0 flex-1 flex-col overflow-hidden p-4 sm:p-5 gap-3",
+		className: "relative flex min-h-0 flex-1 flex-col overflow-hidden p-4 sm:p-5 gap-3",
 		children: [
 			jsx("style", { children: MARKDOWN_DOCUMENT_CSS }),
 			pipelineRunning || pipelineStatus === "ERROR" ? jsxs("div", {
 				role: pipelineStatus === "ERROR" ? "alert" : "status",
-				className: cn("order-last shrink-0 rounded-md border px-3 py-2", pipelineStatus === "ERROR" ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-primary/20 bg-primary/5 text-foreground"),
+				className: cn("pointer-events-none absolute inset-x-4 bottom-3 z-30 rounded-md border px-3 py-2 shadow-sm backdrop-blur-sm sm:inset-x-5", pipelineStatus === "ERROR" ? "border-destructive/30 bg-background/95 text-destructive" : "border-primary/20 bg-background/95 text-foreground"),
 				children: [
 					jsxs("div", {
 						className: "flex items-center justify-between gap-3 text-xs font-medium",
-						children: [jsx("span", { children: pipelineStatus === "ERROR" ? "Falha ao processar o processo" : "Themis está processando este processo" }), pipelineStatus === "ERROR" ? null : jsx("span", {
+						children: [jsx("span", { children: pipelineStatus === "ERROR" ? "Falha no processamento" : pipelineIndexing ? "Preparando pesquisa em segundo plano" : "Preparando documentos" }), pipelineStatus === "ERROR" ? null : jsx("span", {
 							className: "tabular-nums text-muted-foreground",
 							children: `${pipelinePercent}%`
 						})]
@@ -26947,7 +26946,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 				className: "flex items-start justify-between gap-3",
 				children: [jsx(PanelHeader, {
 					title: "Gestão Processual",
-					subtitle: `Acervo: ${processes.length} indexado(s) · ${Math.max(0, processStructure.filter((row) => row.materialized === false).length)} referência(s)`
+					subtitle: `Acervo: ${processes.length} processo(s) · ${Math.max(0, processStructure.filter((row) => row.materialized === false).length)} referência(s)`
 				}), jsxs("div", {
 					className: "flex items-center gap-2 shrink-0",
 					children: [jsxs(DropdownMenu, {
@@ -27041,9 +27040,9 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												children: [jsx("span", {
 													className: `truncate font-mono text-xs ${materialized ? "font-semibold" : "font-medium"}`,
 													children: pid
-												}), jsx("span", {
+												}), materialized && !relationLabel ? null : jsx("span", {
 													className: "truncate text-[0.66rem] font-normal text-muted-foreground",
-													children: relationLabel ? `${relationLabel} · ${materialized ? "indexado" : "somente referência"}` : materialized ? "indexado" : "somente referência"
+													children: relationLabel ? materialized ? relationLabel : `${relationLabel} · somente referência` : "somente referência"
 												})]
 											})
 										})
@@ -27172,10 +27171,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 										children: selectedPid
 									})]
 								}), jsx(SegmentedControl, {
-									options: pipelineRunning ? PROCESS_SECTIONS.map((option) => option.id === "pesquisa" ? {
-										...option,
-										label: "Pesquisa · indexando"
-									} : option) : PROCESS_SECTIONS,
+									options: PROCESS_SECTIONS,
 									value: activeSection,
 									onChange: changeProcessSection
 								})]
@@ -27497,7 +27493,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 														}),
 														jsx(PanelAction, {
 															icon: "edit",
-															disabled: !selectedSummaryStatusReady || pipelineRunning || selectedSummaryJobActive || v2EligibleTotal === 0,
+															disabled: !selectedSummaryStatusReady || pipelineDocumentBusy || selectedSummaryJobActive || v2EligibleTotal === 0,
 															onClick: requestAllProcessSummaries,
 															children: "Atualizar todos"
 														})
@@ -27510,9 +27506,9 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												}) : null]
 											})]
 										}), currentMovements.length === 0 ? jsx(PanelEmpty, {
-											icon: pipelineRunning ? "clock" : pipelineStatus === "ERROR" ? "error" : "clock",
-											title: pipelineRunning ? "Sincronização em andamento" : pipelineStatus === "ERROR" ? "Falha na sincronização" : "Nenhuma movimentação",
-											description: pipelineRunning ? currentProcess?.pipeline_progress?.message || "Os documentos estão sendo recebidos e processados. As movimentações aparecerão ao término da sincronização." : pipelineStatus === "ERROR" ? currentProcess?.pipeline_error || "O processamento dos documentos falhou. Tente sincronizar novamente após corrigir o problema." : "Não foram encontradas movimentações processuais no histórico."
+											icon: pipelineDocumentBusy ? "clock" : pipelineStatus === "ERROR" ? "error" : "clock",
+											title: pipelineDocumentBusy ? "Processamento dos documentos em andamento" : pipelineStatus === "ERROR" ? "Falha na sincronização" : "Nenhuma movimentação",
+											description: pipelineDocumentBusy ? currentProcess?.pipeline_progress?.message || "Os documentos estão sendo recebidos e processados. As movimentações aparecerão assim que a estrutura documental estiver pronta." : pipelineStatus === "ERROR" ? currentProcess?.pipeline_error || "O processamento dos documentos falhou. Tente sincronizar novamente após corrigir o problema." : "Não foram encontradas movimentações processuais no histórico."
 										}) : orderedMovements.map((mov, idx) => renderMovementItem(mov, idx, openAutosAtMovementPage, isMovementExpanded(mov, idx), () => toggleMovementExpanded(mov, idx), movementSummaries[selectedPid]?.[mov.movement_id] || null, Boolean(summaryLoading[mov.movement_id]), summaryErrors[mov.movement_id] || null, () => requestMovementSummary(mov), expandedMovementSummaries[mov.movement_id] ?? true, () => toggleMovementSummary(mov.movement_id), processSummaryJob?.process_id === selectedPid && processSummaryJob?.status === "RUNNING"))]
 									})]
 								}),
@@ -27545,8 +27541,8 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												"data-autos-total-pages": currentAutos?.pages?.length || 0,
 												children: [!currentAutos?.pages || currentAutos.pages.length === 0 ? jsx(PanelEmpty, {
 													icon: "book",
-													title: "Autos não indexados",
-													description: "As páginas digitalizadas deste processo ainda não foram processadas."
+													title: "Autos ainda não processados",
+													description: "As páginas digitalizadas deste processo ainda estão sendo preparadas."
 												}) : jsx("div", {
 													className: "space-y-6",
 													style: {
@@ -27571,7 +27567,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												icon: "warning",
 												title: "PDF indisponível",
 												description: pdfError
-											}) : pipelineRunning ? jsx(PanelEmpty, {
+											}) : pipelineDocumentBusy ? jsx(PanelEmpty, {
 												icon: "clock",
 												title: "PDF disponível após o processamento",
 												description: pipelineProgress.message || "O Themis está preparando os documentos deste processo."

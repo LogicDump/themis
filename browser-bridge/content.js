@@ -485,14 +485,39 @@
       const el = doc.querySelector(selector);
       return el ? (el.textContent || "").trim().replace(/\s+/g, " ") : "";
     };
-    const cnjPattern = /\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/;
-    const findCnjByLabel = (labelRegex) => {
-      const candidates = doc.querySelectorAll("tr, .secaoFormBody, .secaoFormGrid, div, li");
-      for (const el of candidates) {
-        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
-        if (!text || !labelRegex.test(text)) continue;
-        const match = text.match(cnjPattern);
-        if (match) return match[0];
+    const cnjPattern = /\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/g;
+    const findCnjByLabel = (labelRegex, excludeCnj = "") => {
+      // CPOPG mixes table and div layouts. Never search an entire section for
+      // the first CNJ: the section also contains the current process number.
+      // Resolve the value adjacent to the *label* instead.
+      const labels = doc.querySelectorAll("td, th, label, span, strong, b");
+      for (const labelEl of labels) {
+        const labelText = (labelEl.textContent || "").replace(/\s+/g, " ").trim();
+        if (!labelText || labelText.length > 120 || !labelRegex.test(labelText)) continue;
+
+        const valueCandidates = [];
+        if (labelEl.nextElementSibling) valueCandidates.push(labelEl.nextElementSibling);
+
+        const cell = labelEl.closest("td, th");
+        if (cell?.nextElementSibling) valueCandidates.push(cell.nextElementSibling);
+
+        const row = labelEl.closest("tr");
+        if (row) {
+          const cells = Array.from(row.querySelectorAll(":scope > td, :scope > th"));
+          const ownerIndex = cells.findIndex((candidate) => candidate === cell || candidate.contains(labelEl));
+          if (ownerIndex >= 0) valueCandidates.push(...cells.slice(ownerIndex + 1));
+        }
+
+        if (labelEl.parentElement?.nextElementSibling) {
+          valueCandidates.push(labelEl.parentElement.nextElementSibling);
+        }
+
+        for (const valueEl of valueCandidates) {
+          const valueText = (valueEl?.textContent || "").replace(/\s+/g, " ").trim();
+          const matches = valueText.match(cnjPattern) || [];
+          const related = matches.find((candidate) => candidate !== excludeCnj);
+          if (related) return related;
+        }
       }
       return "";
     };
@@ -504,8 +529,10 @@
       (mainContainer && /segredo\s+de\s+justi[çc]a/i.test(mainContainer.textContent || ""))
     );
 
+    const currentCnjText = getText("#numeroProcesso") || getText("#numeroDigitoAnoUnificado") || getText(".numeroProcesso");
+    const currentCnj = (currentCnjText.match(cnjPattern) || [currentCnjText])[0] || "";
     const basicData = {
-      cnj: getText("#numeroProcesso") || getText("#numeroDigitoAnoUnificado") || getText(".numeroProcesso"),
+      cnj: currentCnj,
       segredo_justica: segredoJustica,
       segredo_justica_label: getText("#labelSegredoDeJusticaProcesso"),
       classe: getText("#classeProcesso") || getText("span[title='Classe']") || getText("#classe"),
@@ -519,14 +546,8 @@
       area: getText("#areaProcesso") || getText("#area"),
       valor_acao: getText("#valorAcaoProcesso") || getText("#valorAcao"),
       outros_numeros: getText("#outrosNumerosProcesso") || getText("#outrosNumeros"),
-      processo_principal:
-        getText("#processoPrincipal") ||
-        getText("#numeroProcessoPrincipal") ||
-        findCnjByLabel(/processo\s+principal/i),
-      apensado_ao:
-        getText("#processoApensadoAo") ||
-        getText("#numeroProcessoApensadoAo") ||
-        findCnjByLabel(/apensad[oa]\s+ao/i)
+      processo_principal: findCnjByLabel(/processo\s+principal/i, currentCnj),
+      apensado_ao: findCnjByLabel(/apensad[oa]\s+ao/i, currentCnj)
     };
 
     // 2. Partes e Advogados. tableTodasPartes contém o quadro completo, mesmo
