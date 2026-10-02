@@ -368,6 +368,51 @@ def save_analysis_v2_batch(db: sqlite3.Connection, records: list[dict[str, Any]]
     return {"imported": len(inserted), "movement_ids": inserted}
 
 
+def save_analysis_v3_batch(db: sqlite3.Connection, records: list[dict[str, Any]], *, provider: str | None, model: str | None, usage: Any) -> dict[str, Any]:
+    """Persist a fully validated V3 analysis with its UI-compatible summary."""
+    if not records:
+        return {"imported": 0, "movement_ids": []}
+    from core.documentos.movement_analysis_v3 import SCHEMA_VERSION
+    inserted: list[str] = []
+    try:
+        db.execute("BEGIN")
+        for record in records:
+            movement_id = str(record["movement_id"])
+            summary = str(record["summary"]).strip()
+            source_hash = str(record["source_hash"])
+            analysis = dict(record["analysis"])
+            if (
+                not summary or not source_hash
+                or analysis.get("movement_id") != movement_id
+                or analysis.get("summary") != summary
+            ):
+                raise ValueError(f"analise V3 incompleta para {movement_id}")
+            version = int(db.execute(
+                "SELECT coalesce(max(summary_version),0)+1 FROM movement_summaries WHERE movement_id=?",
+                (movement_id,),
+            ).fetchone()[0])
+            db.execute(
+                """INSERT INTO movement_summaries(
+                  summary_id,movement_id,summary_version,summary_text,prompt_version,purpose,provider,model,
+                  usage_json,source_hash,generated_at,analysis_schema_version,analysis_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    f"{movement_id}:summary:{version}", movement_id, version, summary,
+                    "movement-summary-v6-analysis-v3", PURPOSE, provider, model,
+                    json.dumps(usage, ensure_ascii=False, sort_keys=True) if usage is not None else None,
+                    source_hash, _now(), SCHEMA_VERSION,
+                    json.dumps(analysis, ensure_ascii=False, sort_keys=True),
+                ),
+            )
+            inserted.append(movement_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    _sync_summary_embeddings(db, inserted)
+    return {"imported": len(inserted), "movement_ids": inserted}
+
+
 def _sync_summary_embeddings(db: sqlite3.Connection, movement_ids: list[str]) -> None:
     """Maintain the rebuildable index after summary persistence, without failing the summary save."""
     try:
@@ -388,6 +433,25 @@ def persisted_analyses(db: sqlite3.Connection) -> list[dict[str, Any]]:
         ON c.movement_id=s.movement_id AND c.v=s.summary_version
         WHERE s.analysis_schema_version=? ORDER BY s.movement_id""", ("movement-analysis-v2",)).fetchall()
     return [{"process_id": row["process_id"], "movement_id": row["movement_id"], "source_hash": row["source_hash"], "analysis": json.loads(row["analysis_json"])} for row in rows]
+
+
+def persisted_analyses_v3(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Latest V3 analyses in deterministic order."""
+    if not ANALYSIS_COLUMNS.issubset(_table_columns(db)):
+        return []
+    rows = db.execute(
+        """SELECT m.process_id,s.movement_id,s.source_hash,s.analysis_json
+           FROM movement_summaries s JOIN movements m ON m.movement_id=s.movement_id
+           JOIN (SELECT movement_id,max(summary_version) v FROM movement_summaries GROUP BY movement_id) c
+             ON c.movement_id=s.movement_id AND c.v=s.summary_version
+           WHERE s.analysis_schema_version=? ORDER BY s.movement_id""",
+        ("movement-analysis-v3",),
+    ).fetchall()
+    return [
+        {"process_id": row["process_id"], "movement_id": row["movement_id"],
+         "source_hash": row["source_hash"], "analysis": json.loads(row["analysis_json"])}
+        for row in rows
+    ]
 
 
 def _movement_payload(db: sqlite3.Connection, movement_id: str) -> dict[str, Any] | None:
@@ -501,6 +565,28 @@ def current_v2_analysis(db: sqlite3.Connection, movement_id: str) -> dict[str, A
         (movement_id,),
     ).fetchone()
     if not row or row["analysis_schema_version"] != "movement-analysis-v2" or not row["analysis_json"]:
+        return None
+    value = dict(row)
+    try:
+        value["analysis"] = json.loads(value.pop("analysis_json"))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return value
+
+
+def current_v3_analysis(db: sqlite3.Connection, movement_id: str) -> dict[str, Any] | None:
+    """Return the latest summary only when that version carries a V3 analysis."""
+    columns = _table_columns(db)
+    if not ANALYSIS_COLUMNS.issubset(columns):
+        return None
+    row = db.execute(
+        """SELECT summary_id, movement_id, summary_version, summary_text, source_hash,
+                  generated_at, analysis_schema_version, analysis_json
+           FROM movement_summaries WHERE movement_id=?
+           ORDER BY summary_version DESC LIMIT 1""",
+        (movement_id,),
+    ).fetchone()
+    if not row or row["analysis_schema_version"] != "movement-analysis-v3" or not row["analysis_json"]:
         return None
     value = dict(row)
     try:

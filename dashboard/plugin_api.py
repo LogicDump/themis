@@ -461,7 +461,7 @@ def _new_process_summary_job(process_id: str, movement_ids: list[str], total_eli
         "job_id": uuid.uuid4().hex,
         "process_id": process_id,
         "status": "PENDING",
-        "schema_version": "movement-summary-batch-v1",
+        "schema_version": "movement-analysis-v3-job-v1",
         "total": len(movement_ids),
         "total_eligible": int(total_eligible),
         "completed": 0,

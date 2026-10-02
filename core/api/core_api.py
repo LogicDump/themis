@@ -777,7 +777,7 @@ def process_summary_status(pid: str, path: Path | None = None) -> dict | None:
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_summary_source_state'").fetchone():
             raise RuntimeError("movement_summary_source_state migration is required")
         rows = db.execute("""SELECT m.movement_id, state.eligible, state.source_hash AS current_source_hash,
-                    s.source_hash AS summary_source_hash, s.summary_text
+                    s.source_hash AS summary_source_hash, s.summary_text, s.analysis_schema_version
                 FROM movements m LEFT JOIN movement_summary_source_state state ON state.movement_id=m.movement_id
                 LEFT JOIN movement_summaries s ON s.movement_id=m.movement_id AND s.summary_version=(
                     SELECT max(latest.summary_version) FROM movement_summaries latest
@@ -791,6 +791,7 @@ def process_summary_status(pid: str, path: Path | None = None) -> dict | None:
                 and row["current_source_hash"]
                 and row["summary_source_hash"] == row["current_source_hash"]
                 and str(row["summary_text"] or "").strip()
+                and row["analysis_schema_version"] == "movement-analysis-v3"
             )
             if row["summary_source_hash"] is None:
                 counts["missing"] += 1
@@ -813,6 +814,14 @@ def movement_analysis_v2_current(movement_id: str, path: Path | None = None) -> 
     db = _record_db("movements", "movement_id", movement_id, path)
     try:
         return current_movement_v2_analysis(db, movement_id)
+    finally:
+        db.close()
+
+def movement_analysis_v3_current(movement_id: str, path: Path | None = None) -> dict | None:
+    from core.documentos.movement_summary_store_v1 import current_v3_analysis
+    db = _record_db("movements", "movement_id", movement_id, path)
+    try:
+        return current_v3_analysis(db, movement_id)
     finally:
         db.close()
 
@@ -876,6 +885,10 @@ def movement_analysis_v2_source_record(movement_id: str, path: Path | None = Non
     finally:
         db.close()
 
+def movement_analysis_v3_source_record(movement_id: str, path: Path | None = None) -> dict | None:
+    """V3 uses the same canonical own-piece input contract as V2."""
+    return movement_analysis_v2_source_record(movement_id, path)
+
 def movement_analysis_v2_context(process_id: str, path: Path | None = None) -> dict | None:
     """Small process-local identity context plus deterministic persisted analysis references."""
     from core.documentos.movement_summary_store_v1 import persisted_analyses
@@ -898,6 +911,43 @@ def movement_analysis_v2_context(process_id: str, path: Path | None = None) -> d
         return {"main": {"process_id": process_id, "status": process["status"], "parties": people, "representations": rep_links},
                 "main_ids": {process_id, *(p["id"] for p in people)},
                 "known": build_known(fresh), "known_ids": {obj["id"] for obj in build_known(fresh)}}
+    finally:
+        db.close()
+
+def movement_analysis_v3_context(process_id: str, path: Path | None = None) -> dict | None:
+    """Small process context plus deterministic CURRENT V3 evidence references."""
+    from core.documentos.movement_summary_store_v1 import persisted_analyses_v3
+    from core.documentos.movement_analysis_v3 import build_known
+    db = _process_db(process_id, path)
+    try:
+        process = db.execute("SELECT status FROM processes WHERE process_id=?", (process_id,)).fetchone()
+        if not process:
+            return None
+        participants = list_process_participants(db, process_id)
+        representations = list_process_representations(db, process_id)
+        people = [
+            {"id": item["participant_id"], "name": item["display_name"], "role": item["base_role"]}
+            for item in participants
+        ]
+        rep_links = [
+            {"representative_id": item["representative_participant_id"],
+             "represented_id": item["represented_participant_id"],
+             "kind": item["representation_kind"]}
+            for item in representations
+        ]
+        fresh = []
+        for item in persisted_analyses_v3(db):
+            if source_text_and_hash(db, item["movement_id"])[1] == item["source_hash"]:
+                fresh.append(item)
+        known = build_known(fresh)
+        return {
+            "main": {"process_id": process_id, "status": process["status"],
+                     "parties": people, "representations": rep_links},
+            "main_ids": {process_id, *(p["id"] for p in people)},
+            "actor_ids": {p["id"] for p in people},
+            "known": known,
+            "known_ids": {obj["id"] for obj in known},
+        }
     finally:
         db.close()
 
@@ -955,6 +1005,19 @@ def save_movement_analysis_v2_batch_record(records: list[dict], *, provider: str
     try:
         migrate_connection(db)
         return save_analysis_v2_batch(db, records, provider=provider, model=model, usage=usage)
+    finally:
+        db.close()
+
+def save_movement_analysis_v3_batch_record(records: list[dict], *, provider: str | None, model: str | None, usage: object, path: Path | None = None) -> dict:
+    from core.documentos.movement_summary_store_v1 import migrate_connection, save_analysis_v3_batch
+    if not records:
+        return {"imported": 0, "movement_ids": []}
+    db_path = path or process_db_path(_record_process_id("movements", "movement_id", records[0]["movement_id"]))
+    db = sqlite3.connect(str(db_path)); db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
+    try:
+        migrate_connection(db)
+        return save_analysis_v3_batch(db, records, provider=provider, model=model, usage=usage)
     finally:
         db.close()
 
@@ -1034,7 +1097,7 @@ def process_movement_summary_targets(pid: str, *, force_all: bool = False, path:
                    WHERE latest.movement_id=m.movement_id)
                  WHERE m.process_id=? AND state.eligible=1"""
         if not force_all:
-            sql += " AND (s.movement_id IS NULL OR s.source_hash IS NULL OR s.source_hash<>state.source_hash OR trim(s.summary_text)='')"
+            sql += " AND (s.movement_id IS NULL OR s.source_hash IS NULL OR s.source_hash<>state.source_hash OR trim(s.summary_text)='' OR coalesce(s.analysis_schema_version,'')<>'movement-analysis-v3')"
         sql += " ORDER BY m.sequence"
         movement_ids = [str(row[0]) for row in db.execute(sql, (pid,)).fetchall()]
         return {"total_eligible": total, "movement_ids": movement_ids}

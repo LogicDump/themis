@@ -21,14 +21,21 @@ from core.api import core_api
 from core.ai.long_job_llm import (
     THEMIS_LONG_LLM_TIMEOUT_SECONDS,
     begin_call_diagnostic,
+    call_long_job_llm,
     finish_call_diagnostic,
     is_timeout_exception,
 )
 from dashboard.summary_worker_process import _process_start_time
 from dashboard.movement_summary_batch_bakeoff import (
-    complete_batch,
+    normalize_structured_result,
     partition_records_by_input_chars,
     structured_input_chars,
+)
+from core.documentos.movement_analysis_v3 import (
+    ANALYSIS_JSON_SCHEMA,
+    build_analysis_input,
+    build_analysis_instructions,
+    validate_analysis_independently,
 )
 
 _LOGGER = logging.getLogger("themis.summary_worker")
@@ -47,7 +54,7 @@ def _persist(job: dict[str, Any]) -> dict[str, Any]:
     return core_api.save_movement_analysis_v2_job_record(job)
 
 
-def _summary_batch_char_budget() -> tuple[int, int]:
+def _analysis_v3_batch_char_budget() -> tuple[int, int]:
     """Keep the existing calibration and run its full-corpus reads in this process."""
     try:
         movements = core_api.movements(_CALIBRATION_PROCESS_ID)
@@ -63,10 +70,10 @@ def _summary_batch_char_budget() -> tuple[int, int]:
                 records.append(record)
             if records:
                 total_chars = structured_input_chars(records)
-                return max(1, total_chars // 2), total_chars
+                return min(max(1, total_chars // 2), 40000), total_chars
     except Exception:
         _LOGGER.exception("Calibração do batch de summaries falhou; usando orçamento padrão")
-    return 302237, 604474
+    return 40000, 604474
 
 
 def _is_current_summary(source_hash: str | None, stored: dict[str, Any] | None) -> bool:
@@ -113,6 +120,7 @@ def _is_structured_response_error(exc: Exception) -> bool:
     return any(marker in normalized for marker in (
         "resposta deve conter", "resultado deve ser", "resultado inesperado",
         "resultado duplicado", "summary vazio", "resultados incompletos", "objeto json",
+        "resposta v3", "movement ausente", "provenance não conferível",
     ))
 
 
@@ -139,9 +147,9 @@ async def _run_summary_unit(
 ) -> None:
     pending_ids: list[str] = []
     for movement_id in batch_ids:
-        source = core_api.movement_summary_source(movement_id)
-        current = core_api.movement_summary(movement_id)
-        if source and (job.get("force_all") or not _is_current_summary(source[1], current)):
+        source = by_id.get(movement_id)
+        current = core_api.movement_analysis_v3_current(movement_id)
+        if source and (job.get("force_all") or not _is_current_summary(source.get("source_hash"), current)):
             pending_ids.append(movement_id)
     if not pending_ids:
         return
@@ -152,24 +160,51 @@ async def _run_summary_unit(
     for attempt in range(_RETRY_LIMIT):
         if _is_cancel_requested(job):
             return
+        context = core_api.movement_analysis_v3_context(str(job["process_id"]))
+        if context is None:
+            raise ValueError("Process not found while preparing Movement Analysis V3")
+        records = [by_id[movement_id] for movement_id in pending_ids]
+        payload = build_analysis_input(context["main"], context["known"], records)
         diagnostic, diagnostic_started = begin_call_diagnostic(
-            job, provider=str(job["provider"]), model=str(job["model"]), operation="movement_summary_batch"
+            job, provider=str(job["provider"]), model=str(job["model"]), operation="movement_analysis_v3"
         )
         _persist(job)
+        call_kwargs = dict(
+            instructions=build_analysis_instructions(pending_ids),
+            input=[{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+            json_schema=ANALYSIS_JSON_SCHEMA,
+            schema_name="themis_movement_analysis_v3",
+            provider=job["provider"],
+            model=job["model"],
+            max_tokens=16384,
+            purpose="themis.movement_analysis",
+        )
         try:
-            candidate = await complete_batch(
-                llm,
-                pending_ids,
-                lambda movement_id: by_id.get(str(movement_id)),
-                provider=job["provider"],
-                model=job["model"],
-                timeout_seconds=THEMIS_LONG_LLM_TIMEOUT_SECONDS,
+            candidate = await call_long_job_llm(
+                llm, "acomplete_structured",
+                timeout_seconds=THEMIS_LONG_LLM_TIMEOUT_SECONDS, **call_kwargs,
             )
-            if not candidate.get("provider") or not candidate.get("model"):
-                raise RuntimeError("Hermes não informou provider/model efetivamente usados")
+            parsed, actual_provider, actual_model, usage = normalize_structured_result(candidate)
+            if not actual_provider or not actual_model:
+                raise RuntimeError("Hermes nao informou provider/model efetivamente usados")
+            sources = {
+                movement_id: by_id[movement_id].get("_source_pages", {})
+                for movement_id in pending_ids
+            }
+            validated, rejected = validate_analysis_independently(
+                parsed, pending_ids, sources=sources,
+                known_ids=set(context["known_ids"]),
+                main_ids=set(context["main_ids"]),
+                actor_ids=set(context["actor_ids"]),
+            )
+            if not validated and rejected:
+                raise ValueError("; ".join(f"{mid}: {reason}" for mid, reason in rejected.items()))
             finish_call_diagnostic(diagnostic, diagnostic_started, result=candidate)
             _persist(job)
-            result = candidate
+            result = {
+                "validated": validated, "rejected": rejected,
+                "provider": actual_provider, "model": actual_model, "usage": usage,
+            }
             break
         except Exception as exc:
             last_error = exc
@@ -191,7 +226,7 @@ async def _run_summary_unit(
             await _run_summary_unit(job, pending_ids[:midpoint], by_id, llm, counters, total_count)
             await _run_summary_unit(job, pending_ids[midpoint:], by_id, llm, counters, total_count)
             return
-        error = _error_text(last_error or RuntimeError("falha sem diagnóstico"))
+        error = _error_text(last_error or RuntimeError("falha sem diagnostico"))
         if timed_out:
             error = f"TIMEOUT: {error}"
         counters["failed"] += len(pending_ids)
@@ -203,26 +238,32 @@ async def _run_summary_unit(
         )
         return
 
-    summaries = {item["movement_id"]: item["summary"] for item in result["summaries"]}
+    valid_by_id = {item["movement_id"]: item for item in result["validated"]}
     save_records = [
         {
             "movement_id": movement_id,
-            "summary_text": summaries[movement_id],
+            "summary": valid_by_id[movement_id]["summary"],
             "source_hash": by_id[movement_id]["source_hash"],
+            "analysis": valid_by_id[movement_id],
         }
-        for movement_id in pending_ids if movement_id in summaries
+        for movement_id in pending_ids if movement_id in valid_by_id
     ]
     if save_records:
-        core_api.save_movement_summary_batch_record(
-            save_records,
-            provider=result["provider"],
-            model=result["model"],
-            usage=result.get("usage"),
+        core_api.save_movement_analysis_v3_batch_record(
+            save_records, provider=result["provider"], model=result["model"], usage=result.get("usage"),
         )
-    counters["completed"] += len(save_records)
-    for missing_id in set(pending_ids) - set(summaries):
-        counters["failed"] += 1
-        counters["errors"].append({"movement_id": missing_id, "error": "Summary ausente na resposta do modelo"})
+        counters["completed"] += len(save_records)
+
+    rejected_ids = [movement_id for movement_id in pending_ids if movement_id in result["rejected"]]
+    if rejected_ids:
+        if len(pending_ids) > 1:
+            await _run_summary_unit(job, rejected_ids, by_id, llm, counters, total_count)
+        else:
+            movement_id = rejected_ids[0]
+            counters["failed"] += 1
+            counters["errors"].append({
+                "movement_id": movement_id, "error": result["rejected"][movement_id],
+            })
     job.update(
         completed=counters["completed"], failed=counters["failed"],
         pending=max(0, total_count - counters["completed"] - counters["failed"]),
@@ -254,16 +295,16 @@ async def run_process_summary_job(job_id: str, process_id: str, worker_token: st
         _persist(job)
         source_records = []
         for movement_id in list(job.get("movement_ids") or []):
-            record = core_api.movement_summary_source_record(str(movement_id))
+            record = core_api.movement_analysis_v3_source_record(str(movement_id))
             if record is None or not str(record.get("source_text") or "").strip():
                 raise ValueError(f"Movement sem conteúdo próprio para resumir: {movement_id}")
             source_records.append(record)
 
-        calibrated_budget, calibration_chars = _summary_batch_char_budget()
+        calibrated_budget, calibration_chars = _analysis_v3_batch_char_budget()
         try:
-            char_budget = int(os.environ.get("THEMIS_SUMMARY_BATCH_INPUT_CHARS", str(calibrated_budget)))
+            char_budget = int(os.environ.get("THEMIS_ANALYSIS_V3_BATCH_INPUT_CHARS", str(calibrated_budget)))
         except ValueError as exc:
-            raise ValueError("THEMIS_SUMMARY_BATCH_INPUT_CHARS deve ser inteiro") from exc
+            raise ValueError("THEMIS_ANALYSIS_V3_BATCH_INPUT_CHARS deve ser inteiro") from exc
         batches = partition_records_by_input_chars(source_records, char_budget=char_budget)
         by_id = {str(record["movement_id"]): record for record in source_records}
         job.update(
