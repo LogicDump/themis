@@ -145,7 +145,7 @@ def build_analysis_instructions(movement_ids: list[str]) -> str:
         "anteriores já validados. origin é metadata do provider e não autoriza inferir identidade, autoria ou parte. "
         "Use exclusivamente o texto da peça principal em source_text; anexos não estão implicitamente provados. "
         "Cada summary, unidade de evidence, drafting_extract e relation deve ser sustentado por source_refs com "
-        "quote literal verificável na página indicada. Preserve contradições e ambiguidades em vez de harmonizá-las. "
+        "quote copiado como substring literal de source_text na pagina indicada. Nao parafraseie o quote. Preserve contradições e ambiguidades em vez de harmonizá-las. "
         "Nunca promova alegação a fato provado, referência documental a prova validada, posição jurídica a fato, "
         "pedido a decisão ou decisão a cumprimento. "
         "Em evidence use exatamente os papéis FACTUAL_ASSERTION, LEGAL_POSITION, REQUEST, JUDICIAL_FINDING, "

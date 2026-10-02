@@ -25893,7 +25893,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	});
 	const [overviews, setOverviews] = useState({});
 	const [movements, setMovements] = useState({});
-	const [movementOrder, setMovementOrder] = useState(() => ctx.storage.get("workspace.movements.order", "asc"));
+	const [movementOrder, setMovementOrder] = useState(() => ctx.storage.get("workspace.movements.order", "desc"));
 	const [movementSummaries, setMovementSummaries] = useState({});
 	const [summaryLoading, setSummaryLoading] = useState({});
 	const [summaryErrors, setSummaryErrors] = useState({});
@@ -27433,7 +27433,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 															icon: selectedSummaryJobActive ? "loading~spin" : v2PendingTotal > 0 ? "sparkle" : "edit",
 															disabled: !selectedSummaryStatusReady || selectedSummaryJobActive || v2PendingTotal === 0,
 															onClick: () => generateProcessSummaries(false),
-															children: selectedSummaryJobActive ? "Gerando resumos..." : !selectedSummaryStatusReady ? "Gerar resumos V2" : selectedSummaryJobStatus === "PARTIAL" || selectedSummaryJobStatus === "FAILED" ? `Continuar (${v2PendingTotal} pendentes)` : `Gerar ${v2PendingTotal} resumos V2`
+															children: selectedSummaryJobActive ? "Gerando resumos..." : !selectedSummaryStatusReady ? "Gerar resumos" : selectedSummaryJobStatus === "PARTIAL" || selectedSummaryJobStatus === "FAILED" ? `Continuar (${v2PendingTotal} pendentes)` : `Gerar ${v2PendingTotal} resumos`
 														}),
 														jsx(PanelAction, {
 															icon: "edit",
