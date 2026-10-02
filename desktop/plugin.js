@@ -27270,8 +27270,8 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 																	className: "flex flex-wrap justify-end gap-1",
 																	children: [jsx(PanelPill, {
 																		tone,
-																		children: p.role || "Parte"
-																	}), ...(p.additional_roles || []).map((role, roleIdx) => jsx(PanelPill, {
+																		children: p.display_role || p.role || "Parte"
+																	}), ...(p.additional_roles || []).filter((role) => !(p.lawyers?.length && String(role).toUpperCase().startsWith("ADVOGAD"))).map((role, roleIdx) => jsx(PanelPill, {
 																		tone: "muted",
 																		children: role
 																	}, `${p.entity_id || p.display_name || "participant"}:role:${roleIdx}`))]
@@ -27281,9 +27281,11 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 																className: "text-muted-foreground font-mono text-[0.68rem]",
 																children: idList.join(" · ")
 															}) : null,
-															p.represented_parties && p.represented_parties.length > 0 ? jsx("div", {
-																className: "text-muted-foreground text-[0.68rem]",
-																children: `Representa: ${p.represented_parties.join(", ")}`
+															p.lawyers && p.lawyers.length > 0 ? jsx("div", {
+																className: "space-y-0.5 text-muted-foreground text-[0.68rem]",
+																children: p.lawyers.map((lawyer, lawyerIdx) => jsxs("div", {
+																	children: [jsx("span", { className: "font-medium text-foreground/75", children: "Advogado: " }), lawyer.display_name]
+																}, `${lawyer.entity_id || lawyer.display_name || "lawyer"}:${lawyerIdx}`))
 															}) : null
 														]
 													}, `${p.entity_id || p.display_name || "participant"}:${roleRawUpper || roleUpper}:${idx}`);

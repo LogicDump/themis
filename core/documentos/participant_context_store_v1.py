@@ -123,7 +123,7 @@ def _role(raw: str | None) -> str:
         return "PUBLIC_PROSECUTOR"
     if "PERITO" in value or value == "EXPERT":
         return "EXPERT"
-    if "TERCEIRO" in value or value == "THIRD PARTY":
+    if "TERCEIRO" in value or value in {"THIRD PARTY", "TERINTCER", "TERINT"}:
         return "THIRD_PARTY"
     if "REPRESENT" in value or "ADVOG" in value or value in {"REPRELEG", "LEGAL GUARDIAN"}:
         return "REPRESENTATIVE"

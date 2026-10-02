@@ -485,42 +485,140 @@ def overview(pid: str, path: Path | None = None) -> dict | None:
                 primary_role = re.sub(r"[^A-Z]", "", str(p_item.get("role") or "").upper())
                 p_item["additional_roles"] = [role for role in p_item.pop("_roles") if re.sub(r"[^A-Z]", "", role.upper()) != primary_role]
 
-            # Preserve the cover's semantic order: claimant + lawyer,
-            # respondent + lawyer, legal representative, then other parties.
-            # One entity is one displayed participant even when it has multiple
-            # roles. This only shapes the overview projection, not persisted facts.
+            # Preserve legal grouping in the overview:
+            # claimant/exequente + counsel; respondent/executado + counsel;
+            # then each third party immediately followed by its counsel.
+            # This is presentation order only; persisted facts remain untouched.
             def _base_rank(item):
                 role = re.sub(r"[^A-Z]", "", str(item.get("role") or "").upper())
-                if role in {"REQTE", "REQUERENTE", "AUTOR", "CLAIMANT"}:
+                if role in {"REQTE", "REQUERENTE", "AUTOR", "AUTORA", "CLAIMANT", "EXEQTE", "EXEQUENTE"}:
                     return 0
-                if role in {"REQDA", "REQUERIDO", "REU", "RESPONDENT"}:
+                if role in {"REQDO", "REQDA", "REQUERIDO", "REQUERIDA", "REU", "RESPONDENT", "EXECTDO", "EXECUTADO", "EXECUTADA"}:
                     return 1
-                if role in {"REPRELEG", "REPRESENTANTE", "LEGALGUARDIAN"}:
+                if role in {"TERINTCER", "TERINT", "TERCEIROINTERESSADO", "THIRDPARTY"}:
                     return 2
-                return 3
+                if role in {"REPRELEG", "REPRESENTANTE", "LEGALGUARDIAN"}:
+                    return 3
+                return 4
+
+            non_lawyers = [
+                item for item in participants
+                if not (
+                    re.sub(r"[^A-Z]", "", str(item.get("role") or "").upper()) in {"ADVOGADO", "ADVOGADA", "LAWYER"}
+                    or str(item.get("role_raw") or "").upper().startswith("ADVOGAD")
+                )
+            ]
+            party_position_by_name = {
+                item["display_name"].casefold(): (_base_rank(item), idx)
+                for idx, item in enumerate(non_lawyers)
+            }
 
             def _participant_group(item):
                 role = re.sub(r"[^A-Z]", "", str(item.get("role") or "").upper())
                 raw = str(item.get("role_raw") or "")
-                if role in {"ADVOGADO", "ADVOGADA", "LAWYER"} or raw.upper().startswith("ADVOGAD"):
+                is_lawyer = role in {"ADVOGADO", "ADVOGADA", "LAWYER"} or raw.upper().startswith("ADVOGAD")
+                if is_lawyer:
                     targets = [str(name).casefold() for name in item.get("represented_parties", [])]
-                    parent_rank = min((base_rank_by_name.get(target, 3) for target in targets), default=3)
-                    return (parent_rank, 1, targets[0] if targets else "", item.get("display_name", "").casefold())
-                return (_base_rank(item), 0, "", item.get("display_name", "").casefold())
+                    target_positions = [
+                        party_position_by_name[target]
+                        for target in targets
+                        if target in party_position_by_name
+                    ]
+                    if target_positions:
+                        parent_rank, parent_position = min(target_positions)
+                        return (
+                            parent_rank,
+                            parent_position,
+                            1,
+                            item.get("display_name", "").casefold(),
+                        )
+                    return (4, 10**9, 1, item.get("display_name", "").casefold())
 
-            base_rank_by_name = {
-                item["display_name"].casefold()
-                : _base_rank(item)
+                parent_rank, parent_position = party_position_by_name.get(
+                    item.get("display_name", "").casefold(),
+                    (_base_rank(item), 10**9),
+                )
+                return (
+                    parent_rank,
+                    parent_position,
+                    0,
+                    item.get("display_name", "").casefold(),
+                )
+
+            participants = sorted(participants, key=_participant_group)
+
+            # Overview projection: lawyers belong to the represented party's
+            # card instead of occupying independent rows when that relation is
+            # explicit in the provider data.
+            party_by_name = {
+                item["display_name"].casefold(): item
                 for item in participants
-                if not str(item.get("role_raw") or "").upper().startswith("ADVOGAD")
+                if not (
+                    re.sub(r"[^A-Z]", "", str(item.get("role") or "").upper()) in {"ADVOGADO", "ADVOGADA", "LAWYER"}
+                    or str(item.get("role_raw") or "").upper().startswith("ADVOGAD")
+                )
             }
-            ordered = []
+            grouped_participants = []
+            unlinked_lawyers = []
             for item in participants:
-                key = _participant_group(item)
-                if key[1] == 1 and key[2] not in base_rank_by_name:
-                    key = (3, 1, key[2], key[3])
-                ordered.append((key, item))
-            participants = [item for _, item in sorted(ordered, key=lambda pair: pair[0])]
+                role = re.sub(r"[^A-Z]", "", str(item.get("role") or "").upper())
+                raw = str(item.get("role_raw") or "")
+                is_lawyer = role in {"ADVOGADO", "ADVOGADA", "LAWYER"} or raw.upper().startswith("ADVOGAD")
+                if not is_lawyer:
+                    item["lawyers"] = []
+                    additional_roles = {
+                        re.sub(r"[^A-Z]", "", str(value).upper())
+                        for value in item.get("additional_roles", [])
+                    }
+                    self_represented = any(
+                        str(name).casefold() == str(item.get("display_name") or "").casefold()
+                        for name in item.get("represented_parties", [])
+                    )
+                    if "ADVOGADO" in additional_roles and self_represented:
+                        item["lawyers"].append({
+                            "entity_id": item.get("entity_id"),
+                            "display_name": item.get("display_name"),
+                            "identifiers": item.get("identifiers") or {},
+                        })
+                    grouped_participants.append(item)
+                    continue
+
+                linked = False
+                for represented_name in item.get("represented_parties", []):
+                    party = party_by_name.get(str(represented_name).casefold())
+                    if not party:
+                        continue
+                    party.setdefault("lawyers", []).append({
+                        "entity_id": item.get("entity_id"),
+                        "display_name": item.get("display_name"),
+                        "identifiers": item.get("identifiers") or {},
+                    })
+                    linked = True
+                if not linked:
+                    unlinked_lawyers.append(item)
+
+            participants = grouped_participants + unlinked_lawyers
+
+            def _display_role(value):
+                role = re.sub(r"[^A-Z]", "", str(value or "").upper())
+                if role in {"REQTE", "REQUERENTE", "AUTOR", "AUTORA", "CLAIMANT"}:
+                    return "Requerente"
+                if role in {"EXEQTE", "EXEQUENTE"}:
+                    return "Exequente"
+                if role in {"REQDO", "REQDA", "REQUERIDO", "REQUERIDA", "REU", "RESPONDENT"}:
+                    return "Requerido"
+                if role in {"EXECTDO", "EXECUTADO", "EXECUTADA"}:
+                    return "Executado"
+                if role in {"TERINTCER", "TERINT", "TERCEIROINTERESSADO", "THIRDPARTY"}:
+                    return "Terc. Inter."
+                if role in {"ADVOGADO", "ADVOGADA", "LAWYER"}:
+                    return "Advogado"
+                if role in {"REPRELEG", "REPRESENTANTE", "LEGALGUARDIAN"}:
+                    return "Representante"
+                return str(value or "Parte")
+
+            for item in participants:
+                item["display_role"] = _display_role(item.get("role"))
         has_sources = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_sources'").fetchone() is not None
         sources = []
         if has_sources:

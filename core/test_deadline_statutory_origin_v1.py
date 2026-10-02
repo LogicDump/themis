@@ -13,6 +13,7 @@ def test_execution_cover_roles_map_to_canonical_poles():
     assert _role("Exequente") == "CLAIMANT"
     assert _role("Exectdo") == "RESPONDENT"
     assert _role("Executado") == "RESPONDENT"
+    assert _role("TerIntCer") == "THIRD_PARTY"
 
 
 def test_ato_ordinatorio_is_native_originating_order():
