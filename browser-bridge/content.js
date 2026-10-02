@@ -941,11 +941,82 @@
           if (cpopgResp.ok) {
             const htmlText = await cpopgResp.text();
             cpopgData = extractCpopgFromHtml(htmlText, cpopgUrl, cnj);
+
+            // e-SAJ may return only an empty #containerMovimentacoes in show.do.
+            // The official page itself loads the first chronology page through
+            // carregarMovimentacoesAjax.do, then follows an opaque keyset cursor.
+            if ((cpopgData?.movements?.length || 0) === 0) {
+              const movementBaseUrl = `${window.location.origin}/cpopg/carregarMovimentacoesAjax.do`;
+              const fetchMovementPage = async (cursor = null) => {
+                const params = new URLSearchParams({ "processo.codigo": meta.cdProcesso });
+                if (cursor) params.set("cursor", cursor);
+                const response = await fetch(`${movementBaseUrl}?${params.toString()}`, {
+                  method: "GET",
+                  credentials: "include",
+                  cache: "no-store"
+                });
+                if (!response.ok) {
+                  throw new Error(`HTTP ${response.status} ao carregar movimentações CPOPG`);
+                }
+                return response.text();
+              };
+
+              const mergeMovements = (target, incoming) => {
+                const seen = new Set(target.map(item =>
+                  `${item.date || ""}|${item.name || ""}|${item.source_movement_id || ""}`
+                ));
+                for (const item of incoming || []) {
+                  const key = `${item.date || ""}|${item.name || ""}|${item.source_movement_id || ""}`;
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  target.push(item);
+                }
+              };
+
+              const firstMovementsHtml = await fetchMovementPage();
+              const firstWrappedHtml = `<div id="containerMovimentacoes">${firstMovementsHtml}</div>`;
+              const firstPageData = extractCpopgFromHtml(firstWrappedHtml, cpopgUrl, cnj);
+              cpopgData.movements = [];
+              mergeMovements(cpopgData.movements, firstPageData.movements);
+              cpopgData.movement_capture = firstPageData.movement_capture || {};
+
+              const firstMovementDoc = new DOMParser().parseFromString(firstWrappedHtml, "text/html");
+              let cursor = firstMovementDoc.querySelector("#cursorMovimentacoesPaginado")?.value || null;
+              let pageCount = 1;
+              const MAX_MOVEMENT_PAGES = 100;
+
+              while (cursor && pageCount < MAX_MOVEMENT_PAGES) {
+                const pageHtml = await fetchMovementPage(cursor);
+                const wrappedPageHtml = `<div id="containerMovimentacoes"><table><tbody id="tabelaOutrasPaginasMovimentacoes">${pageHtml}</tbody></table></div>`;
+                const pageData = extractCpopgFromHtml(wrappedPageHtml, cpopgUrl, cnj);
+                mergeMovements(cpopgData.movements, pageData.movements);
+
+                const pageDoc = new DOMParser().parseFromString(wrappedPageHtml, "text/html");
+                const cursorRow = pageDoc.querySelector("#trCursorMovimentacoes");
+                cursor = cursorRow?.getAttribute("data-cursor") || null;
+                pageCount += 1;
+              }
+
+              cpopgData.movement_capture = {
+                ...(cpopgData.movement_capture || {}),
+                captured_rows: cpopgData.movements.length,
+                fetched_pages: pageCount,
+                pagination_exhausted: !cursor,
+                pagination_capped: !!cursor
+              };
+              cpopgData.sanitized_dom_fragments = {
+                ...(cpopgData.sanitized_dom_fragments || {}),
+                movimentacoes_html: firstPageData?.sanitized_dom_fragments?.movimentacoes_html || ""
+              };
+            }
+
             console.info(`[Themis Bridge] [CPOPG_FETCH] SUCESSO: HTTP ${cpopgResp.status} (${cpopgDur}ms)`, {
               classe: cpopgData?.basic_data?.classe,
               parties: cpopgData?.parties?.length,
               lawyers: cpopgData?.lawyers?.length,
-              hearings: cpopgData?.hearings?.length
+              hearings: cpopgData?.hearings?.length,
+              movements: cpopgData?.movements?.length,
+              movement_capture: cpopgData?.movement_capture
             });
           } else {
             console.error("[Themis Bridge] [CPOPG_FETCH] ERRO:", {
