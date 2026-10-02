@@ -705,23 +705,24 @@
     // Decisão"), portanto devem ser preservadas como fatos próprios do provider.
     const movements = [];
     const seenMovementKeys = new Set();
-    const movementRows = doc.querySelectorAll(
-      "#tabelaTodasMovimentacoes tr, #tabelaUltimasMovimentacoes tr, " +
-      "#tabelaMovimentacoes tr, .containerMovimentacao"
+    const movementContainer = doc.querySelector("#containerMovimentacoes");
+    const movementRows = Array.from(
+      (movementContainer || doc).querySelectorAll("tr.containerMovimentacao")
     );
     movementRows.forEach(row => {
-      const cells = Array.from(row.querySelectorAll("td")).map(cell =>
-        (cell.textContent || "").replace(/\s+/g, " ").trim()
-      );
-      if (cells.length < 2) return;
+      const dateCell = row.querySelector(".dataMovimentacao");
+      const descriptionCell = row.querySelector(".descricaoMovimentacao");
+      const rawDate = (dateCell?.textContent || "").match(/\b\d{2}\/\d{2}\/\d{4}\b/)?.[0] || "";
+      if (!rawDate || !descriptionCell) return;
 
-      let dateIndex = cells.findIndex(value => /\b\d{2}\/\d{2}\/\d{4}\b/.test(value));
-      if (dateIndex < 0) return;
-      const rawDate = cells[dateIndex].match(/\b\d{2}\/\d{2}\/\d{4}\b/)?.[0] || "";
       const [day, month, year] = rawDate.split("/");
       const normalizedDate = day && month && year ? `${year}-${month}-${day}` : rawDate;
-      const description = cells.slice(dateIndex + 1).join(" ").replace(/\s+/g, " ").trim();
-      if (!description) return;
+
+      const descriptionClone = descriptionCell.cloneNode(true);
+      descriptionClone.querySelectorAll("span").forEach(span => span.remove());
+      const movementName = (descriptionClone.textContent || "").replace(/\s+/g, " ").trim();
+      const content = (descriptionCell.textContent || "").replace(/\s+/g, " ").trim();
+      if (!movementName) return;
 
       const sourceMovementId =
         row.getAttribute("data-cd-movimentacao") ||
@@ -732,17 +733,28 @@
         row.getAttribute("data-codigo-movimento") ||
         row.getAttribute("data-codigo") ||
         null;
-      const key = `${normalizedDate}|${description}|${sourceMovementId || ""}`;
+      const key = `${normalizedDate}|${movementName}|${sourceMovementId || ""}`;
       if (seenMovementKeys.has(key)) return;
       seenMovementKeys.add(key);
       movements.push({
         date: normalizedDate,
-        name: description,
-        content: description,
+        name: movementName,
+        content: content || movementName,
         source_movement_id: sourceMovementId,
         movement_code: movementCode
       });
     });
+    const movementCapture = {
+      container_found: !!movementContainer,
+      first_page_rows: movementContainer
+        ? movementContainer.querySelectorAll("#tabelaPrimeiraPaginaMovimentacoes > tr.containerMovimentacao").length
+        : 0,
+      other_page_rows: movementContainer
+        ? movementContainer.querySelectorAll("#tabelaOutrasPaginasMovimentacoes > tr.containerMovimentacao").length
+        : 0,
+      captured_rows: movements.length,
+      has_more_cursor: !!movementContainer?.querySelector("#cursorMovimentacoesPaginado")
+    };
 
     // 4. Audiências (Descoberta robusta no DOM da Capa CPOPG)
     const hearings = [];
@@ -864,7 +876,7 @@
       mais_detalhes_html: sanitizeDomFragment(doc.querySelector("#maisDetalhes, .maisDetalhes")),
       partes_html: sanitizeDomFragment(doc.querySelector("#tableTodasPartes, #tablePartesPrincipais, .tabelaPartes")),
       audiencias_html: sanitizeDomFragment(doc.querySelector("#tabelaTodasAudiencias, #tabelaAudiencias, #tableAudiencias, .tabelaAudiencias")),
-      movimentacoes_html: sanitizeDomFragment(doc.querySelector("#tabelaTodasMovimentacoes, #tabelaUltimasMovimentacoes, #tabelaMovimentacoes")),
+      movimentacoes_html: sanitizeDomFragment(doc.querySelector("#containerMovimentacoes, #tabelaPrimeiraPaginaMovimentacoes, #tabelaOutrasPaginasMovimentacoes")),
       incidentes_html: sanitizeDomFragment(doc.querySelector("#tabelaIncidentes, #tableIncidentes, .tabelaIncidentes")),
       apensos_html: sanitizeDomFragment(doc.querySelector("#tabelaApensos, #tableApensos")),
       peticoes_html: sanitizeDomFragment(doc.querySelector("#tabelaTodasPeticoes, #tabelaPeticoes"))
@@ -879,6 +891,7 @@
       lawyers: lawyers,
       hearings: hearings,
       movements: movements,
+      movement_capture: movementCapture,
       incidents: incidents,
       related_processes: relatedProcesses,
       petitions: petitions,
@@ -975,7 +988,9 @@
             page_context: pageContext,
             documents: allDocs,
             participants: meta.participants || [],
-            movements: cpopgData?.movements || meta.movements || [],
+            // Provider chronology belongs exclusively to the CPOPG cover.
+            // Never mix the Pasta Digital/Autos document view into process_movements.
+            movements: cpopgData?.movements || [],
             cpopg: cpopgData
           }
       });
