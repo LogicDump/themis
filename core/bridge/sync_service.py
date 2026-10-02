@@ -1163,6 +1163,13 @@ def plan_process_sync(
 
         db.commit()
 
+        from core.documentos.process_movement_linker_v1 import materialize_links as materialize_process_movement_links
+        try:
+            process_movement_links = materialize_process_movement_links(db, cnj)
+        except Exception as link_err:
+            process_movement_links = {"error": str(link_err)}
+            print(f"[Themis Bridge Sync] Aviso ao associar cronologia provider aos documentos: {link_err}")
+
         # The plan route also owns the metadata-only/0-NEW path.  The Browser
         # Bridge may have received a fresh CPOPG cover while no PDF needs to
         # be downloaded; project the structured participant context here so
@@ -1245,6 +1252,7 @@ def plan_process_sync(
             "needed_documents": needed,
             "parties_synced": parties_synced + cpopg_parties_synced + cpopg_lawyers_synced,
             "movements_synced": movements_synced,
+            "process_movement_links": process_movement_links,
             "cpopg_synced": bool(cpopg),
             "hearings_synced": hearings_synced,
             "cpopg_parties_synced": cpopg_parties_synced,
@@ -2586,6 +2594,13 @@ def process_captured_sync(
             manifest_or_root=store.root,
         )
 
+        from core.documentos.process_movement_linker_v1 import materialize_links as materialize_process_movement_links
+        try:
+            process_movement_links = materialize_process_movement_links(db, cnj)
+        except Exception as link_err:
+            process_movement_links = {"error": str(link_err)}
+            print(f"[Themis Bridge Sync] Aviso ao associar cronologia provider aos documentos: {link_err}")
+
         # Movements/movement_pieces are the semantic boundary for documentary
         # representation discovery.  Run the existing idempotent projector
         # after that boundary is available, including 0-NEW syncs.
@@ -2673,7 +2688,7 @@ def process_captured_sync(
         "stages": {
             "VALIDATED": {"status": "OK", "documents_validated": len(pecas)},
             "EXTRACTING": {"status": "OK", "new_extracted": extracted_count, "reused": len(reused_pecas), "total_pages": total_physical_pages, "duration_sec": round(t_extract_dur, 2)},
-            "STRUCTURING": {"status": "OK", "documents_indexed": len(new_pecas), "canonical_pages": structured_pages_count, "autos_pages": len(autos_result.get("pages", [])), "autos_context": autos_context_result, "chronology_events": chronology_count, "movements": movement_materialization, "participant_context": participant_context_materialization, "duration_sec": round(t_struct_dur, 2)},
+            "STRUCTURING": {"status": "OK", "documents_indexed": len(new_pecas), "canonical_pages": structured_pages_count, "autos_pages": len(autos_result.get("pages", [])), "autos_context": autos_context_result, "chronology_events": chronology_count, "movements": movement_materialization, "process_movement_links": process_movement_links, "participant_context": participant_context_materialization, "duration_sec": round(t_struct_dur, 2)},
             "INDEXING": {"status": "OK", "new_embeddings": embedded_count, "total_embeddings": len(all_pages_to_embed), "duration_sec": round(t_embed_dur, 2)},
             "PACKAGE": {"status": "OK", **package_result},
             "READY": {"status": "OK", "total_duration_sec": round(t_total_dur, 2)},
