@@ -106,33 +106,36 @@ def _deadline_recipient_label(
 ) -> str | None:
     if recipient_role == "BOTH_PARTIES":
         return "Partes"
-    if not _has_table(db, "process_participants"):
-        return None
     ids = _json_or_default(participant_ids_json, [])
-    participant_columns = {str(row[1]) for row in db.execute("PRAGMA table_info(process_participants)").fetchall()}
-    if not {"participant_id", "process_id", "display_name", "base_role"} <= participant_columns:
-        return None
+    participant_columns = (
+        {str(row[1]) for row in db.execute("PRAGMA table_info(process_participants)").fetchall()}
+        if _has_table(db, "process_participants")
+        else set()
+    )
+    required_participant_columns = {"participant_id", "process_id", "display_name", "base_role"}
     entity_expr = "entity_id" if "entity_id" in participant_columns else "NULL AS entity_id"
     rows: list[sqlite3.Row] = []
-    if isinstance(ids, list) and ids:
-        placeholders = ",".join("?" for _ in ids)
-        rows = db.execute(
-            f"SELECT participant_id,{entity_expr},display_name,base_role FROM process_participants "
-            f"WHERE process_id=? AND participant_id IN ({placeholders}) ORDER BY display_name",
-            [process_id, *ids],
-        ).fetchall()
-    if not rows:
-        base_role = {
-            "PLAINTIFF": "CLAIMANT",
-            "DEFENDANT": "RESPONDENT",
-            "PUBLIC_PROSECUTOR": "PUBLIC_PROSECUTOR",
-        }.get(str(recipient_role or "").upper())
-        if base_role:
+    if required_participant_columns <= participant_columns:
+        if isinstance(ids, list) and ids:
+            placeholders = ",".join("?" for _ in ids)
             rows = db.execute(
                 f"SELECT participant_id,{entity_expr},display_name,base_role FROM process_participants "
-                "WHERE process_id=? AND base_role=? ORDER BY display_name",
-                (process_id, base_role),
+                f"WHERE process_id=? AND participant_id IN ({placeholders}) ORDER BY display_name",
+                [process_id, *ids],
             ).fetchall()
+        if not rows:
+            base_role = {
+                "PLAINTIFF": "CLAIMANT",
+                "DEFENDANT": "RESPONDENT",
+                "PUBLIC_PROSECUTOR": "PUBLIC_PROSECUTOR",
+            }.get(str(recipient_role or "").upper())
+            if base_role:
+                rows = db.execute(
+                    f"SELECT participant_id,{entity_expr},display_name,base_role FROM process_participants "
+                    "WHERE process_id=? AND base_role=? ORDER BY display_name",
+                    (process_id, base_role),
+                ).fetchall()
+
     labels: list[str] = []
     for row in rows:
         raw_role = None
@@ -148,7 +151,45 @@ def _deadline_recipient_label(
                 raw_role = rel["role_raw"] or rel["role"]
         role_label = _canonical_party_role_label(raw_role, row["base_role"])
         labels.append(f"{row['display_name']} — {role_label}")
-    return "; ".join(labels) or None
+    if labels:
+        return "; ".join(labels)
+
+    # Compatibility fallback for stale participant projections. Structured
+    # provider cover facts are enough to identify a canonical claimant or
+    # respondent even when process_participants has not yet been rematerialized.
+    # Do not use this path for UNRESOLVED/"parte contrária": ambiguity must stay
+    # explicit until the obligation resolver identifies the actual recipient.
+    wanted = str(recipient_role or "").upper()
+    role_values = {
+        "PLAINTIFF": {"REQTE", "REQUERENTE", "AUTOR", "AUTORA", "EXEQTE", "EXEQUENTE", "CLAIMANT"},
+        "DEFENDANT": {"REQDO", "REQDA", "REQUERIDO", "REQUERIDA", "REU", "RE", "EXECTDO", "EXECUTADO", "EXECUTADA", "RESPONDENT"},
+    }.get(wanted)
+    if role_values and _has_table(db, "party_relations") and _has_table(db, "legal_entities"):
+        fallback_rows = db.execute(
+            """SELECT le.display_name,pr.role_raw,pr.role
+               FROM party_relations pr
+               JOIN legal_entities le USING(entity_id)
+               WHERE pr.owner_type='PROCESS' AND pr.owner_id=?
+                 AND upper(pr.role) NOT LIKE 'ADVOG%'
+               ORDER BY le.display_name,pr.party_relation_id""",
+            (process_id,),
+        ).fetchall()
+        fallback_labels: list[str] = []
+        seen_names: set[str] = set()
+        for relation in fallback_rows:
+            normalized_role = _norm_match_text(relation["role_raw"] or relation["role"]).upper().replace(" ", "")
+            if normalized_role not in role_values:
+                continue
+            name = str(relation["display_name"] or "").strip()
+            if not name or name.casefold() in seen_names:
+                continue
+            seen_names.add(name.casefold())
+            fallback_labels.append(
+                f"{name} — {_canonical_party_role_label(relation['role_raw'] or relation['role'])}"
+            )
+        if fallback_labels:
+            return "; ".join(fallback_labels)
+    return None
 
 
 def _deadline_display_details(db: sqlite3.Connection, row: sqlite3.Row, provenance: dict[str, Any]) -> dict[str, Any]:

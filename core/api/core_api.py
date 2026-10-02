@@ -570,16 +570,15 @@ def overview(pid: str, path: Path | None = None) -> dict | None:
                         re.sub(r"[^A-Z]", "", str(value).upper())
                         for value in item.get("additional_roles", [])
                     }
-                    self_represented = any(
-                        str(name).casefold() == str(item.get("display_name") or "").casefold()
-                        for name in item.get("represented_parties", [])
-                    )
-                    if "ADVOGADO" in additional_roles and self_represented:
-                        item["lawyers"].append({
-                            "entity_id": item.get("entity_id"),
-                            "display_name": item.get("display_name"),
-                            "identifiers": item.get("identifiers") or {},
-                        })
+                    if "ADVOGADO" in additional_roles:
+                        for represented_name in item.get("represented_parties", []):
+                            represented_party = party_by_name.get(str(represented_name).casefold())
+                            if represented_party is not None:
+                                represented_party.setdefault("lawyers", []).append({
+                                    "entity_id": item.get("entity_id"),
+                                    "display_name": item.get("display_name"),
+                                    "identifiers": item.get("identifiers") or {},
+                                })
                     grouped_participants.append(item)
                     continue
 
@@ -632,6 +631,25 @@ def overview(pid: str, path: Path | None = None) -> dict | None:
         db_path_row = db.execute("PRAGMA database_list").fetchone()
         db_path = Path(db_path_row[2]) if db_path_row and db_path_row[2] else path
         mov_count = len(movements(pid, db_path) or [])
+
+        latest_provider_movement = None
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_movements'").fetchone():
+            provider_movement_row = db.execute(
+                """SELECT movement_id,movement_type,occurred_at,content,source_movement_id,movement_code,provenance_json
+                   FROM process_movements
+                   WHERE process_id=?
+                   ORDER BY coalesce(occurred_at,'' ) DESC, rowid DESC
+                   LIMIT 1""",
+                (pid,),
+            ).fetchone()
+            if provider_movement_row:
+                latest_provider_movement = dict(provider_movement_row)
+                try:
+                    latest_provider_movement["provenance"] = json.loads(
+                        provider_movement_row["provenance_json"] or "{}"
+                    )
+                except Exception:
+                    latest_provider_movement["provenance"] = {}
 
         has_strategy = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_entries'").fetchone() is not None
         strategy_items = []
@@ -713,6 +731,7 @@ def overview(pid: str, path: Path | None = None) -> dict | None:
             "document_count": doc_count[0] if doc_count else 0,
             "total_pages": doc_count[1] if doc_count else 0,
             "movement_count": mov_count,
+            "latest_provider_movement": latest_provider_movement,
             "strategy_count": len(strategy_items),
             "pending_count": len(pending_items),
             "deadline_count": len(deadlines),

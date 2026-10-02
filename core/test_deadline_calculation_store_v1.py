@@ -17,7 +17,7 @@ from core.documentos.deadline_calculation_store_v1 import (
 from core.documentos.deadline_obligation_store_v1 import update_obligation_resolution
 from core.documentos.deadline_policies_v1 import CourtCalendar
 from core.documentos.domain_objects_v1 import SCHEMA as DOMAIN_SCHEMA
-from core.documentos.legal_event_projection_v1 import LegalEventProjection
+from core.documentos.legal_event_projection_v1 import LegalEventProjection, _deadline_recipient_label
 from core.documentos.publications_v1 import migrate_connection as migrate_publications
 from core.test_deadline_obligation_v2 import database as obligation_database
 
@@ -271,6 +271,48 @@ def test_deadline_counting_crosses_year_boundary():
     assert result["status"] == "CALCULATED"
     assert result["due_date"] == "2027-01-27"
     assert db.execute("SELECT due_at FROM deadlines").fetchone()[0] == "2027-01-27"
+
+
+def test_recipient_label_falls_back_to_structured_cover_when_participant_projection_is_stale():
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("""
+        CREATE TABLE legal_entities(
+          entity_id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL
+        );
+        CREATE TABLE party_relations(
+          party_relation_id TEXT PRIMARY KEY,
+          entity_id TEXT NOT NULL,
+          owner_type TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          role TEXT,
+          role_raw TEXT
+        );
+        CREATE TABLE process_participants(
+          participant_id TEXT PRIMARY KEY,
+          process_id TEXT NOT NULL,
+          entity_id TEXT,
+          display_name TEXT NOT NULL,
+          base_role TEXT NOT NULL
+        );
+        INSERT INTO legal_entities VALUES('sergio','Sergio Righi Filho');
+        INSERT INTO party_relations VALUES('pr1','sergio','PROCESS','p1','Exectdo','Exectdo');
+        INSERT INTO process_participants VALUES('pp1','p1','sergio','Sergio Righi Filho','OTHER');
+    """)
+
+    assert _deadline_recipient_label(
+        db,
+        process_id="p1",
+        recipient_role="DEFENDANT",
+        participant_ids_json="[]",
+    ) == "Sergio Righi Filho — Executado"
+    assert _deadline_recipient_label(
+        db,
+        process_id="p1",
+        recipient_role="UNRESOLVED",
+        participant_ids_json="[]",
+    ) is None
 
 
 def test_resolved_obligation_without_due_date_is_not_projected_as_deadline():

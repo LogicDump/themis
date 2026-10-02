@@ -700,7 +700,51 @@
       }
     }
 
-    // 3. Audiências (Descoberta robusta no DOM da Capa CPOPG)
+    // 3. Movimentações processuais da capa CPOPG. Estas linhas podem não
+    // possuir documento correspondente na Pasta Digital (ex.: "Conclusos para
+    // Decisão"), portanto devem ser preservadas como fatos próprios do provider.
+    const movements = [];
+    const seenMovementKeys = new Set();
+    const movementRows = doc.querySelectorAll(
+      "#tabelaTodasMovimentacoes tr, #tabelaUltimasMovimentacoes tr, " +
+      "#tabelaMovimentacoes tr, .containerMovimentacao"
+    );
+    movementRows.forEach(row => {
+      const cells = Array.from(row.querySelectorAll("td")).map(cell =>
+        (cell.textContent || "").replace(/\s+/g, " ").trim()
+      );
+      if (cells.length < 2) return;
+
+      let dateIndex = cells.findIndex(value => /\b\d{2}\/\d{2}\/\d{4}\b/.test(value));
+      if (dateIndex < 0) return;
+      const rawDate = cells[dateIndex].match(/\b\d{2}\/\d{2}\/\d{4}\b/)?.[0] || "";
+      const [day, month, year] = rawDate.split("/");
+      const normalizedDate = day && month && year ? `${year}-${month}-${day}` : rawDate;
+      const description = cells.slice(dateIndex + 1).join(" ").replace(/\s+/g, " ").trim();
+      if (!description) return;
+
+      const sourceMovementId =
+        row.getAttribute("data-cd-movimentacao") ||
+        row.getAttribute("data-cdmovimentacao") ||
+        row.id ||
+        null;
+      const movementCode =
+        row.getAttribute("data-codigo-movimento") ||
+        row.getAttribute("data-codigo") ||
+        null;
+      const key = `${normalizedDate}|${description}|${sourceMovementId || ""}`;
+      if (seenMovementKeys.has(key)) return;
+      seenMovementKeys.add(key);
+      movements.push({
+        date: normalizedDate,
+        name: description,
+        content: description,
+        source_movement_id: sourceMovementId,
+        movement_code: movementCode
+      });
+    });
+
+    // 4. Audiências (Descoberta robusta no DOM da Capa CPOPG)
     const hearings = [];
     const seenHearingKeys = new Set();
 
@@ -820,6 +864,7 @@
       mais_detalhes_html: sanitizeDomFragment(doc.querySelector("#maisDetalhes, .maisDetalhes")),
       partes_html: sanitizeDomFragment(doc.querySelector("#tableTodasPartes, #tablePartesPrincipais, .tabelaPartes")),
       audiencias_html: sanitizeDomFragment(doc.querySelector("#tabelaTodasAudiencias, #tabelaAudiencias, #tableAudiencias, .tabelaAudiencias")),
+      movimentacoes_html: sanitizeDomFragment(doc.querySelector("#tabelaTodasMovimentacoes, #tabelaUltimasMovimentacoes, #tabelaMovimentacoes")),
       incidentes_html: sanitizeDomFragment(doc.querySelector("#tabelaIncidentes, #tableIncidentes, .tabelaIncidentes")),
       apensos_html: sanitizeDomFragment(doc.querySelector("#tabelaApensos, #tableApensos")),
       peticoes_html: sanitizeDomFragment(doc.querySelector("#tabelaTodasPeticoes, #tabelaPeticoes"))
@@ -833,6 +878,7 @@
       parties: parties,
       lawyers: lawyers,
       hearings: hearings,
+      movements: movements,
       incidents: incidents,
       related_processes: relatedProcesses,
       petitions: petitions,
@@ -929,7 +975,7 @@
             page_context: pageContext,
             documents: allDocs,
             participants: meta.participants || [],
-            movements: meta.movements || [],
+            movements: cpopgData?.movements || meta.movements || [],
             cpopg: cpopgData
           }
       });

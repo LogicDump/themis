@@ -27183,6 +27183,10 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 														label: "Status / Situação",
 														value: currentOverview.status || "Ativo"
 													},
+													currentOverview.latest_provider_movement ? {
+														label: "Última movimentação e-SAJ",
+														value: [formatDateDisplay(currentOverview.latest_provider_movement.occurred_at), currentOverview.latest_provider_movement.movement_type || currentOverview.latest_provider_movement.content].filter(Boolean).join(" · ")
+													} : null,
 													{
 														label: "Autos",
 														value: `${currentOverview.total_pages || 0} páginas indexadas (${currentOverview.document_count || 0} peças)`
