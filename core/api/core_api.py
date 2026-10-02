@@ -886,8 +886,40 @@ def movement_analysis_v2_source_record(movement_id: str, path: Path | None = Non
         db.close()
 
 def movement_analysis_v3_source_record(movement_id: str, path: Path | None = None) -> dict | None:
-    """V3 uses the same canonical own-piece input contract as V2."""
-    return movement_analysis_v2_source_record(movement_id, path)
+    """Own-piece V3 input with page-local content for exact provenance."""
+    db = _record_db("movements", "movement_id", movement_id, path)
+    try:
+        row = db.execute(
+            "SELECT process_id,actor,occurred_at,movement_type FROM movements WHERE movement_id=?",
+            (movement_id,),
+        ).fetchone()
+        if not row:
+            return None
+        page_rows = source_pages(db, movement_id)
+        source_text = "\n\n".join(page["content"] for page in page_rows)
+        return {
+            "movement_id": movement_id,
+            "origin": row["actor"],
+            "occurred_at": row["occurred_at"],
+            "movement_type": row["movement_type"],
+            "pages": [
+                {
+                    "document_id": page["document_id"],
+                    "page_number": page["page_number"],
+                    "content": page["content"],
+                }
+                for page in page_rows
+            ],
+            # Retained outside the V3 model payload for batching/current-source hashing.
+            "source_text": source_text,
+            "source_hash": source_text_and_hash(db, movement_id)[1],
+            "_source_pages": {
+                (page["document_id"], page["page_number"]): page["content"] for page in page_rows
+            },
+            "process_id": row["process_id"],
+        }
+    finally:
+        db.close()
 
 def movement_analysis_v2_context(process_id: str, path: Path | None = None) -> dict | None:
     """Small process-local identity context plus deterministic persisted analysis references."""

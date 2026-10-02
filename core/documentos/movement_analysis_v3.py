@@ -19,7 +19,7 @@ EPISTEMIC_STATUSES = (
 SUPPORT_STATUSES = ("NONE_IN_CONTEXT", "EVIDENCE_REFERENCED", "NOT_APPLICABLE")
 ACTOR_MODES = ("MAIN_REF", "SOURCE_TEXT", "UNSPECIFIED")
 MOVEMENT_INPUT_FIELDS = (
-    "movement_id", "origin", "occurred_at", "movement_type", "pages", "source_text",
+    "movement_id", "origin", "occurred_at", "movement_type", "pages",
 )
 SOURCE_REF_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -143,9 +143,11 @@ def build_analysis_instructions(movement_ids: list[str]) -> str:
         "Analise cada Movement de forma independente e juridicamente conservadora. "
         "main contém somente identidade/contexto processual compartilhado; known contém apenas objetos "
         "anteriores já validados. origin é metadata do provider e não autoriza inferir identidade, autoria ou parte. "
-        "Use exclusivamente o texto da peça principal em source_text; anexos não estão implicitamente provados. "
-        "Cada summary, unidade de evidence, drafting_extract e relation deve ser sustentado por source_refs com "
-        "quote copiado como substring literal de source_text na pagina indicada. Nao parafraseie o quote. Preserve contradições e ambiguidades em vez de harmonizá-las. "
+        "Use exclusivamente pages[].content da peça principal; cada página vem separada com document_id e page_number. "
+        "Anexos não estão implicitamente provados. Cada summary, unidade de evidence, drafting_extract e relation deve "
+        "ser sustentado por source_refs cujo quote seja copiado como substring literal do content da mesma página indicada "
+        "por document_id/page_number. Não parafraseie o quote nem atribua trecho de uma página a outra. Preserve contradições "
+        "e ambiguidades em vez de harmonizá-las. "
         "Nunca promova alegação a fato provado, referência documental a prova validada, posição jurídica a fato, "
         "pedido a decisão ou decisão a cumprimento. "
         "Em evidence use exatamente os papéis FACTUAL_ASSERTION, LEGAL_POSITION, REQUEST, JUDICIAL_FINDING, "

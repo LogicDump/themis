@@ -290,3 +290,26 @@ def test_v3_persistence_keeps_summary_and_analysis_version(monkeypatch):
     assert current["analysis_schema_version"] == "movement-analysis-v3"
     assert current["summary_text"] == analysis["summary"]
     assert current["analysis"]["drafting_extracts"][0]["evidence_key"] == "fact_payment"
+
+
+def test_v3_model_input_carries_page_local_content_and_not_flat_source_text():
+    from core.documentos.movement_analysis_v3 import build_analysis_input
+
+    record = {
+        "movement_id": MID,
+        "origin": None,
+        "occurred_at": "2026-09-10",
+        "movement_type": "Petição",
+        "pages": [
+            {"document_id": DOC, "page_number": 1, "content": "Página um."},
+            {"document_id": DOC, "page_number": 2, "content": "Página dois."},
+        ],
+        "source_text": "Página um.\n\nPágina dois.",
+    }
+    payload = build_analysis_input(
+        {"process_id": "proc"}, [], [record]
+    )
+    movement = payload["movements"][0]
+    assert movement["pages"][1]["page_number"] == 2
+    assert movement["pages"][1]["content"] == "Página dois."
+    assert "source_text" not in movement
