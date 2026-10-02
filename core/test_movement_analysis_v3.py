@@ -313,3 +313,10 @@ def test_v3_model_input_carries_page_local_content_and_not_flat_source_text():
     assert movement["pages"][1]["page_number"] == 2
     assert movement["pages"][1]["content"] == "Página dois."
     assert "source_text" not in movement
+
+
+def test_v3_instructions_define_nonfactual_epistemic_status():
+    from core.documentos.movement_analysis_v3 import build_analysis_instructions
+    instructions = build_analysis_instructions([MID])
+    assert "LEGAL_POSITION, REQUEST, JUDICIAL_DECISION" in instructions
+    assert "epistemic_status=NOT_APPLICABLE" in instructions

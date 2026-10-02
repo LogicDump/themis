@@ -121,6 +121,7 @@ def _is_structured_response_error(exc: Exception) -> bool:
         "resposta deve conter", "resultado deve ser", "resultado inesperado",
         "resultado duplicado", "summary vazio", "resultados incompletos", "objeto json",
         "resposta v3", "movement ausente", "provenance não conferível",
+        "papel não factual", "estado epistêmico inválido", "support_status inválido",
     ))
 
 
@@ -156,6 +157,7 @@ async def _run_summary_unit(
 
     result = None
     last_error: Exception | None = None
+    correction_hint = ""
     timed_out = False
     for attempt in range(_RETRY_LIMIT):
         if _is_cancel_requested(job):
@@ -170,7 +172,7 @@ async def _run_summary_unit(
         )
         _persist(job)
         call_kwargs = dict(
-            instructions=build_analysis_instructions(pending_ids),
+            instructions=build_analysis_instructions(pending_ids) + correction_hint,
             input=[{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
             json_schema=ANALYSIS_JSON_SCHEMA,
             schema_name="themis_movement_analysis_v3",
@@ -208,6 +210,11 @@ async def _run_summary_unit(
             break
         except Exception as exc:
             last_error = exc
+            correction_hint = (
+                "\nA tentativa anterior foi rejeitada pelo validador: "
+                + _error_text(exc)
+                + ". Corrija exatamente essa violação sem alterar fatos nem inventar conteúdo."
+            )
             finish_call_diagnostic(diagnostic, diagnostic_started, error=exc)
             _persist(job)
             if is_timeout_exception(exc):

@@ -17,6 +17,10 @@ EPISTEMIC_STATUSES = (
     "JUDICIALLY_FOUND", "NOT_APPLICABLE", "UNCERTAIN",
 )
 SUPPORT_STATUSES = ("NONE_IN_CONTEXT", "EVIDENCE_REFERENCED", "NOT_APPLICABLE")
+NONFACTUAL_ROLES = {
+    "LEGAL_POSITION", "REQUEST", "JUDICIAL_DECISION",
+    "EVIDENCE_REFERENCE", "EVENT", "OBLIGATION",
+}
 ACTOR_MODES = ("MAIN_REF", "SOURCE_TEXT", "UNSPECIFIED")
 MOVEMENT_INPUT_FIELDS = (
     "movement_id", "origin", "occurred_at", "movement_type", "pages",
@@ -45,8 +49,22 @@ EVIDENCE_SCHEMA = {
         "semantic_role": {"type": "string", "enum": list(SEMANTIC_ROLES)},
         "text": {"type": "string", "minLength": 1},
         "actor": ACTOR_SCHEMA,
-        "epistemic_status": {"type": "string", "enum": list(EPISTEMIC_STATUSES)},
-        "support_status": {"type": "string", "enum": list(SUPPORT_STATUSES)},
+        "epistemic_status": {
+            "type": "string",
+            "enum": list(EPISTEMIC_STATUSES),
+            "description": (
+                "FACTUAL_ASSERTION: UNILATERAL/CONTESTED_EXPLICIT/ADMITTED_EXPLICIT/UNCERTAIN; "
+                "JUDICIAL_FINDING: JUDICIALLY_FOUND; other semantic roles: NOT_APPLICABLE."
+            ),
+        },
+        "support_status": {
+            "type": "string",
+            "enum": list(SUPPORT_STATUSES),
+            "description": (
+                "Only FACTUAL_ASSERTION uses NONE_IN_CONTEXT/EVIDENCE_REFERENCED; "
+                "other semantic roles require NOT_APPLICABLE."
+            ),
+        },
         "temporal_reference": {"type": "string"},
         "material_qualifiers": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "source_refs": {"type": "array", "minItems": 1, "items": SOURCE_REF_SCHEMA},
@@ -64,8 +82,22 @@ DRAFTING_EXTRACT_SCHEMA = {
         "text": {"type": "string", "minLength": 1},
         "semantic_role": {"type": "string", "enum": list(SEMANTIC_ROLES)},
         "actor": ACTOR_SCHEMA,
-        "epistemic_status": {"type": "string", "enum": list(EPISTEMIC_STATUSES)},
-        "support_status": {"type": "string", "enum": list(SUPPORT_STATUSES)},
+        "epistemic_status": {
+            "type": "string",
+            "enum": list(EPISTEMIC_STATUSES),
+            "description": (
+                "FACTUAL_ASSERTION: UNILATERAL/CONTESTED_EXPLICIT/ADMITTED_EXPLICIT/UNCERTAIN; "
+                "JUDICIAL_FINDING: JUDICIALLY_FOUND; other semantic roles: NOT_APPLICABLE."
+            ),
+        },
+        "support_status": {
+            "type": "string",
+            "enum": list(SUPPORT_STATUSES),
+            "description": (
+                "Only FACTUAL_ASSERTION uses NONE_IN_CONTEXT/EVIDENCE_REFERENCED; "
+                "other semantic roles require NOT_APPLICABLE."
+            ),
+        },
         "material_qualifiers": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "source_refs": {"type": "array", "minItems": 1, "items": SOURCE_REF_SCHEMA},
     },
@@ -153,8 +185,11 @@ def build_analysis_instructions(movement_ids: list[str]) -> str:
         "Em evidence use exatamente os papéis FACTUAL_ASSERTION, LEGAL_POSITION, REQUEST, JUDICIAL_FINDING, "
         "JUDICIAL_DECISION, EVIDENCE_REFERENCE, EVENT ou OBLIGATION. FACTUAL_ASSERTION descreve afirmação factual "
         "atribuída; JUDICIAL_FINDING somente constatação factual efetivamente adotada pelo juízo; JUDICIAL_DECISION "
-        "somente comando ou resultado decisório. epistemic_status deve preservar a força epistêmica do texto; "
-        "support_status=EVIDENCE_REFERENCED apenas quando a própria peça fizer referência expressa a suporte probatório, "
+        "somente comando ou resultado decisório. Use epistemic_status SOMENTE para FACTUAL_ASSERTION e JUDICIAL_FINDING: "
+        "FACTUAL_ASSERTION admite UNILATERAL, CONTESTED_EXPLICIT, ADMITTED_EXPLICIT ou UNCERTAIN; JUDICIAL_FINDING exige "
+        "JUDICIALLY_FOUND. Para LEGAL_POSITION, REQUEST, JUDICIAL_DECISION, EVIDENCE_REFERENCE, EVENT e OBLIGATION use "
+        "epistemic_status=NOT_APPLICABLE, pois o papel semântico já expressa sua natureza. "
+        "support_status=EVIDENCE_REFERENCED apenas quando a própria FACTUAL_ASSERTION fizer referência expressa a suporte probatório; "
         "sem afirmar que esse suporte foi validado. actor MAIN_REF só pode usar id recebido em main; SOURCE_TEXT exige "
         "expressão literal do texto; se não for seguro, use UNSPECIFIED com value vazio. temporal_reference deve ser "
         "vazio quando não houver referência temporal material segura. material_qualifiers deve conter trechos curtos "
