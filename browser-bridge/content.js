@@ -983,9 +983,16 @@
               const firstMovementDoc = new DOMParser().parseFromString(firstWrappedHtml, "text/html");
               let cursor = firstMovementDoc.querySelector("#cursorMovimentacoesPaginado")?.value || null;
               let pageCount = 1;
-              const MAX_MOVEMENT_PAGES = 100;
+              const MAX_MOVEMENT_PAGES = 1000;
+              const seenCursors = new Set();
+              let repeatedCursor = false;
 
               while (cursor && pageCount < MAX_MOVEMENT_PAGES) {
+                if (seenCursors.has(cursor)) {
+                  repeatedCursor = true;
+                  break;
+                }
+                seenCursors.add(cursor);
                 const pageHtml = await fetchMovementPage(cursor);
                 const wrappedPageHtml = `<div id="containerMovimentacoes"><table><tbody id="tabelaOutrasPaginasMovimentacoes">${pageHtml}</tbody></table></div>`;
                 const pageData = extractCpopgFromHtml(wrappedPageHtml, cpopgUrl, cnj);
@@ -1002,7 +1009,8 @@
                 captured_rows: cpopgData.movements.length,
                 fetched_pages: pageCount,
                 pagination_exhausted: !cursor,
-                pagination_capped: !!cursor
+                pagination_capped: !!cursor && pageCount >= MAX_MOVEMENT_PAGES,
+                repeated_cursor: repeatedCursor
               };
               cpopgData.sanitized_dom_fragments = {
                 ...(cpopgData.sanitized_dom_fragments || {}),

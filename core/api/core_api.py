@@ -634,22 +634,30 @@ def overview(pid: str, path: Path | None = None) -> dict | None:
 
         latest_provider_movement = None
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_movements'").fetchone():
-            provider_movement_row = db.execute(
+            provider_movement_rows = db.execute(
                 """SELECT movement_id,movement_type,occurred_at,content,source_movement_id,movement_code,provenance_json
                    FROM process_movements
                    WHERE process_id=?
-                   ORDER BY coalesce(occurred_at,'' ) DESC, rowid DESC
-                   LIMIT 1""",
-                (pid,),
-            ).fetchone()
-            if provider_movement_row:
-                latest_provider_movement = dict(provider_movement_row)
+                     AND coalesce(occurred_at,'')=(
+                       SELECT max(coalesce(occurred_at,'')) FROM process_movements WHERE process_id=?
+                     )
+                   ORDER BY rowid""",
+                (pid, pid),
+            ).fetchall()
+            ranked_provider_movements = []
+            for provider_movement_row in provider_movement_rows:
+                candidate = dict(provider_movement_row)
                 try:
-                    latest_provider_movement["provenance"] = json.loads(
-                        provider_movement_row["provenance_json"] or "{}"
-                    )
+                    candidate["provenance"] = json.loads(provider_movement_row["provenance_json"] or "{}")
                 except Exception:
-                    latest_provider_movement["provenance"] = {}
+                    candidate["provenance"] = {}
+                source_order = candidate["provenance"].get("source_order")
+                ranked_provider_movements.append((
+                    int(source_order) if isinstance(source_order, int) or str(source_order).isdigit() else 10**9,
+                    candidate,
+                ))
+            if ranked_provider_movements:
+                latest_provider_movement = min(ranked_provider_movements, key=lambda item: item[0])[1]
 
         has_strategy = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_entries'").fetchone() is not None
         strategy_items = []

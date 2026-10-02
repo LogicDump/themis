@@ -1137,7 +1137,7 @@ def plan_process_sync(
 
         # 3. Persiste movimentações com deduplicação
         movements_synced = 0
-        for mov in movements:
+        for source_order, mov in enumerate(movements):
             m_date = mov.get("date") or mov.get("occurred_at")
             m_name = mov.get("name") or mov.get("movement_type") or "Movimentação registrada"
             m_text = mov.get("content") or m_name
@@ -1157,7 +1157,7 @@ def plan_process_sync(
                 source_movement_id=str(src_m_id) if src_m_id else None,
                 movement_code=str(m_code) if m_code else None,
                 movement_fingerprint=fp,
-                provenance={"source": "esaj_bridge", "metadata": metadata},
+                provenance={"source": "esaj_bridge", "metadata": metadata, "source_order": source_order},
             )
             movements_synced += 1
 
