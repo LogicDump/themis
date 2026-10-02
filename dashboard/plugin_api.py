@@ -319,7 +319,7 @@ def get_process_overview(process_id: str):
 
 @router.get("/processes/{process_id}/movements")
 def get_process_movements(process_id: str):
-    val = core_api.movements(process_id)
+    val = core_api.timeline_movements(process_id)
     if val is None:
         raise HTTPException(status_code=404, detail="Process movements not found")
     return val

@@ -24688,6 +24688,7 @@ function renderMovementItem(mov, idx, openAutosAtMovementPage, isExpanded = true
 	const components = Array.isArray(mov.components) ? mov.components : [];
 	const rawTitle = mov.title || mov.movement_type || "Movimento Processual";
 	const displayTitle = cleanPieceTitle(rawTitle) || rawTitle;
+	const summaryAvailable = Boolean(summary || onGenerateSummary);
 	const movPageStart = movRef?.process_page_start ?? components[0]?.pages?.[0]?.process_page_number;
 	const movPageEnd = movRef?.process_page_end ?? components[components.length - 1]?.pages?.slice(-1)[0]?.process_page_number ?? movPageStart;
 	const totalPageLabel = movPageStart != null ? movPageEnd != null && Number(movPageEnd) > Number(movPageStart) ? `Páginas ${movPageStart}–${movPageEnd}` : `Página ${movPageStart}` : null;
@@ -24781,7 +24782,7 @@ function renderMovementItem(mov, idx, openAutosAtMovementPage, isExpanded = true
 						className: "text-foreground/90 leading-relaxed whitespace-pre-wrap",
 						children: mov.description || mov.content
 					}) : null,
-					jsxs("div", {
+					summaryAvailable ? jsxs("div", {
 						className: "border-l-2 border-primary/40 my-1 bg-muted/20 rounded-r",
 						children: [jsx(RowButton, {
 							"aria-expanded": summaryExpanded,
@@ -24826,7 +24827,7 @@ function renderMovementItem(mov, idx, openAutosAtMovementPage, isExpanded = true
 								}) : null
 							]
 						}) : null]
-					}),
+					}) : null,
 					components.length > 0 ? jsxs("div", {
 						className: "space-y-1 pt-1",
 						children: [jsx(PanelSectionLabel, { children: `Peças (${components.length})` }), components.map(componentNode)]
@@ -26703,7 +26704,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		setActiveSection(section);
 	};
 	const generateMovementSummary = async (movement) => {
-		const movementId = movement?.movement_id;
+		const movementId = movement?.summary_movement_id || (movement?.provider_movement_id ? null : movement?.movement_id);
 		if (!movementId || summaryLoading[movementId] || processSummaryBusyRef.current === selectedPid) return;
 		const processId = selectedPid;
 		const selectionEpoch = processSelectionRef.current.epoch;
@@ -26770,7 +26771,9 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		}));
 	};
 	const requestMovementSummary = (movement) => {
-		if (movementSummaries[selectedPid]?.[movement?.movement_id]) {
+		const summaryMovementId = movement?.summary_movement_id || (movement?.provider_movement_id ? null : movement?.movement_id);
+		if (!summaryMovementId) return;
+		if (movementSummaries[selectedPid]?.[summaryMovementId]) {
 			setSummaryConfirmationMovement(movement);
 			return;
 		}
@@ -27459,7 +27462,23 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 											icon: pipelineDocumentBusy ? "clock" : pipelineStatus === "ERROR" ? "error" : "clock",
 											title: pipelineDocumentBusy ? "Processamento dos documentos em andamento" : pipelineStatus === "ERROR" ? "Falha na sincronização" : "Nenhuma movimentação",
 											description: pipelineDocumentBusy ? currentProcess?.pipeline_progress?.message || "Os documentos estão sendo recebidos e processados. As movimentações aparecerão assim que a estrutura documental estiver pronta." : pipelineStatus === "ERROR" ? currentProcess?.pipeline_error || "O processamento dos documentos falhou. Tente sincronizar novamente após corrigir o problema." : "Não foram encontradas movimentações processuais no histórico."
-										}) : orderedMovements.map((mov, idx) => renderMovementItem(mov, idx, openAutosAtMovementPage, isMovementExpanded(mov, idx), () => toggleMovementExpanded(mov, idx), movementSummaries[selectedPid]?.[mov.movement_id] || null, Boolean(summaryLoading[mov.movement_id]), summaryErrors[mov.movement_id] || null, () => requestMovementSummary(mov), expandedMovementSummaries[mov.movement_id] ?? true, () => toggleMovementSummary(mov.movement_id), processSummaryJob?.process_id === selectedPid && processSummaryJob?.status === "RUNNING"))]
+										}) : orderedMovements.map((mov, idx) => {
+											const summaryMovementId = mov.summary_movement_id || (mov.provider_movement_id ? null : mov.movement_id);
+											return renderMovementItem(
+												mov,
+												idx,
+												openAutosAtMovementPage,
+												isMovementExpanded(mov, idx),
+												() => toggleMovementExpanded(mov, idx),
+												summaryMovementId ? movementSummaries[selectedPid]?.[summaryMovementId] || null : null,
+												summaryMovementId ? Boolean(summaryLoading[summaryMovementId]) : false,
+												summaryMovementId ? summaryErrors[summaryMovementId] || null : null,
+												summaryMovementId ? () => requestMovementSummary(mov) : null,
+												expandedMovementSummaries[mov.movement_id] ?? true,
+												() => toggleMovementSummary(mov.movement_id),
+												!summaryMovementId || processSummaryJob?.process_id === selectedPid && processSummaryJob?.status === "RUNNING"
+											);
+										})]
 									})]
 								}),
 								jsxs("div", {

@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from core.documentos.process_movement_linker_v1 import audit_links, materialize_links
+from core.documentos.process_movement_linker_v1 import audit_links, materialize_links, read_provider_timeline
 
 
 def _db():
@@ -119,3 +119,32 @@ def test_materialize_links_attaches_provider_artifact():
     assert row["movement_id"] == "pm1"
     link = db.execute("SELECT match_method,confidence FROM process_movement_links").fetchone()
     assert dict(link) == {"match_method": "EXACT_PROTOCOL", "confidence": "EXACT"}
+
+
+def test_provider_timeline_keeps_provider_only_state_and_enriches_linked_document():
+    db = _db()
+    _add_provider(db, "pm_status", "Conclusos para Decisão", "2026-09-02", "Conclusos para Decisão")
+    _add_provider(db, "pm_doc", "Manifestação Sobre a Impugnação Juntada", "2026-09-02",
+                  "Nº Protocolo: WPRC.26.70018598-0")
+    _add_derived(db, "dm1", "Petição (Outras)", "02/09/2026 08:23", "WPRC26700185980", "doc1")
+    db.execute(
+        """INSERT INTO provider_artifacts(
+             provider_artifact_id,process_id,movement_id,source_origin,provenance_json,created_at,updated_at
+           ) VALUES(?,?,?,?,?,?,?)""",
+        ("art1", "P", None, "pastadigital_esaj", "{}", "t", "t"),
+    )
+    db.execute("INSERT INTO provider_artifact_pages VALUES(?,?,?)", ("art1", "cp1", 1))
+    db.execute("INSERT INTO canonical_page_observations VALUES(?,?)", ("cp1", "doc1"))
+    materialize_links(db, "P")
+
+    timeline = read_provider_timeline(db, "P")
+    assert len(timeline) == 2
+    status = next(item for item in timeline if item["movement_id"] == "pm_status")
+    linked = next(item for item in timeline if item["movement_id"] == "pm_doc")
+    assert status["provider_only"] is True
+    assert status["summary_movement_id"] is None
+    assert status["components"] == []
+    assert linked["provider_only"] is False
+    assert linked["summary_movement_id"] == "dm1"
+    assert linked["protocol"] == "WPRC26700185980"
+    assert linked["components"][0]["document_id"] == "doc1"

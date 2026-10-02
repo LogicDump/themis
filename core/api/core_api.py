@@ -770,6 +770,18 @@ def movements(pid: str, path: Path | None = None) -> list[dict] | None:
     finally:
         db.close()
 
+
+def timeline_movements(pid: str, path: Path | None = None) -> list[dict] | None:
+    db = _process_db(pid, path)
+    try:
+        if not db.execute("SELECT 1 FROM processes WHERE process_id=?", (pid,)).fetchone():
+            return None
+        from core.documentos.process_movement_linker_v1 import read_provider_timeline
+        timeline = read_provider_timeline(db, pid)
+        return timeline if timeline else read_movements(db, pid)
+    finally:
+        db.close()
+
 def process_relations(process_id: str) -> dict:
     from core.process_relations import list_relations
     from core.process_storage import catalog_discovery

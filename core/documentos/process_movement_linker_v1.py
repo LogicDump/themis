@@ -229,6 +229,125 @@ def _movement_document_ids(row: sqlite3.Row) -> set[str]:
                 result.add(str(item["document_id"]))
     return result
 
+def read_provider_timeline(db: sqlite3.Connection, process_id: str) -> list[dict[str, Any]]:
+    """Return provider chronology enriched with linked documentary material."""
+    db.row_factory = sqlite3.Row
+    if not db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_movements'"
+    ).fetchone():
+        return []
+
+    has_links = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_movement_links'"
+    ).fetchone() is not None
+    provider_rows = db.execute(
+        """SELECT rowid AS _rowid, *
+           FROM process_movements
+           WHERE process_id=?""",
+        (process_id,),
+    ).fetchall()
+
+    timeline: list[dict[str, Any]] = []
+    for provider_row in provider_rows:
+        provider = dict(provider_row)
+        try:
+            provider_provenance = json.loads(provider.get("provenance_json") or "{}")
+        except (TypeError, ValueError):
+            provider_provenance = {}
+        source_order = provider_provenance.get("source_order")
+
+        linked_payloads: list[dict[str, Any]] = []
+        linked_ids: list[str] = []
+        link_evidence: list[dict[str, Any]] = []
+        if has_links:
+            linked_rows = db.execute(
+                """SELECT l.derived_movement_id,l.match_method,l.confidence,l.evidence_json,
+                          m.payload_json
+                   FROM process_movement_links l
+                   JOIN movements m ON m.movement_id=l.derived_movement_id
+                   WHERE l.process_id=? AND l.process_movement_id=?
+                   ORDER BY m.sequence,m.movement_id""",
+                (process_id, provider["movement_id"]),
+            ).fetchall()
+            for linked_row in linked_rows:
+                try:
+                    payload = json.loads(linked_row["payload_json"] or "{}")
+                except (TypeError, ValueError):
+                    payload = {}
+                linked_payloads.append(payload)
+                linked_ids.append(str(linked_row["derived_movement_id"]))
+                try:
+                    evidence = json.loads(linked_row["evidence_json"] or "{}")
+                except (TypeError, ValueError):
+                    evidence = {}
+                link_evidence.append({
+                    "derived_movement_id": linked_row["derived_movement_id"],
+                    "match_method": linked_row["match_method"],
+                    "confidence": linked_row["confidence"],
+                    "evidence": evidence,
+                })
+
+        components: list[dict[str, Any]] = []
+        documents: list[dict[str, Any]] = []
+        pieces: list[dict[str, Any]] = []
+        source_ref: dict[str, Any] = {}
+        actor = None
+        protocol = _protocol(provider.get("content"))
+        for payload in linked_payloads:
+            if not source_ref and isinstance(payload.get("source_ref"), dict):
+                source_ref = dict(payload["source_ref"])
+            actor = actor or payload.get("actor")
+            protocol = protocol or payload.get("protocol")
+            for target, key in (
+                (components, "components"),
+                (documents, "documents"),
+                (pieces, "pieces"),
+            ):
+                values = payload.get(key)
+                if isinstance(values, list):
+                    target.extend(item for item in values if isinstance(item, dict))
+
+        title = provider.get("movement_type") or "Movimentação"
+        timeline.append({
+            "movement_id": provider["movement_id"],
+            "provider_movement_id": provider["movement_id"],
+            "process_id": process_id,
+            "movement_type": provider.get("movement_type"),
+            "title": title,
+            "description": provider.get("content") or title,
+            "content": provider.get("content") or title,
+            "occurred_at": provider.get("occurred_at"),
+            "source_datetime": provider.get("occurred_at"),
+            "actor": actor,
+            "protocol": protocol,
+            "source_ref": source_ref,
+            "components": components,
+            "documents": documents,
+            "pieces": pieces,
+            "provider_only": not bool(linked_ids),
+            "linked_derived_movement_ids": linked_ids,
+            "summary_movement_id": linked_ids[0] if len(linked_ids) == 1 else None,
+            "link_evidence": link_evidence,
+            "provider_provenance": provider_provenance,
+            "_source_order": source_order if isinstance(source_order, int) else None,
+            "_rowid": provider.get("_rowid"),
+        })
+
+    def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        source_order = item.get("_source_order")
+        if isinstance(source_order, int):
+            return (0, source_order)
+        return (1, -(item.get("_rowid") or 0))
+
+    timeline.sort(key=sort_key)
+    total = len(timeline)
+    for index, item in enumerate(timeline):
+        item["sequence"] = total - index
+        item.pop("_source_order", None)
+        item.pop("_rowid", None)
+    return timeline
+
+
 def materialize_links(db: sqlite3.Connection, process_id: str) -> dict[str, Any]:
     ensure_schema(db)
     audit = audit_links(db, process_id)
