@@ -24731,9 +24731,9 @@ function renderMovementItem(mov, idx, openAutosAtMovementPage, isExpanded = true
 		children: [
 			jsxs("div", {
 				className: "flex items-center justify-between gap-2 border-b border-border/20 pb-1.5",
-				children: [components.length > 0 && toggleExpand ? jsxs(RowButton, {
+				children: [toggleExpand ? jsxs(RowButton, {
 					"aria-expanded": isExpanded,
-					"aria-label": isExpanded ? "Recolher peças do movimento" : "Expandir peças do movimento",
+					"aria-label": isExpanded ? "Recolher informações do movimento" : "Expandir informações do movimento",
 					className: "flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left hover:bg-muted/50",
 					onClick: () => toggleExpand(),
 					children: [jsx(DisclosureCaret, {
@@ -24781,6 +24781,10 @@ function renderMovementItem(mov, idx, openAutosAtMovementPage, isExpanded = true
 					mov.description || mov.content ? jsx("div", {
 						className: "text-foreground/90 leading-relaxed whitespace-pre-wrap",
 						children: mov.description || mov.content
+					}) : null,
+					mov.provider_only ? jsx("div", {
+						className: "text-[0.7rem] text-muted-foreground",
+						children: "Andamento oficial do provedor sem documento associado."
 					}) : null,
 					summaryAvailable ? jsxs("div", {
 						className: "border-l-2 border-primary/40 my-1 bg-muted/20 rounded-r",
