@@ -28212,7 +28212,9 @@ function ThemisShell({ ctx }) {
 	}, [selectedId, sortedEventos]);
 	const handleNavigatePublication = (eventId) => {
 		if (!eventId) return;
+		setEventView("historico");
 		setFilterType("todos");
+		setSearch("");
 		setSelectedId(eventId);
 		requestAnimationFrame(() => {
 			requestAnimationFrame(() => {
