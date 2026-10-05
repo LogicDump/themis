@@ -24,6 +24,17 @@ def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     return " ".join("".join(ch for ch in text if not unicodedata.combining(ch)).split()).casefold()
 
+
+def _date_key(value: Any) -> str:
+    text = str(value or "").strip()
+    iso = re.match(r"^(\d{4})-(\d{2})-(\d{2})", text)
+    if iso:
+        return f"{iso.group(1)}-{iso.group(2)}-{iso.group(3)}"
+    br = re.match(r"^(\d{2})/(\d{2})/(\d{4})", text)
+    if br:
+        return f"{br.group(3)}-{br.group(2)}-{br.group(1)}"
+    return text[:10]
+
 def _participant_role_maps(db: sqlite3.Connection, process_id: str) -> tuple[dict[str, str], dict[str, str]]:
     by_name: dict[str, str] = {}
     by_id: dict[str, str] = {}
@@ -183,12 +194,12 @@ def _antecedent_context(
     by_name, _ = _participant_role_maps(db, process_id)
     rows = _summary_rows(db, process_id)
     current_sequence = origin["sequence"] if "sequence" in origin.keys() else None
-    current_date = str(origin["occurred_at"] or "") if "occurred_at" in origin.keys() else ""
+    current_date = _date_key(origin["occurred_at"]) if "occurred_at" in origin.keys() else ""
     candidates: list[dict[str, Any]] = []
     for row in rows:
         if current_sequence is not None and row["sequence"] >= current_sequence:
             continue
-        if current_sequence is None and current_date and row.get("occurred_at") and str(row["occurred_at"]) > current_date:
+        if current_sequence is None and current_date and row.get("occurred_at") and _date_key(row.get("occurred_at")) > current_date:
             continue
         role = _actor_role(row.get("actor"), by_name)
         if role not in {"PLAINTIFF", "DEFENDANT"}:

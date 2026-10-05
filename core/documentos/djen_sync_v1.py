@@ -11,7 +11,7 @@ from core.runtime_paths import process_db_path, workspace_db_path
 from core.documentos.process_event_store_v1 import materialize_process_events
 from core.documentos.publications_v1 import sync_djen
 
-DEADLINE_PIPELINE_REVISION = "deadline-pipeline-v3"
+DEADLINE_PIPELINE_REVISION = "deadline-pipeline-v4"
 
 SYNC_STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS djen_sync_state(
@@ -279,35 +279,49 @@ def sync_now(
                 available_from=available_from,
                 available_to=target_date,
             )
-            event_result = materialize_process_events(db, pid)
-            from core.documentos.deadline_instruction_store_v1 import (
-                materialize_process as materialize_movement_instructions,
-                materialize_publication_instructions,
-            )
-            from core.documentos.deadline_obligation_store_v1 import materialize_process as materialize_deadline_obligations
-            from core.documentos.deadline_resolution_pipeline_v1 import enrich_process_obligations
-            has_movements = db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='movements'"
-            ).fetchone()
-            if has_movements:
-                movement_instruction_result = materialize_movement_instructions(db, pid)
+            changed_count = int(result.get("changed_count", result.get("count") or 0))
+            pipeline_stale = not state or state.get("deadline_pipeline_revision") != DEADLINE_PIPELINE_REVISION
+            should_rebuild = changed_count > 0 or pipeline_stale
+            if not should_rebuild:
+                event_result = {"process_id": pid, "materialized": 0, "deleted": 0, "skipped": "NO_DJEN_DELTA"}
+                movement_instruction_result = {"process_id": pid, "materialized": 0, "deleted": 0, "skipped": "NO_DJEN_DELTA"}
+                instruction_result = {"process_id": pid, "materialized": 0, "deleted": 0, "skipped": "NO_DJEN_DELTA"}
+                obligation_result = {"process_id": pid, "instructions": 0, "obligations": 0, "skipped": "NO_DJEN_DELTA"}
+                resolution_result = {"process_id": pid, "resolved": 0, "review_required": 0, "nonoperative": 0, "skipped": "NO_DJEN_DELTA"}
+                calculation_result = {"process_id": pid, "status": "SKIPPED", "reason": "NO_DJEN_DELTA"}
             else:
-                movement_instruction_result = {"process_id": pid, "materialized": 0, "deleted": 0}
-            instruction_result = materialize_publication_instructions(db, pid)
-            if has_movements:
-                obligation_result = materialize_deadline_obligations(db, pid)
-                resolution_result = enrich_process_obligations(db, pid)
-                try:
-                    calculation_result = _calculate_tjsp_deadlines(db, pid, target_date=target_date)
-                except Exception as calculation_exc:
-                    calculation_result = {
-                        "process_id": pid, "status": "ERROR",
-                        "error": str(calculation_exc)[:2000],
-                    }
-            else:
-                obligation_result = {"process_id": pid, "instructions": 0, "obligations": 0}
-                resolution_result = {"process_id": pid, "obligations": 0, "resolved": 0, "review_required": 0, "nonoperative": 0, "legal_context": None}
-                calculation_result = {"process_id": pid, "status": "SKIPPED", "reason": "MOVEMENTS_MISSING"}
+                from core.documentos.participant_context_store_v1 import materialize_all as materialize_participant_context
+                materialize_participant_context(db)
+                event_result = materialize_process_events(db, pid)
+            if should_rebuild:
+                from core.documentos.deadline_instruction_store_v1 import (
+                    materialize_process as materialize_movement_instructions,
+                    materialize_publication_instructions,
+                )
+                from core.documentos.deadline_obligation_store_v1 import materialize_process as materialize_deadline_obligations
+                from core.documentos.deadline_resolution_pipeline_v1 import enrich_process_obligations
+                has_movements = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='movements'"
+                ).fetchone()
+                if has_movements:
+                    movement_instruction_result = materialize_movement_instructions(db, pid)
+                else:
+                    movement_instruction_result = {"process_id": pid, "materialized": 0, "deleted": 0}
+                instruction_result = materialize_publication_instructions(db, pid)
+                if has_movements:
+                    obligation_result = materialize_deadline_obligations(db, pid)
+                    resolution_result = enrich_process_obligations(db, pid)
+                    try:
+                        calculation_result = _calculate_tjsp_deadlines(db, pid, target_date=target_date)
+                    except Exception as calculation_exc:
+                        calculation_result = {
+                            "process_id": pid, "status": "ERROR",
+                            "error": str(calculation_exc)[:2000],
+                        }
+                else:
+                    obligation_result = {"process_id": pid, "instructions": 0, "obligations": 0}
+                    resolution_result = {"process_id": pid, "obligations": 0, "resolved": 0, "review_required": 0, "nonoperative": 0, "legal_context": None}
+                    calculation_result = {"process_id": pid, "status": "SKIPPED", "reason": "MOVEMENTS_MISSING"}
         except Exception as exc:
             _write_error(pid, str(exc))
             results.append({

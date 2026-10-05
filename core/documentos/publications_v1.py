@@ -233,6 +233,8 @@ def sync_djen(
     client = client or DjenClient()
     page = 1
     persisted: list[str] = []
+    changed: list[str] = []
+    created: list[str] = []
     while True:
         response = client.communications(
             process_id=process_id,
@@ -248,7 +250,28 @@ def sync_djen(
                 item, process_id=process_id, request_url=response["request_url"]
             ) if isinstance(item, dict) else None
             if publication:
-                persisted.append(upsert_publication(db, publication))
+                identity = publication["communication_id"] or publication["certificate_code"]
+                candidate_id = "pub_" + uuid.uuid5(
+                    NAMESPACE, f"{publication['provider']}|{identity}"
+                ).hex
+                if publication["communication_id"] and publication["certificate_code"]:
+                    prior = db.execute(
+                        "SELECT publication_id,payload_hash FROM publications WHERE provider=? AND certificate_code=?",
+                        (publication["provider"], publication["certificate_code"]),
+                    ).fetchone()
+                else:
+                    prior = db.execute(
+                        "SELECT publication_id,payload_hash FROM publications WHERE publication_id=?",
+                        (candidate_id,),
+                    ).fetchone()
+                previous_hash = str(prior[1]) if prior and prior[1] is not None else None
+                publication_id = upsert_publication(db, publication)
+                persisted.append(publication_id)
+                if prior is None:
+                    created.append(publication_id)
+                    changed.append(publication_id)
+                elif previous_hash != publication["payload_hash"]:
+                    changed.append(publication_id)
         if len(items) < 100:
             break
         page += 1
@@ -261,6 +284,10 @@ def sync_djen(
         "available_to": available_to,
         "publication_ids": persisted,
         "count": len(persisted),
+        "created_publication_ids": created,
+        "changed_publication_ids": changed,
+        "created_count": len(created),
+        "changed_count": len(changed),
     }
 
 def list_publications(db: sqlite3.Connection, process_id: str) -> list[dict[str, Any]]:

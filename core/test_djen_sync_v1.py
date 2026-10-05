@@ -126,6 +126,47 @@ def test_same_day_state_from_older_pipeline_requires_resync():
         assert state["needs_sync"] is True
 
 
+def test_no_djen_delta_skips_full_rebuild():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        workspace = root / "workspace.db"
+        process_db = root / "process.db"
+        db = _connect(process_db)
+        db.execute("CREATE TABLE processes(process_id TEXT PRIMARY KEY,status TEXT,created_at TEXT)")
+        db.execute("INSERT INTO processes VALUES(?,?,?)", (PROCESS_ID, "ACTIVE", "2026-09-01T00:00:00+00:00"))
+        db.commit(); db.close()
+        db = _connect(workspace)
+        db.executescript(djen.SYNC_STATE_SCHEMA)
+        db.execute(
+            "INSERT INTO djen_sync_state(process_id,last_successful_sync_date,last_successful_sync_at,last_available_from,last_available_to,last_count,deadline_pipeline_revision) VALUES(?,?,?,?,?,?,?)",
+            (PROCESS_ID, "2026-10-05", "2026-10-05T10:00:00+00:00", "2026-10-05", "2026-10-05", 1, djen.DEADLINE_PIPELINE_REVISION),
+        )
+        db.commit(); db.close()
+
+        def connect_workspace(*, create=False):
+            return _connect(workspace)
+
+        def connect_process(process_id):
+            assert process_id == PROCESS_ID
+            return _connect(process_db)
+
+        with (
+            patch.object(djen, "workspace_db_path", return_value=workspace),
+            patch.object(djen, "connect_workspace", side_effect=connect_workspace),
+            patch.object(djen, "connect_process", side_effect=connect_process),
+            patch.object(djen, "known_process_ids", return_value=[PROCESS_ID]),
+            patch.object(djen, "process_db_path", return_value=process_db),
+            patch.object(djen, "sync_djen", return_value={"count": 1, "changed_count": 0}),
+            patch.object(djen, "materialize_process_events", side_effect=AssertionError("full rebuild called")),
+        ):
+            result = djen.sync_now(process_id=PROCESS_ID, available_to="2026-10-05")
+
+        assert result["ok"] is True
+        row = result["results"][0]
+        assert row["process_events"]["skipped"] == "NO_DJEN_DELTA"
+        assert row["deadline_calculation"]["reason"] == "NO_DJEN_DELTA"
+
+
 def test_global_djen_skips_reference_only_processes():
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)

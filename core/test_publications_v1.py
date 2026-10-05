@@ -96,7 +96,11 @@ def test_djen_sync_is_idempotent_and_projects_publication_event():
         )
 
         assert first["count"] == 1
+        assert first["created_count"] == 1
+        assert first["changed_count"] == 1
         assert second["count"] == 1
+        assert second["created_count"] == 0
+        assert second["changed_count"] == 0
         assert db.execute("SELECT count(*) FROM publications").fetchone()[0] == 1
 
         publications = list_publications(db, PROCESS_ID)

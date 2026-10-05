@@ -25071,7 +25071,7 @@ function deadlineUrgency(dateKey) {
 	const now = new Date();
 	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 	const days = Math.round((due.getTime() - today.getTime()) / 86400000);
-	if (days < 0) return { level: "past", className: "" };
+	if (days < 0) return { level: "overdue", className: "text-red-400" };
 	if (days === 0) return { level: "today", className: "text-red-400" };
 	if (days < 3) return { level: "near", className: "text-orange-400" };
 	return { level: "open", className: "text-yellow-400" };
@@ -25105,9 +25105,9 @@ function adaptLegalEventToUI(evt) {
 		const urgency = deadlineUrgency(formatDateKey(evt.due_at || ""));
 		urgencyClass = urgency.className;
 		urgencyLevel = urgency.level;
-		tone = urgency.level === "today" ? "bad" : urgency.level === "near" || urgency.level === "open" ? "warn" : "muted";
+		tone = urgency.level === "today" || urgency.level === "overdue" ? "bad" : urgency.level === "near" || urgency.level === "open" ? "warn" : "muted";
 		codicon = "clock";
-		dotClass = urgency.level === "today" ? "bg-red-500/70" : urgency.level === "near" ? "bg-orange-500/70" : urgency.level === "open" ? "bg-yellow-500/70" : "bg-muted-foreground/40";
+		dotClass = urgency.level === "today" || urgency.level === "overdue" ? "bg-red-500/70" : urgency.level === "near" ? "bg-orange-500/70" : urgency.level === "open" ? "bg-yellow-500/70" : "bg-muted-foreground/40";
 		status = evt.status === "ABERTO" ? "Em aberto" : evt.status || "Calculado";
 		teor = evt.determination || evt.description || "Sem determinação cadastrada.";
 		if (evt.deadline_type_label) meta.push({ label: "Natureza", value: evt.deadline_type_label });
@@ -25287,6 +25287,7 @@ function adaptLegalEventToUI(evt) {
 		dotClass,
 		urgencyClass,
 		urgencyLevel,
+		recipientLabel: evt.recipient_label || evt.responsible || "",
 		teor,
 		meta,
 		providencias
@@ -27295,7 +27296,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 															p.lawyers && p.lawyers.length > 0 ? jsx("div", {
 																className: "space-y-0.5 text-muted-foreground text-[0.68rem]",
 																children: p.lawyers.map((lawyer, lawyerIdx) => jsxs("div", {
-																	children: [jsx("span", { className: "font-medium text-foreground/75", children: "Advogado: " }), lawyer.display_name]
+																	children: [jsx("span", { className: "font-medium text-foreground/75", children: "Advogado: " }), lawyer.display_name, lawyer.oab_number || lawyer.oab || lawyer.identifiers?.OAB ? ` (${[lawyer.oab_number || lawyer.oab || lawyer.identifiers?.OAB, lawyer.oab_uf || lawyer.uf].filter(Boolean).join("/")})` : ""]
 																}, `${lawyer.entity_id || lawyer.display_name || "lawyer"}:${lawyerIdx}`))
 															}) : null
 														]
@@ -28013,6 +28014,7 @@ function ThemisShell({ ctx }) {
 	const [selectedId, setSelectedId] = useState("");
 	const [filterProcess, setFilterProcess] = useState("todos");
 	const [filterType, setFilterType] = useState("todos");
+	const [eventView, setEventView] = useState("agenda");
 	const [search, setSearch] = useState("");
 	const [listWidthPct, setListWidthPct] = useState(38);
 	const [isDragging, setIsDragging] = useState(false);
@@ -28169,23 +28171,29 @@ function ThemisShell({ ctx }) {
 		}
 	], [events.length]);
 	const filteredEventos = useMemo(() => {
+		const now = new Date();
+		const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 		return events.filter((evt) => {
 			const matchProcess = filterProcess === "todos" || evt.processo === filterProcess;
 			const matchFilter = filterType === "todos" || evt.tipo === filterType;
-			const matchSearch = !search || evt.titulo.toLowerCase().includes(search.toLowerCase()) || evt.processo.toLowerCase().includes(search.toLowerCase()) || evt.teor.toLowerCase().includes(search.toLowerCase());
-			return matchProcess && matchFilter && matchSearch;
+			const term = search.toLowerCase();
+			const matchSearch = !search || evt.titulo.toLowerCase().includes(term) || evt.processo.toLowerCase().includes(term) || evt.teor.toLowerCase().includes(term) || evt.recipientLabel.toLowerCase().includes(term);
+			const isAgenda = evt.tipo === "publicacao" ? evt.data === todayKey : evt.tipo === "prazo" ? evt.urgencyLevel !== "past" : !evt.data || evt.data >= todayKey;
+			const matchView = eventView === "agenda" ? isAgenda : !isAgenda;
+			return matchProcess && matchFilter && matchSearch && matchView;
 		});
 	}, [
 		events,
 		filterProcess,
 		filterType,
+		eventView,
 		search
 	]);
 	const sortedEventos = useMemo(() => {
 		return [...filteredEventos].sort((a, b) => {
 			const aDate = a.data || "0000-00-00";
 			const bDate = b.data || "0000-00-00";
-			const dateCompare = bDate.localeCompare(aDate);
+			const dateCompare = eventView === "agenda" ? aDate.localeCompare(bDate) : bDate.localeCompare(aDate);
 			if (dateCompare !== 0) return dateCompare;
 			const aDeadline = a.tipo === "prazo";
 			const bDeadline = b.tipo === "prazo";
@@ -28194,7 +28202,7 @@ function ThemisShell({ ctx }) {
 			if (timeCompare !== 0) return timeCompare;
 			return String(b.id || "").localeCompare(String(a.id || ""));
 		});
-	}, [filteredEventos]);
+	}, [filteredEventos, eventView]);
 	const selectedEvent = useMemo(() => {
 		if (selectedId) {
 			const found = sortedEventos.find((evt) => evt.id === selectedId);
@@ -28288,23 +28296,25 @@ function ThemisShell({ ctx }) {
 					})]
 				})]
 			}),
+			jsx(SegmentedControl, {
+				options: [{ id: "agenda", label: "Agenda" }, { id: "historico", label: "Histórico" }],
+				value: eventView,
+				onChange: setEventView,
+				className: "shrink-0"
+			}),
 			jsxs("div", {
-				className: "flex items-center gap-2 rounded-md bg-muted/35 px-2 py-1",
-				children: [jsx(Codicon, {
-					name: "sync",
-					size: "0.75rem",
-					className: "text-muted-foreground/80"
-				}), jsx("span", {
+				className: "flex items-center gap-1 rounded-md bg-muted/35 px-2 py-1",
+				children: [jsx("span", {
 					className: "hidden 2xl:inline text-[0.68rem] text-muted-foreground whitespace-nowrap",
 					children: djenStatusLabel
-				}), jsx(Button, {
-					variant: "secondary",
-					size: "sm",
+				}), jsx("button", {
+					type: "button",
 					disabled: djenSyncing,
 					onClick: () => refreshDjen(false).catch(() => {}),
-					className: "h-6 px-2 text-[0.68rem]",
-					title: "Sincronizar publicações do DJEN",
-					children: djenSyncing ? "Atualizando DJEN…" : "Atualizar DJEN"
+					className: "inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 cursor-pointer",
+					title: djenSyncing ? "Atualizando DJEN" : "Atualizar DJEN",
+					"aria-label": djenSyncing ? "Atualizando DJEN" : "Atualizar DJEN",
+					children: jsx(Codicon, { name: "refresh", size: "0.78rem", className: djenSyncing ? "animate-spin" : "" })
 				})]
 			}),
 			jsx(SegmentedControl, {
@@ -28398,7 +28408,7 @@ function ThemisShell({ ctx }) {
 										"aria-current": active ? "true" : void 0,
 										"data-themis-event-id": evt.id,
 										onClick: () => setSelectedId(evt.id),
-										className: cn("group/row flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors cursor-pointer", active ? "bg-(--ui-row-active-background,var(--muted)) text-foreground font-medium" : "text-(--ui-text-secondary,var(--muted-foreground)) hover:bg-muted/40 hover:text-foreground"),
+										className: cn("group/row flex w-full items-center gap-2 rounded-md border-l-2 border-l-transparent px-2 py-1 text-left transition-colors cursor-pointer", (evt.urgencyLevel === "today" || evt.urgencyLevel === "overdue") && "border-l-red-500/70 bg-red-500/5", evt.urgencyLevel === "near" && "border-l-orange-500/70 bg-orange-500/5", evt.urgencyLevel === "open" && "border-l-yellow-500/60 bg-yellow-500/5", active ? "bg-(--ui-row-active-background,var(--muted)) text-foreground font-medium" : "text-(--ui-text-secondary,var(--muted-foreground)) hover:bg-muted/40 hover:text-foreground"),
 										children: [
 											jsx(Codicon, {
 												name: evt.codicon || "circle-outline",
@@ -28414,6 +28424,11 @@ function ThemisShell({ ctx }) {
 												title: evt.titulo,
 												children: evt.titulo
 											}),
+											evt.recipientLabel ? jsx("span", {
+												className: "hidden min-[64rem]:inline max-w-44 shrink-0 truncate text-[0.66rem] text-foreground/65",
+												title: evt.recipientLabel,
+												children: evt.recipientLabel
+											}) : null,
 											filterProcess === "todos" && evt.processo ? jsx("span", {
 												className: "hidden min-[72rem]:inline max-w-40 shrink-0 truncate font-mono text-[0.63rem] text-muted-foreground/55",
 												title: evt.processo,
