@@ -28040,7 +28040,28 @@ function ThemisShell({ ctx }) {
 	}, [ctx, activeTab]);
 	const loadEvents = useCallback(async () => {
 		const data = await ctx.rest("/events");
-		const adapted = (Array.isArray(data) ? data : []).map(adaptLegalEventToUI);
+		const rawEvents = Array.isArray(data) ? data : [];
+		const adapted = rawEvents.map(adaptLegalEventToUI);
+		const deadlinesByPublication = new Map();
+		for (const evt of adapted) {
+			if (evt.tipo !== "prazo") continue;
+			const publicationId = evt.raw?.origin_publication_id;
+			if (!publicationId) continue;
+			const list = deadlinesByPublication.get(publicationId) || [];
+			list.push(evt);
+			deadlinesByPublication.set(publicationId, list);
+		}
+		for (const evt of adapted) {
+			if (evt.tipo !== "publicacao") continue;
+			const linkedDeadlines = deadlinesByPublication.get(evt.id) || [];
+			linkedDeadlines.sort((a, b) => String(b.data || "").localeCompare(String(a.data || "")));
+			for (let index = 0; index < linkedDeadlines.length; index += 1) {
+				const deadline = linkedDeadlines[index];
+				const label = linkedDeadlines.length === 1 ? "Prazo gerado" : `Prazo gerado ${index + 1}`;
+				const value = [deadline.titulo, deadline.dataExibicao ? `vence em ${deadline.dataExibicao}` : ""].filter(Boolean).join(" · ");
+				evt.meta.push({ label, value, action: "deadline", target: deadline.id });
+			}
+		}
 		setEvents(adapted);
 		setFetchError(null);
 		setLoading(false);
@@ -28210,12 +28231,7 @@ function ThemisShell({ ctx }) {
 		}
 		return sortedEventos[0] || null;
 	}, [selectedId, sortedEventos]);
-	const handleNavigatePublication = (eventId) => {
-		if (!eventId) return;
-		setEventView("historico");
-		setFilterType("todos");
-		setSearch("");
-		setSelectedId(eventId);
+	const scrollToEvent = (eventId) => {
 		requestAnimationFrame(() => {
 			requestAnimationFrame(() => {
 				const rows = Array.from(document.querySelectorAll("[data-themis-event-id]"));
@@ -28223,6 +28239,22 @@ function ThemisShell({ ctx }) {
 				target?.scrollIntoView?.({ block: "center", behavior: "smooth" });
 			});
 		});
+	};
+	const handleNavigatePublication = (eventId) => {
+		if (!eventId) return;
+		setEventView("historico");
+		setFilterType("todos");
+		setSearch("");
+		setSelectedId(eventId);
+		scrollToEvent(eventId);
+	};
+	const handleNavigateDeadline = (eventId) => {
+		if (!eventId) return;
+		setEventView("agenda");
+		setFilterType("todos");
+		setSearch("");
+		setSelectedId(eventId);
+		scrollToEvent(eventId);
 	};
 	const selectedMetaRows = useMemo(() => (selectedEvent?.meta || []).map((row, index) => {
 		if (row.action === "autos" && row.target) return {
@@ -28240,6 +28272,15 @@ function ThemisShell({ ctx }) {
 				type: "button",
 				className: "inline-flex items-center gap-1 text-left text-primary hover:underline underline-offset-2 cursor-pointer",
 				onClick: () => handleNavigatePublication(row.target),
+				children: [row.value, jsx(Codicon, { name: "arrow-right", size: "0.72rem", className: "shrink-0 opacity-70" }, "icon")]
+			})
+		};
+		if (row.action === "deadline" && row.target) return {
+			...row,
+			value: jsx("button", {
+				type: "button",
+				className: "inline-flex items-center gap-1 text-left text-primary hover:underline underline-offset-2 cursor-pointer",
+				onClick: () => handleNavigateDeadline(row.target),
 				children: [row.value, jsx(Codicon, { name: "arrow-right", size: "0.72rem", className: "shrink-0 opacity-70" }, "icon")]
 			})
 		};
