@@ -28282,6 +28282,15 @@ function ThemisShell({ ctx }) {
 	const filterActions = jsxs("div", {
 		className: "flex min-w-0 items-center gap-3",
 		children: [
+			jsx("button", {
+				type: "button",
+				disabled: djenSyncing,
+				onClick: () => refreshDjen(false).catch(() => {}),
+				className: "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 cursor-pointer",
+				title: djenSyncing ? "Atualizando DJEN" : "Atualizar DJEN",
+				"aria-label": djenSyncing ? "Atualizando DJEN" : "Atualizar DJEN",
+				children: jsx(Codicon, { name: "refresh", size: "0.78rem", className: djenSyncing ? "animate-spin" : "" })
+			}),
 			jsxs(Select, {
 				value: filterProcess,
 				onValueChange: setFilterProcess,
@@ -28296,22 +28305,11 @@ function ThemisShell({ ctx }) {
 					})]
 				})]
 			}),
-			jsxs("div", {
-				className: "flex shrink-0 items-center gap-1",
-				children: [jsx("button", {
-					type: "button",
-					disabled: djenSyncing,
-					onClick: () => refreshDjen(false).catch(() => {}),
-					className: "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 cursor-pointer",
-					title: djenSyncing ? "Atualizando DJEN" : "Atualizar DJEN",
-					"aria-label": djenSyncing ? "Atualizando DJEN" : "Atualizar DJEN",
-					children: jsx(Codicon, { name: "refresh", size: "0.78rem", className: djenSyncing ? "animate-spin" : "" })
-				}), jsx(SegmentedControl, {
-					options: [{ id: "agenda", label: "Agenda" }, { id: "historico", label: "Histórico" }],
-					value: eventView,
-					onChange: setEventView,
-					className: "shrink-0"
-				})]
+			jsx(SegmentedControl, {
+				options: [{ id: "agenda", label: "Agenda" }, { id: "historico", label: "Histórico" }],
+				value: eventView,
+				onChange: setEventView,
+				className: "shrink-0"
 			}),
 			jsx("span", {
 				className: "hidden 2xl:inline text-[0.68rem] text-muted-foreground whitespace-nowrap",
