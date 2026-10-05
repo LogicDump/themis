@@ -25076,6 +25076,33 @@ function deadlineUrgency(dateKey) {
 	if (days < 3) return { level: "near", className: "text-orange-400" };
 	return { level: "open", className: "text-yellow-400" };
 }
+function legalEventStatusKey(evt) {
+	return String(evt?.raw?.status || evt?.status || "").trim().toLocaleUpperCase("pt-BR");
+}
+function legalEventIsClosed(evt) {
+	return ["CLOSED", "ENCERRADO", "ENCERRADA", "CUMPRIDO", "CUMPRIDA", "COMPLETED", "CONCLUIDO", "CONCLUÍDO", "CONCLUIDA", "CONCLUÍDA", "CANCELED", "CANCELLED", "CANCELADO", "CANCELADA", "RESOLVED", "RESOLVIDO", "RESOLVIDA", "DONE"].includes(legalEventStatusKey(evt));
+}
+function legalEventIsAgenda(evt, todayKey) {
+	if (legalEventIsClosed(evt)) return false;
+	if (evt.tipo === "prazo") return true;
+	if (evt.tipo === "audiencia") return !evt.data || evt.data >= todayKey;
+	if (evt.tipo === "publicacao") return evt.data === todayKey;
+	if (evt.tipo === "pendencia") return true;
+	return !evt.data || evt.data >= todayKey;
+}
+function legalEventAgendaBucket(evt, todayKey) {
+	if (!legalEventIsAgenda(evt, todayKey)) return null;
+	if (!evt.data) return "todos";
+	if (evt.data < todayKey) return "atraso";
+	if (evt.data === todayKey) return "hoje";
+	return "proximos";
+}
+function legalEventHistoryCategory(evt) {
+	if (evt.tipo === "publicacao") return "comunicacoes";
+	if (evt.tipo === "audiencia") return "audiencias";
+	if (evt.tipo === "prazo") return "prazos";
+	return "outros";
+}
 function adaptLegalEventToUI(evt) {
 	const kind = (evt.kind || "").toUpperCase();
 	const relevantAt = evt.relevant_at || evt.due_at || evt.scheduled_at || evt.date || "";
@@ -28169,53 +28196,72 @@ function ThemisShell({ ctx }) {
 			clearInterval(timer);
 		};
 	}, [activeTab, ctx, loadEvents]);
-	const filterOptions = useMemo(() => [
-		{
-			id: "todos",
-			label: `Todos (${events.length})`
-		},
-		{
-			id: "publicacao",
-			label: "Publicações"
-		},
-		{
-			id: "prazo",
-			label: "Prazos"
-		},
-		{
-			id: "audiencia",
-			label: "Audiências"
-		},
-		{
-			id: "pendencia",
-			label: "Pendências"
+	const eventNow = new Date();
+	const eventTodayKey = `${eventNow.getFullYear()}-${String(eventNow.getMonth() + 1).padStart(2, "0")}-${String(eventNow.getDate()).padStart(2, "0")}`;
+	const viewEvents = useMemo(() => events.filter((evt) => {
+		const matchProcess = filterProcess === "todos" || evt.processo === filterProcess;
+		if (!matchProcess) return false;
+		const isAgenda = legalEventIsAgenda(evt, eventTodayKey);
+		return eventView === "agenda" ? isAgenda : !isAgenda;
+	}), [events, filterProcess, eventView, eventTodayKey]);
+	const filterOptions = useMemo(() => {
+		if (eventView === "agenda") {
+			const counts = { atraso: 0, hoje: 0, proximos: 0 };
+			for (const evt of viewEvents) {
+				const bucket = legalEventAgendaBucket(evt, eventTodayKey);
+				if (bucket && bucket !== "todos") counts[bucket] += 1;
+			}
+			return [
+				{ id: "todos", label: `Tudo (${viewEvents.length})` },
+				...(counts.atraso ? [{ id: "atraso", label: `Em atraso (${counts.atraso})` }] : []),
+				...(counts.hoje ? [{ id: "hoje", label: `Hoje (${counts.hoje})` }] : []),
+				...(counts.proximos ? [{ id: "proximos", label: `Próximos (${counts.proximos})` }] : [])
+			];
 		}
-	], [events.length]);
+		const counts = { comunicacoes: 0, audiencias: 0, prazos: 0, outros: 0 };
+		for (const evt of viewEvents) counts[legalEventHistoryCategory(evt)] += 1;
+		return [
+			{ id: "todos", label: `Tudo (${viewEvents.length})` },
+			...(counts.comunicacoes ? [{ id: "comunicacoes", label: `Comunicações (${counts.comunicacoes})` }] : []),
+			...(counts.audiencias ? [{ id: "audiencias", label: `Audiências (${counts.audiencias})` }] : []),
+			...(counts.prazos ? [{ id: "prazos", label: `Prazos (${counts.prazos})` }] : []),
+			...(counts.outros ? [{ id: "outros", label: `Outros (${counts.outros})` }] : [])
+		];
+	}, [eventView, viewEvents, eventTodayKey]);
+	useEffect(() => {
+		if (!filterOptions.some((option) => option.id === filterType)) setFilterType("todos");
+	}, [filterOptions, filterType]);
 	const filteredEventos = useMemo(() => {
-		const now = new Date();
-		const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-		return events.filter((evt) => {
-			const matchProcess = filterProcess === "todos" || evt.processo === filterProcess;
-			const matchFilter = filterType === "todos" || evt.tipo === filterType;
+		return viewEvents.filter((evt) => {
+			const matchFilter = filterType === "todos" || (eventView === "agenda" ? legalEventAgendaBucket(evt, eventTodayKey) === filterType : legalEventHistoryCategory(evt) === filterType);
 			const term = search.toLowerCase();
 			const matchSearch = !search || evt.titulo.toLowerCase().includes(term) || evt.processo.toLowerCase().includes(term) || evt.teor.toLowerCase().includes(term) || evt.recipientLabel.toLowerCase().includes(term);
-			const isAgenda = evt.tipo === "publicacao" ? evt.data === todayKey : evt.tipo === "prazo" ? evt.urgencyLevel !== "past" : !evt.data || evt.data >= todayKey;
-			const matchView = eventView === "agenda" ? isAgenda : !isAgenda;
-			return matchProcess && matchFilter && matchSearch && matchView;
+			return matchFilter && matchSearch;
 		});
-	}, [
-		events,
-		filterProcess,
-		filterType,
-		eventView,
-		search
-	]);
+	}, [viewEvents, filterType, eventView, eventTodayKey, search]);
 	const sortedEventos = useMemo(() => {
 		return [...filteredEventos].sort((a, b) => {
-			const aDate = a.data || "0000-00-00";
-			const bDate = b.data || "0000-00-00";
-			const dateCompare = bDate.localeCompare(aDate);
-			if (dateCompare !== 0) return dateCompare;
+			const aDate = a.data || "";
+			const bDate = b.data || "";
+			if (eventView === "agenda") {
+				const rank = { atraso: 0, hoje: 1, proximos: 2, todos: 3 };
+				const aBucket = legalEventAgendaBucket(a, eventTodayKey) || "todos";
+				const bBucket = legalEventAgendaBucket(b, eventTodayKey) || "todos";
+				if (rank[aBucket] !== rank[bBucket]) return rank[aBucket] - rank[bBucket];
+				if (aBucket === "atraso") {
+					const overdueCompare = bDate.localeCompare(aDate);
+					if (overdueCompare !== 0) return overdueCompare;
+				} else if (aBucket === "proximos") {
+					const upcomingCompare = aDate.localeCompare(bDate);
+					if (upcomingCompare !== 0) return upcomingCompare;
+				} else {
+					const sameBucketCompare = bDate.localeCompare(aDate);
+					if (sameBucketCompare !== 0) return sameBucketCompare;
+				}
+			} else {
+				const dateCompare = bDate.localeCompare(aDate);
+				if (dateCompare !== 0) return dateCompare;
+			}
 			const aDeadline = a.tipo === "prazo";
 			const bDeadline = b.tipo === "prazo";
 			if (aDeadline !== bDeadline) return aDeadline ? -1 : 1;
@@ -28223,7 +28269,7 @@ function ThemisShell({ ctx }) {
 			if (timeCompare !== 0) return timeCompare;
 			return String(b.id || "").localeCompare(String(a.id || ""));
 		});
-	}, [filteredEventos, eventView]);
+	}, [filteredEventos, eventView, eventTodayKey]);
 	const selectedEvent = useMemo(() => {
 		if (selectedId) {
 			const found = sortedEventos.find((evt) => evt.id === selectedId);
@@ -28351,7 +28397,10 @@ function ThemisShell({ ctx }) {
 			jsx(SegmentedControl, {
 				options: [{ id: "agenda", label: "Agenda" }, { id: "historico", label: "Histórico" }],
 				value: eventView,
-				onChange: setEventView,
+				onChange: (value) => {
+					setEventView(value);
+					setFilterType("todos");
+				},
 				className: "shrink-0"
 			}),
 			jsx("span", {
