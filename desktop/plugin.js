@@ -28193,7 +28193,7 @@ function ThemisShell({ ctx }) {
 		return [...filteredEventos].sort((a, b) => {
 			const aDate = a.data || "0000-00-00";
 			const bDate = b.data || "0000-00-00";
-			const dateCompare = eventView === "agenda" ? aDate.localeCompare(bDate) : bDate.localeCompare(aDate);
+			const dateCompare = bDate.localeCompare(aDate);
 			if (dateCompare !== 0) return dateCompare;
 			const aDeadline = a.tipo === "prazo";
 			const bDeadline = b.tipo === "prazo";
