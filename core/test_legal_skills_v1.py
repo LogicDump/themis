@@ -12,6 +12,11 @@ from core.legal_skills.fact_extractor_v1 import (
     score_fact_extraction,
     validate_fact_extraction,
 )
+from core.legal_skills.claim_request_v1 import (
+    build_claim_request_input,
+    derive_source_actor,
+    validate_claim_request,
+)
 from core.legal_skills.runner_v1 import run_comprehension_slice
 
 
@@ -210,6 +215,68 @@ def test_fact_extractor_allows_no_fact_for_pure_request():
     assert output["facts"] == []
 
 
+def test_claim_request_resolves_implicit_source_actor():
+    source = _source("Requer a condenação do réu ao pagamento.")
+    actor_input = build_actor_role_input(source, _frame())
+    actor_output = {"schema_version": "actor-role-resolver-v1", "context_sufficiency": "SUFFICIENT", "actors": [], "unresolved_points": []}
+    skill_input = build_claim_request_input(actor_input, actor_output)
+    assert skill_input["source_actor"]["actor_id"] == "p_claimant"
+    output = validate_claim_request({
+        "legal_positions": [],
+        "requests": [{
+            "text": "condenação do réu ao pagamento",
+            "actor_id": "p_claimant",
+            "source_refs": [_ref("Requer a condenação do réu ao pagamento.")],
+        }],
+    }, skill_input)
+    assert output["context_sufficiency"] == "SUFFICIENT"
+    assert output["requests"][0]["actor_id"] == "p_claimant"
+
+
+def test_claim_request_keeps_legal_position_out_of_fact_space():
+    source = _source("Sustenta a incidência do art. 300 do CPC.")
+    actor_input = build_actor_role_input(source, _frame())
+    actor_output = {"schema_version": "actor-role-resolver-v1", "context_sufficiency": "SUFFICIENT", "actors": [], "unresolved_points": []}
+    skill_input = build_claim_request_input(actor_input, actor_output)
+    output = validate_claim_request({
+        "legal_positions": [{
+            "text": "incidência do art. 300 do CPC",
+            "actor_id": "p_claimant",
+            "source_refs": [_ref("Sustenta a incidência do art. 300 do CPC.")],
+        }],
+        "requests": [],
+    }, skill_input)
+    assert output["legal_positions"][0]["actor_id"] == "p_claimant"
+
+
+def test_claim_request_rejects_unknown_actor():
+    source = _source("Requer a procedência do pedido.")
+    actor_input = build_actor_role_input(source, _frame())
+    actor_output = {"schema_version": "actor-role-resolver-v1", "context_sufficiency": "SUFFICIENT", "actors": [], "unresolved_points": []}
+    skill_input = build_claim_request_input(actor_input, actor_output)
+    with pytest.raises(ValueError, match="actor_id inexistente"):
+        validate_claim_request({
+            "legal_positions": [],
+            "requests": [{
+                "text": "procedência do pedido",
+                "actor_id": "p_invented",
+                "source_refs": [_ref("Requer a procedência do pedido.")],
+            }],
+        }, skill_input)
+
+
+def test_source_actor_is_ambiguous_when_role_has_multiple_participants():
+    source = _source("Requer a produção de prova.")
+    source["actor"] = "AUTORA"
+    participants = [
+        {"participant_id": "p1", "display_name": "Ana", "base_role": "CLAIMANT"},
+        {"participant_id": "p2", "display_name": "Beatriz", "base_role": "CLAIMANT"},
+    ]
+    resolved = derive_source_actor(source, participants)
+    assert resolved["status"] == "AMBIGUOUS"
+    assert resolved["actor_id"] is None
+
+
 def test_fact_score_flags_allegation_status_upgrade():
     expected = {
         "context_sufficiency": "SUFFICIENT",
@@ -230,7 +297,7 @@ class _FakeLLM:
         return {"parsed": self._parsed_outputs.pop(0), "provider": "fake", "model": "fake-model", "usage": {}}
 
 
-def test_comprehension_slice_wires_actor_then_fact():
+def test_comprehension_slice_wires_actor_fact_and_claims():
     facts = {
         "context_sufficiency": "SUFFICIENT",
         "facts": [{
@@ -243,8 +310,10 @@ def test_comprehension_slice_wires_actor_then_fact():
         }],
         "unresolved_points": [],
     }
+    claims = {"legal_positions": [], "requests": []}
     result = asyncio.run(run_comprehension_slice(
-        _FakeLLM([_resolved_claimant(), facts]), _source(), _frame(), timeout_seconds=5
+        _FakeLLM([_resolved_claimant(), facts, claims]), _source(), _frame(), timeout_seconds=5
     ))
     assert result["actor_role"]["output"]["actors"][0]["participant_id"] == "p_claimant"
     assert result["facts"]["output"]["facts"][0]["epistemic_status"] == "ALLEGED"
+    assert result["claims_requests"]["output"]["requests"] == []

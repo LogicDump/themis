@@ -25,6 +25,13 @@ from core.legal_skills.fact_extractor_v1 import (
     score_fact_extraction,
     validate_fact_extraction,
 )
+from core.legal_skills.claim_request_v1 import (
+    CLAIM_REQUEST_JSON_SCHEMA,
+    build_claim_request_input,
+    build_claim_request_instructions,
+    score_claim_request,
+    validate_claim_request,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -62,7 +69,7 @@ def source_from_case(case: dict) -> dict:
         "process_id": "bench_proc",
         "movement_id": case["id"],
         "title": "Benchmark",
-        "actor": None,
+        "actor": case.get("actor"),
         "occurred_at": None,
         "movement_type": "Benchmark",
         "pages": [{
@@ -91,6 +98,12 @@ def fact_case_input(case: dict) -> dict:
     return build_fact_extractor_input(actor_input, actor_output)
 
 
+def claim_case_input(case: dict) -> dict:
+    actor_input = actor_case_input(case)
+    actor_output = validate_actor_role(case["actor_output"], actor_input)
+    return build_claim_request_input(actor_input, actor_output)
+
+
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
     if skill == "ACTOR_ROLE":
@@ -105,6 +118,12 @@ def run_case(case: dict, model: str) -> dict:
         schema = FACT_EXTRACTOR_JSON_SCHEMA
         validator = lambda value: validate_fact_extraction(value, skill_input)
         scorer = score_fact_extraction
+    elif skill == "CLAIM_REQUEST":
+        skill_input = claim_case_input(case)
+        system = build_claim_request_instructions()
+        schema = CLAIM_REQUEST_JSON_SCHEMA
+        validator = lambda value: validate_claim_request(value, skill_input)
+        scorer = score_claim_request
     else:
         raise ValueError(f"skill desconhecida: {skill}")
 
@@ -159,6 +178,15 @@ def summarize(results: list[dict]) -> dict:
                 "fact_recall": sum(item["score"]["fact_recall"] for item in valid) / len(valid),
                 "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
                 "dangerous_status_upgrade_count": sum(bool(item["score"]["dangerous_status_upgrade"]) for item in valid),
+            })
+        elif skill == "CLAIM_REQUEST" and valid:
+            block.update({
+                "legal_position_precision": sum(item["score"]["legal_position_precision"] for item in valid) / len(valid),
+                "legal_position_recall": sum(item["score"]["legal_position_recall"] for item in valid) / len(valid),
+                "request_precision": sum(item["score"]["request_precision"] for item in valid) / len(valid),
+                "request_recall": sum(item["score"]["request_recall"] for item in valid) / len(valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "actor_mismatch_count": sum(item["score"]["actor_mismatch_count"] for item in valid),
             })
         summary[skill] = block
     return summary

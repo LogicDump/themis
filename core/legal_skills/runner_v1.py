@@ -18,6 +18,12 @@ from core.legal_skills.fact_extractor_v1 import (
     build_fact_extractor_instructions,
     validate_fact_extraction,
 )
+from core.legal_skills.claim_request_v1 import (
+    CLAIM_REQUEST_JSON_SCHEMA,
+    build_claim_request_input,
+    build_claim_request_instructions,
+    validate_claim_request,
+)
 
 
 def _normalize_usage(value: Any) -> Any:
@@ -115,6 +121,41 @@ async def run_fact_extractor_skill(
     }
 
 
+async def run_claim_request_skill(
+    llm: Any,
+    actor_result: dict[str, Any],
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    timeout_seconds: float = THEMIS_LONG_LLM_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    actor_input = actor_result.get("input")
+    actor_output = actor_result.get("output")
+    if not isinstance(actor_input, dict) or not isinstance(actor_output, dict):
+        raise ValueError("actor_result inválido")
+    skill_input = build_claim_request_input(actor_input, actor_output)
+    result = await call_long_job_llm(
+        llm,
+        "acomplete_structured",
+        timeout_seconds=timeout_seconds,
+        instructions=build_claim_request_instructions(),
+        input=[{"type": "text", "text": json.dumps(skill_input, ensure_ascii=False)}],
+        json_schema=CLAIM_REQUEST_JSON_SCHEMA,
+        schema_name="themis_claim_request_mapper_v1",
+        provider=provider,
+        model=model,
+        max_tokens=4096,
+        purpose="themis.legal_skills.claim_request",
+    )
+    parsed, actual_provider, actual_model, usage = _structured_result(result)
+    output = validate_claim_request(parsed, skill_input)
+    return {
+        "input": skill_input,
+        "output": output,
+        "trace": {"provider": actual_provider, "model": actual_model, "usage": usage},
+    }
+
+
 async def run_comprehension_slice(
     llm: Any,
     source_document: dict[str, Any],
@@ -139,8 +180,16 @@ async def run_comprehension_slice(
         model=model,
         timeout_seconds=timeout_seconds,
     )
+    claims = await run_claim_request_skill(
+        llm,
+        actor,
+        provider=provider,
+        model=model,
+        timeout_seconds=timeout_seconds,
+    )
     return {
         "schema_version": "legal-comprehension-slice-v1",
         "actor_role": actor,
         "facts": facts,
+        "claims_requests": claims,
     }

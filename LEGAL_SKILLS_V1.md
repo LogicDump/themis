@@ -25,7 +25,7 @@ Cada skill deve ter:
 | 2 | Legal Context Builder | LegalContextPack | PARCIAL — V1 existente |
 | 3 | Actor & Role Resolver | atores canônicos/resoluções | IMPLEMENTADO V1 — contrato + runner + testes |
 | 4 | Fact Extractor | FactMap inicial | IMPLEMENTADO V1 — contrato + runner + testes |
-| 5 | Claim / Request Mapper | alegações jurídicas + pedidos | NÃO IMPLEMENTADO |
+| 5 | Claim / Request Mapper | posições jurídicas + pedidos | IMPLEMENTADO V1 — contrato + runner + testes + benchmark |
 | 6 | Decision & Obligation Extractor | decisões/comandos/obrigações | PARCIAL — Event Layer cobre domínio específico |
 | 7 | Chronology Builder | cronologia jurídica | PARCIAL — provider-first/Event Layer |
 | 8 | Evidence Mapper | Fact ↔ prova ↔ fonte | NÃO IMPLEMENTADO |
@@ -93,21 +93,47 @@ Estados epistêmicos V1:
 
 Regra crítica: não existe `PROVEN` nesta skill. Força probatória pertence ao futuro Evidence Mapper.
 
+### Claim / Request Mapper V1
+
+Entrada:
+- páginas canônicas do Movement;
+- atores já resolvidos;
+- `Movement.actor` quando disponível para autoria implícita segura.
+
+Saída:
+- `legal_positions[]`;
+- `requests[]`;
+- `actor_id`;
+- `source_refs`;
+- `source_actor` derivado deterministicamente;
+- `unresolved_points`;
+- `context_sufficiency`.
+
+Regras críticas:
+- alegação factual não vira posição jurídica;
+- decisão judicial não vira pedido da parte;
+- pedido que contém uma tese não é duplicado como posição sem argumento independente;
+- `Movement.actor` só resolve autoria implícita se apontar inequivocamente para um único participante;
+- múltiplos participantes no mesmo papel mantêm autoria `AMBIGUOUS`;
+- provenance continua estrito e não é relaxado por erro de encoding do modelo/runtime.
+
 ## Ordem de implementação vigente
 
-1. Consolidar Actor/Role + Fact com benchmark gold.
-2. Implementar Claim / Request Mapper.
-3. Implementar Evidence Mapper.
-4. Implementar Contradiction Detector.
-5. Implementar Evidence Gap Analyzer.
-6. Só então avançar para Issue/Burden/Research/Strategy.
+1. Consolidar Actor/Role + Fact + Claim/Request com benchmark gold.
+2. Implementar Evidence Mapper.
+3. Implementar Contradiction Detector.
+4. Implementar Evidence Gap Analyzer.
+5. Só então avançar para Issue/Burden/Research/Strategy.
 
 ## Baseline inicial — gemma4:e4b sem fine-tuning
 
-Benchmark sintético gold V1: 20 casos, 10 Actor/Role + 10 Fact Extractor.
+Benchmark sintético gold V1: 30 casos, 10 Actor/Role + 10 Fact Extractor + 10 Claim/Request.
 
-- Actor/Role: 10/10 outputs estruturalmente válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
-- Fact Extractor: 8/10 outputs válidos; precisão 0,50; recall 0,50; suficiência 1,00; 0 upgrades epistêmicos perigosos aceitos.
+- Actor/Role: baseline canônico anterior no `gemma4:e4b`: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
+- Fact Extractor: baseline canônico anterior no `gemma4:e4b`: 8/10 outputs válidos; precisão 0,50; recall 0,50; suficiência 1,00; 0 upgrades epistêmicos perigosos aceitos.
+- Claim/Request: no Gemma 4 local atualmente exposto como `llamacpp:a3d2...`, 8/10 outputs válidos; legal position 0,875/0,875; request 0,50/0,50; suficiência 1,00; 0 erros de atribuição de ator nos outputs válidos.
+- Os 2 rejects de Claim/Request ocorreram porque o runtime/modelo devolveu caracteres corrompidos (`��`) dentro de quotes de provenance. O validador rejeitou corretamente; não relaxar provenance para contornar encoding.
+- O alias `gemma4:e4b` desapareceu do Ollama durante esse benchmark; o modelo disponível foi identificado por `ollama show` como Gemma 4, 8B, Q4_K_M, contexto 131072. Não comparar numericamente esse baseline como se fosse necessariamente o mesmo runtime do baseline anterior.
 - Falhas factuais relevantes observadas e bloqueadas:
   - posição jurídica ("incidência do art. 300") tratada pelo modelo como fato;
   - proposição atribuída a ator que permaneceu ambíguo.
