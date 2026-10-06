@@ -32,6 +32,13 @@ from core.legal_skills.claim_request_v1 import (
     score_claim_request,
     validate_claim_request,
 )
+from core.legal_skills.evidence_mapper_v1 import (
+    EVIDENCE_MAPPER_JSON_SCHEMA,
+    build_evidence_mapper_input,
+    build_evidence_mapper_instructions,
+    score_evidence_mapping,
+    validate_evidence_mapping,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -104,6 +111,14 @@ def claim_case_input(case: dict) -> dict:
     return build_claim_request_input(actor_input, actor_output)
 
 
+def evidence_case_input(case: dict) -> dict:
+    actor_input = actor_case_input(case)
+    actor_output = validate_actor_role(case["actor_output"], actor_input)
+    fact_input = build_fact_extractor_input(actor_input, actor_output)
+    fact_output = validate_fact_extraction(case["fact_output"], fact_input)
+    return build_evidence_mapper_input(fact_input, fact_output, case["evidence_sources"])
+
+
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
     if skill == "ACTOR_ROLE":
@@ -124,6 +139,12 @@ def run_case(case: dict, model: str) -> dict:
         schema = CLAIM_REQUEST_JSON_SCHEMA
         validator = lambda value: validate_claim_request(value, skill_input)
         scorer = score_claim_request
+    elif skill == "EVIDENCE_MAPPER":
+        skill_input = evidence_case_input(case)
+        system = build_evidence_mapper_instructions()
+        schema = EVIDENCE_MAPPER_JSON_SCHEMA
+        validator = lambda value: validate_evidence_mapping(value, skill_input)
+        scorer = score_evidence_mapping
     else:
         raise ValueError(f"skill desconhecida: {skill}")
 
@@ -188,6 +209,16 @@ def summarize(results: list[dict]) -> dict:
                 "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
                 "actor_mismatch_count": sum(item["score"]["actor_mismatch_count"] for item in valid),
             })
+        elif skill == "EVIDENCE_MAPPER" and valid:
+            block.update({
+                "evidence_item_precision": sum(item["score"]["evidence_item_precision"] for item in valid) / len(valid),
+                "evidence_item_recall": sum(item["score"]["evidence_item_recall"] for item in valid) / len(valid),
+                "evidence_link_precision": sum(item["score"]["evidence_link_precision"] for item in valid) / len(valid),
+                "evidence_link_recall": sum(item["score"]["evidence_link_recall"] for item in valid) / len(valid),
+                "fact_state_accuracy": sum(item["score"]["fact_state_accuracy"] for item in valid) / len(valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "dangerous_support_invention_count": sum(bool(item["score"]["dangerous_support_invention"]) for item in valid),
+            })
         summary[skill] = block
     return summary
 
@@ -196,6 +227,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="gemma4:e4b")
     ap.add_argument("--cases", default=str(Path(__file__).with_name("cases.jsonl")))
+    ap.add_argument("--skill", action="append", dest="skills")
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
 
@@ -204,6 +236,9 @@ def main() -> int:
         for line in Path(args.cases).read_text(encoding="utf-8-sig").splitlines()
         if line.strip()
     ]
+    if args.skills:
+        wanted = {str(skill).strip().upper() for skill in args.skills}
+        cases = [case for case in cases if str(case.get("skill") or "").upper() in wanted]
     results = []
     for index, case in enumerate(cases, 1):
         print(f"[{index}/{len(cases)}] {case['id']} {case['skill']}", flush=True)

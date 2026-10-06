@@ -24,6 +24,12 @@ from core.legal_skills.claim_request_v1 import (
     build_claim_request_instructions,
     validate_claim_request,
 )
+from core.legal_skills.evidence_mapper_v1 import (
+    EVIDENCE_MAPPER_JSON_SCHEMA,
+    build_evidence_mapper_input,
+    build_evidence_mapper_instructions,
+    validate_evidence_mapping,
+)
 
 
 def _normalize_usage(value: Any) -> Any:
@@ -149,6 +155,42 @@ async def run_claim_request_skill(
     )
     parsed, actual_provider, actual_model, usage = _structured_result(result)
     output = validate_claim_request(parsed, skill_input)
+    return {
+        "input": skill_input,
+        "output": output,
+        "trace": {"provider": actual_provider, "model": actual_model, "usage": usage},
+    }
+
+
+async def run_evidence_mapper_skill(
+    llm: Any,
+    fact_result: dict[str, Any],
+    evidence_sources: list[dict[str, Any]],
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    timeout_seconds: float = THEMIS_LONG_LLM_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    fact_input = fact_result.get("input")
+    fact_output = fact_result.get("output")
+    if not isinstance(fact_input, dict) or not isinstance(fact_output, dict):
+        raise ValueError("fact_result inválido")
+    skill_input = build_evidence_mapper_input(fact_input, fact_output, evidence_sources)
+    result = await call_long_job_llm(
+        llm,
+        "acomplete_structured",
+        timeout_seconds=timeout_seconds,
+        instructions=build_evidence_mapper_instructions(),
+        input=[{"type": "text", "text": json.dumps(skill_input, ensure_ascii=False)}],
+        json_schema=EVIDENCE_MAPPER_JSON_SCHEMA,
+        schema_name="themis_evidence_mapper_v1",
+        provider=provider,
+        model=model,
+        max_tokens=6144,
+        purpose="themis.legal_skills.evidence_mapper",
+    )
+    parsed, actual_provider, actual_model, usage = _structured_result(result)
+    output = validate_evidence_mapping(parsed, skill_input)
     return {
         "input": skill_input,
         "output": output,

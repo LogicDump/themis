@@ -17,7 +17,12 @@ from core.legal_skills.claim_request_v1 import (
     derive_source_actor,
     validate_claim_request,
 )
-from core.legal_skills.runner_v1 import run_comprehension_slice
+from core.legal_skills.evidence_mapper_v1 import (
+    build_evidence_mapper_input,
+    score_evidence_mapping,
+    validate_evidence_mapping,
+)
+from core.legal_skills.runner_v1 import run_comprehension_slice, run_evidence_mapper_skill
 
 
 def _source(text: str | None = None):
@@ -317,3 +322,294 @@ def test_comprehension_slice_wires_actor_fact_and_claims():
     assert result["actor_role"]["output"]["actors"][0]["participant_id"] == "p_claimant"
     assert result["facts"]["output"]["facts"][0]["epistemic_status"] == "ALLEGED"
     assert result["claims_requests"]["output"]["requests"] == []
+
+
+def _fact_result_for_evidence(statement: str = "A autora efetuou o pagamento.", fact_id: str = "f1"):
+    actor_input = build_actor_role_input(_source("A autora afirma que efetuou o pagamento."), _frame())
+    actor_output = validate_actor_role(_resolved_claimant(), actor_input)
+    fact_input = build_fact_extractor_input(actor_input, actor_output)
+    fact_output = validate_fact_extraction({
+        "context_sufficiency": "SUFFICIENT",
+        "facts": [{
+            "fact_id": fact_id,
+            "statement": statement,
+            "epistemic_status": "ALLEGED",
+            "actor_id": "p_claimant",
+            "temporal_text": None,
+            "source_refs": [_ref("A autora afirma que efetuou o pagamento.")],
+        }],
+        "unresolved_points": [],
+    }, fact_input)
+    return fact_input, fact_output
+
+
+def _evidence_source(content: str, *, source_id: str = "evsrc1", document_id: str = "evdoc1", kind: str = "DOCUMENT"):
+    return [{
+        "source_id": source_id,
+        "movement_id": "evmov1",
+        "document_id": document_id,
+        "title": "Documento probatório",
+        "source_kind": kind,
+        "actor_id": None,
+        "pages": [{"pdf_page": 1, "content": content}],
+    }]
+
+
+def _evidence_ref(quote: str, document_id: str = "evdoc1"):
+    return {"document_id": document_id, "pdf_page": 1, "quote": quote}
+
+
+def test_evidence_mapper_accepts_direct_support_without_calling_fact_proven():
+    fact_input, fact_output = _fact_result_for_evidence()
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source("Comprovante bancário: transferência de R$ 1.000,00 realizada em 05/04/2026."),
+    )
+    output = validate_evidence_mapping({
+        "evidence_items": [{
+            "key": "e1",
+            "source_id": "evsrc1",
+            "kind": "DOCUMENT",
+            "description": "comprovante bancário de transferência",
+            "source_refs": [_evidence_ref("Comprovante bancário: transferência de R$ 1.000,00 realizada em 05/04/2026.")],
+        }],
+        "links": [{
+            "fact_id": "f1",
+            "evidence_key": "e1",
+            "relation": "SUPPORTS",
+            "directness": "DIRECT",
+            "scope": "FULL",
+            "limitations": [],
+            "source_refs": [_evidence_ref("Comprovante bancário: transferência de R$ 1.000,00 realizada em 05/04/2026.")],
+        }],
+        "unresolved_points": [],
+    }, skill_input)
+    assert output["fact_states"][0]["evidence_state"] == "SUPPORT_PRESENT"
+    assert "PROVEN" not in str(output)
+
+
+def test_evidence_mapper_accepts_contradiction():
+    fact_input, fact_output = _fact_result_for_evidence()
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source("Extrato da conta não registra qualquer transferência em 05/04/2026."),
+    )
+    output = validate_evidence_mapping({
+        "evidence_items": [{
+            "key": "e1",
+            "source_id": "evsrc1",
+            "kind": "DOCUMENT",
+            "description": "extrato bancário sem registro da transferência alegada",
+            "source_refs": [_evidence_ref("Extrato da conta não registra qualquer transferência em 05/04/2026.")],
+        }],
+        "links": [{
+            "fact_id": "f1",
+            "evidence_key": "e1",
+            "relation": "CONTRADICTS",
+            "directness": "DIRECT",
+            "scope": "FULL",
+            "limitations": [],
+            "source_refs": [_evidence_ref("Extrato da conta não registra qualquer transferência em 05/04/2026.")],
+        }],
+        "unresolved_points": [],
+    }, skill_input)
+    assert output["fact_states"][0]["evidence_state"] == "CONTRADICTION_PRESENT"
+
+
+def test_evidence_mapper_no_link_means_no_evidence_in_context_not_not_proven():
+    fact_input, fact_output = _fact_result_for_evidence()
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source("Petição reiterando que houve pagamento."),
+    )
+    output = validate_evidence_mapping({
+        "evidence_items": [],
+        "links": [],
+        "unresolved_points": [],
+    }, skill_input)
+    assert output["fact_states"] == [{"fact_id": "f1", "evidence_state": "NO_EVIDENCE_IN_CONTEXT"}]
+
+
+def test_evidence_mapper_represents_unavailable_referenced_document():
+    fact_input, fact_output = _fact_result_for_evidence()
+    source_text = "A autora afirma que o documento de fl. 120 comprova o pagamento."
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source(source_text),
+    )
+    output = validate_evidence_mapping({
+        "evidence_items": [],
+        "links": [],
+        "unresolved_points": [{
+            "fact_id": "f1",
+            "code": "REFERENCED_EVIDENCE_NOT_AVAILABLE",
+            "reason": "O documento citado não está disponível no contexto fornecido.",
+            "source_refs": [_evidence_ref(source_text)],
+        }],
+    }, skill_input)
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+    assert output["fact_states"][0]["evidence_state"] == "NO_EVIDENCE_IN_CONTEXT"
+
+
+def test_evidence_mapper_represents_unavailable_visual_asset():
+    fact_input, fact_output = _fact_result_for_evidence()
+    placeholder = "[VISUAL_ASSET: fotografia; conteúdo visual não extraído]"
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source(placeholder, kind="VISUAL_ASSET"),
+    )
+    output = validate_evidence_mapping({
+        "evidence_items": [],
+        "links": [],
+        "unresolved_points": [{
+            "fact_id": "f1",
+            "code": "VISUAL_CONTENT_NOT_AVAILABLE",
+            "reason": "O conteúdo visual não está disponível para análise nesta entrada.",
+            "source_refs": [_evidence_ref(placeholder)],
+        }],
+    }, skill_input)
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+
+
+def test_evidence_mapper_rejects_source_ref_from_wrong_source_id():
+    fact_input, fact_output = _fact_result_for_evidence()
+    sources = _evidence_source("Recibo assinado.", source_id="s1", document_id="d1")
+    sources += _evidence_source("Extrato bancário.", source_id="s2", document_id="d2")
+    skill_input = build_evidence_mapper_input(fact_input, fact_output, sources)
+    with pytest.raises(ValueError, match="não pertencem ao source_id"):
+        validate_evidence_mapping({
+            "evidence_items": [{
+                "key": "e1",
+                "source_id": "s1",
+                "kind": "DOCUMENT",
+                "description": "recibo",
+                "source_refs": [{"document_id": "d2", "pdf_page": 1, "quote": "Extrato bancário."}],
+            }],
+            "links": [],
+            "unresolved_points": [],
+        }, skill_input)
+
+
+def test_evidence_mapper_rejects_unknown_fact_link():
+    fact_input, fact_output = _fact_result_for_evidence()
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source("Recibo assinado."),
+    )
+    with pytest.raises(ValueError, match="fact_id inexistente"):
+        validate_evidence_mapping({
+            "evidence_items": [{
+                "key": "e1",
+                "source_id": "evsrc1",
+                "kind": "DOCUMENT",
+                "description": "recibo",
+                "source_refs": [_evidence_ref("Recibo assinado.")],
+            }],
+            "links": [{
+                "fact_id": "f99",
+                "evidence_key": "e1",
+                "relation": "SUPPORTS",
+                "directness": "DIRECT",
+                "scope": "FULL",
+                "limitations": [],
+                "source_refs": [_evidence_ref("Recibo assinado.")],
+            }],
+            "unresolved_points": [],
+        }, skill_input)
+
+
+def test_evidence_score_flags_dangerous_support_invention():
+    expected = {
+        "context_sufficiency": "SUFFICIENT",
+        "evidence_items": [],
+        "links": [],
+        "fact_states": [{"fact_id": "f1", "evidence_state": "NO_EVIDENCE_IN_CONTEXT"}],
+    }
+    actual = {
+        "context_sufficiency": "SUFFICIENT",
+        "evidence_items": [{"evidence_id": "ev1", "source_id": "s1", "kind": "DOCUMENT", "description": "x"}],
+        "links": [{
+            "fact_id": "f1", "evidence_id": "ev1", "relation": "SUPPORTS",
+            "directness": "DIRECT", "scope": "FULL",
+        }],
+        "fact_states": [{"fact_id": "f1", "evidence_state": "SUPPORT_PRESENT"}],
+    }
+    assert score_evidence_mapping(expected, actual)["dangerous_support_invention"] is True
+
+
+def test_evidence_runner_validates_structured_output():
+    fact_input, fact_output = _fact_result_for_evidence()
+    evidence_sources = _evidence_source("Recibo de R$ 1.000,00 emitido em 05/04/2026.")
+    fact_result = {"input": fact_input, "output": fact_output}
+    payload = {
+        "evidence_items": [{
+            "key": "e1",
+            "source_id": "evsrc1",
+            "kind": "DOCUMENT",
+            "description": "recibo de pagamento",
+            "source_refs": [_evidence_ref("Recibo de R$ 1.000,00 emitido em 05/04/2026.")],
+        }],
+        "links": [{
+            "fact_id": "f1",
+            "evidence_key": "e1",
+            "relation": "SUPPORTS",
+            "directness": "DIRECT",
+            "scope": "FULL",
+            "limitations": [],
+            "source_refs": [_evidence_ref("Recibo de R$ 1.000,00 emitido em 05/04/2026.")],
+        }],
+        "unresolved_points": [],
+    }
+    result = asyncio.run(run_evidence_mapper_skill(
+        _FakeLLM([payload]), fact_result, evidence_sources, timeout_seconds=5
+    ))
+    assert result["output"]["fact_states"][0]["evidence_state"] == "SUPPORT_PRESENT"
+
+
+def test_evidence_mapper_rejects_party_submission_as_underlying_evidence():
+    fact_input, fact_output = _fact_result_for_evidence()
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source("A autora reitera que efetuou o pagamento.", kind="PARTY_SUBMISSION"),
+    )
+    with pytest.raises(ValueError, match="PARTY_SUBMISSION"):
+        validate_evidence_mapping({
+            "evidence_items": [{
+                "key": "e1",
+                "source_id": "evsrc1",
+                "kind": "DOCUMENT",
+                "description": "reiteração da autora",
+                "source_refs": [_evidence_ref("A autora reitera que efetuou o pagamento.")],
+            }],
+            "links": [],
+            "unresolved_points": [],
+        }, skill_input)
+
+
+def test_evidence_mapper_rejects_visual_placeholder_as_evidence_item():
+    fact_input, fact_output = _fact_result_for_evidence()
+    placeholder = "[VISUAL_ASSET: fotografia; conteúdo visual não extraído]"
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source(placeholder, kind="VISUAL_ASSET"),
+    )
+    with pytest.raises(ValueError, match="VISUAL_ASSET sem conteúdo analisável"):
+        validate_evidence_mapping({
+            "evidence_items": [{
+                "key": "e1",
+                "source_id": "evsrc1",
+                "kind": "VISUAL_ASSET",
+                "description": "fotografia",
+                "source_refs": [_evidence_ref(placeholder)],
+            }],
+            "links": [],
+            "unresolved_points": [],
+        }, skill_input)

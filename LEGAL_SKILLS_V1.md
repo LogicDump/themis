@@ -28,7 +28,7 @@ Cada skill deve ter:
 | 5 | Claim / Request Mapper | posições jurídicas + pedidos | IMPLEMENTADO V1 — contrato + runner + testes + benchmark |
 | 6 | Decision & Obligation Extractor | decisões/comandos/obrigações | PARCIAL — Event Layer cobre domínio específico |
 | 7 | Chronology Builder | cronologia jurídica | PARCIAL — provider-first/Event Layer |
-| 8 | Evidence Mapper | Fact ↔ prova ↔ fonte | NÃO IMPLEMENTADO |
+| 8 | Evidence Mapper | Fact ↔ evidência ↔ fonte | IMPLEMENTADO V1 — contrato + runner + testes + benchmark |
 | 9 | Contradiction Detector | contradições materiais | NÃO IMPLEMENTADO |
 | 10 | Evidence Gap Analyzer | fatos relevantes sem suporte | NÃO IMPLEMENTADO |
 | 11 | Issue Mapper | questões controvertidas | PARCIAL — issue_map_v1 orientado a retrieval |
@@ -117,28 +117,59 @@ Regras críticas:
 - múltiplos participantes no mesmo papel mantêm autoria `AMBIGUOUS`;
 - provenance continua estrito e não é relaxado por erro de encoding do modelo/runtime.
 
+### Evidence Mapper V1
+
+Entrada:
+- facts já extraídos e validados;
+- evidence_sources explícitos e separados do texto que originou o fato;
+- source_kind, actor_id e páginas/provenance de cada fonte disponível.
+
+Saída:
+- evidence_items[];
+- links Fact ↔ Evidence com SUPPORTS / CONTRADICTS / INCONCLUSIVE;
+- directness DIRECT / INDIRECT / UNKNOWN;
+- scope FULL / PARTIAL;
+- limitations objetivas;
+- fact_states derivados deterministicamente;
+- unresolved_points e context_sufficiency.
+
+Regras críticas:
+- não decide PROVEN / NOT_PROVEN nem suficiência jurídica da prova;
+- ausência significa NO_EVIDENCE_IN_CONTEXT, nunca inexistência de prova no processo;
+- PARTY_SUBMISSION não é evidência do próprio fato subjacente; anexos devem entrar como fontes separadas;
+- documento apenas referido e não disponível gera REFERENCED_EVIDENCE_NOT_AVAILABLE;
+- placeholder de VISUAL_ASSET sem conteúdo analisável não vira evidence_item;
+- provenance e vínculo entre source_id, página e quote são validados deterministicamente;
+- outputs perigosos são rejeitados antes de persistência.
+
 ## Ordem de implementação vigente
 
-1. Consolidar Actor/Role + Fact + Claim/Request com benchmark gold.
-2. Implementar Evidence Mapper.
-3. Implementar Contradiction Detector.
-4. Implementar Evidence Gap Analyzer.
-5. Só então avançar para Issue/Burden/Research/Strategy.
+1. Consolidar Actor/Role + Fact + Claim/Request + Evidence com benchmark gold.
+2. Implementar Contradiction Detector.
+3. Implementar Evidence Gap Analyzer.
+4. Só então avançar para Issue/Burden/Research/Strategy.
 
-## Baseline inicial — gemma4:e4b sem fine-tuning
+## Baselines sem fine-tuning
 
-Benchmark sintético gold V1: 30 casos, 10 Actor/Role + 10 Fact Extractor + 10 Claim/Request.
+Benchmark sintético gold V1: 40 casos, 10 por skill: Actor/Role, Fact Extractor, Claim/Request e Evidence Mapper.
 
-- Actor/Role: baseline canônico anterior no `gemma4:e4b`: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
-- Fact Extractor: baseline canônico anterior no `gemma4:e4b`: 8/10 outputs válidos; precisão 0,50; recall 0,50; suficiência 1,00; 0 upgrades epistêmicos perigosos aceitos.
-- Claim/Request: no Gemma 4 local atualmente exposto como `llamacpp:a3d2...`, 8/10 outputs válidos; legal position 0,875/0,875; request 0,50/0,50; suficiência 1,00; 0 erros de atribuição de ator nos outputs válidos.
-- Os 2 rejects de Claim/Request ocorreram porque o runtime/modelo devolveu caracteres corrompidos (`��`) dentro de quotes de provenance. O validador rejeitou corretamente; não relaxar provenance para contornar encoding.
-- O alias `gemma4:e4b` desapareceu do Ollama durante esse benchmark; o modelo disponível foi identificado por `ollama show` como Gemma 4, 8B, Q4_K_M, contexto 131072. Não comparar numericamente esse baseline como se fosse necessariamente o mesmo runtime do baseline anterior.
-- Falhas factuais relevantes observadas e bloqueadas:
-  - posição jurídica ("incidência do art. 300") tratada pelo modelo como fato;
-  - proposição atribuída a ator que permaneceu ambíguo.
-- O Actor Resolver mostrou boa precisão quando resolve, mas omite atores expressos apenas por papel ("autora", "requerido", "juízo") em parte dos casos. Esse recall é alvo claro de treinamento.
-- Os primeiros baselines também demonstraram que campos redundantes no schema degradavam artificialmente o resultado. V1 final deixa ao LLM somente decisões semânticas mínimas e deriva IDs/papéis/suficiência deterministicamente.
+### Gemma 4 E4B antigo (~9,6 GB)
+- Actor/Role: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
+- Fact Extractor: 8/10 outputs válidos; precisão 0,50; recall 0,50; suficiência 1,00; 0 upgrades epistêmicos perigosos aceitos.
+
+### Gemma 4 E4B atual (6,6 GB, Q4_K_M, 131072)
+- Actor/Role: 10/10 válidos; precisão 0,70; recall 0,45; suficiência 0,80; 1 falsa resolução perigosa (`Seu patrono` tratado como ator resolvido).
+- Fact Extractor: 8/10 válidos; precisão/recall 0,625/0,625; suficiência 1,00; 0 upgrades epistêmicos perigosos aceitos.
+- Claim/Request: 10/10 válidos; legal position 1,00/1,00; requests 1,00/1,00; suficiência 1,00; 0 actor mismatches.
+- Evidence Mapper após guardrails determinísticos: 7/10 válidos; 3 outputs perigosos rejeitados antes de persistência (petição como prova, documento apenas citado e visual asset sem conteúdo); evidence items 0,857/0,857; links 0,571/0,571; fact state 0,571; suficiência 1,00; 1 support perigoso ainda aceito no caso de transferência sem beneficiário identificado.
+
+Leitura dos baselines:
+- o E4B de 6,6 GB melhorou Fact e foi excelente em Claim/Request, mas regrediu em Actor/Role;
+- Evidence Mapper é semanticamente mais difícil e já expôs alvos claros para SFT/hardening;
+- o caso de transferência sem beneficiário identificado deve permanecer INCONCLUSIVE + IDENTITY_UNCLEAR; tratá-lo como SUPPORTS é erro de segurança;
+- schemas redundantes degradam desempenho; IDs, papéis, suficiência e estados derivados continuam determinísticos.
+
+Correção de diagnóstico: os rejects com caracteres `�` observados num benchmark intermediário não eram evidência de corrupção do modelo/runtime. O recorte de casos havia sido regravado pelo Windows PowerShell 5 e corrompido UTF-8. O runner agora filtra skills diretamente com `--skill`, sem regravar o JSONL gold.
 
 ## Regra de treinamento
 
