@@ -230,12 +230,12 @@ def test_claim_request_resolves_implicit_source_actor():
         "legal_positions": [],
         "requests": [{
             "text": "condenação do réu ao pagamento",
-            "actor_id": "p_claimant",
             "source_refs": [_ref("Requer a condenação do réu ao pagamento.")],
         }],
     }, skill_input)
     assert output["context_sufficiency"] == "SUFFICIENT"
     assert output["requests"][0]["actor_id"] == "p_claimant"
+    assert output["requests"][0]["attribution_mode"] == "MOVEMENT_ACTOR"
 
 
 def test_claim_request_keeps_legal_position_out_of_fact_space():
@@ -246,7 +246,6 @@ def test_claim_request_keeps_legal_position_out_of_fact_space():
     output = validate_claim_request({
         "legal_positions": [{
             "text": "incidência do art. 300 do CPC",
-            "actor_id": "p_claimant",
             "source_refs": [_ref("Sustenta a incidência do art. 300 do CPC.")],
         }],
         "requests": [],
@@ -254,12 +253,12 @@ def test_claim_request_keeps_legal_position_out_of_fact_space():
     assert output["legal_positions"][0]["actor_id"] == "p_claimant"
 
 
-def test_claim_request_rejects_unknown_actor():
+def test_claim_request_model_cannot_supply_actor_id():
     source = _source("Requer a procedência do pedido.")
     actor_input = build_actor_role_input(source, _frame())
     actor_output = {"schema_version": "actor-role-resolver-v1", "context_sufficiency": "SUFFICIENT", "actors": [], "unresolved_points": []}
     skill_input = build_claim_request_input(actor_input, actor_output)
-    with pytest.raises(ValueError, match="actor_id inexistente"):
+    with pytest.raises(ValueError, match="divergente do schema"):
         validate_claim_request({
             "legal_positions": [],
             "requests": [{
@@ -613,3 +612,67 @@ def test_evidence_mapper_rejects_visual_placeholder_as_evidence_item():
             "links": [],
             "unresolved_points": [],
         }, skill_input)
+
+
+def test_evidence_mapper_rejects_self_serving_party_submission_as_admission():
+    fact_input, fact_output = _fact_result_for_evidence()
+    sources = _evidence_source(
+        "A autora reitera que efetuou o pagamento.",
+        kind="PARTY_SUBMISSION",
+    )
+    sources[0]["actor_id"] = "p_claimant"
+    skill_input = build_evidence_mapper_input(fact_input, fact_output, sources)
+    with pytest.raises(ValueError, match="self-serving PARTY_SUBMISSION"):
+        validate_evidence_mapping({
+            "evidence_items": [{
+                "key": "e1",
+                "source_id": "evsrc1",
+                "kind": "ADMISSION",
+                "description": "reiteração da autora",
+                "source_refs": [_evidence_ref("A autora reitera que efetuou o pagamento.")],
+            }],
+            "links": [{
+                "fact_id": "f1",
+                "evidence_key": "e1",
+                "relation": "SUPPORTS",
+                "directness": "DIRECT",
+                "scope": "FULL",
+                "limitations": [],
+                "source_refs": [_evidence_ref("A autora reitera que efetuou o pagamento.")],
+            }],
+            "unresolved_points": [],
+        }, skill_input)
+
+
+def test_evidence_mapper_forces_identity_unknown_support_to_inconclusive():
+    fact_input, fact_output = _fact_result_for_evidence()
+    text = "Registro bancário contém transferência de R$ 1.000,00, sem identificação do beneficiário."
+    skill_input = build_evidence_mapper_input(
+        fact_input,
+        fact_output,
+        _evidence_source(text),
+    )
+    output = validate_evidence_mapping({
+        "evidence_items": [{
+            "key": "e1",
+            "source_id": "evsrc1",
+            "kind": "DOCUMENT",
+            "description": "registro bancário sem beneficiário identificado",
+            "source_refs": [_evidence_ref(text)],
+        }],
+        "links": [{
+            "fact_id": "f1",
+            "evidence_key": "e1",
+            "relation": "SUPPORTS",
+            "directness": "INDIRECT",
+            "scope": "PARTIAL",
+            "limitations": ["AUTHENTICITY_DISPUTED"],
+            "source_refs": [_evidence_ref(text)],
+        }],
+        "unresolved_points": [],
+    }, skill_input)
+    link = output["links"][0]
+    assert link["relation"] == "INCONCLUSIVE"
+    assert link["directness"] == "UNKNOWN"
+    assert "IDENTITY_UNCLEAR" in link["limitations"]
+    assert "AUTHENTICITY_DISPUTED" not in link["limitations"]

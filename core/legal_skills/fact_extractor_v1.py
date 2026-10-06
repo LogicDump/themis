@@ -73,19 +73,39 @@ FACT_EXTRACTOR_JSON_SCHEMA: dict[str, Any] = {
 
 
 def build_fact_extractor_instructions() -> str:
-    return (
-        "Você é o Fact Extractor do Themis. Extraia somente proposições factuais sustentadas pelo texto fornecido. "
-        "Não extraia posição jurídica, pedido, argumento, conclusão doutrinária ou obrigação como se fossem fatos. "
-        "Preserve o estatuto epistêmico da fonte: ALLEGED quando uma parte apenas afirma algo; ADMITTED somente quando "
-        "houver admissão/confissão expressa; JUDICIAL_FINDING somente quando o juízo expressamente estabelece um fato; "
-        "DOCUMENTED_EVENT somente para ocorrência diretamente registrada pelo próprio documento, sem inferência adicional. "
-        "Nunca use 'PROVEN', 'TRUE' ou equivalente: prova e força probatória pertencem ao Evidence Mapper posterior. "
-        "actor_id só pode referenciar actor RESOLVED recebido no input. Se o ator necessário estiver ambíguo ou não resolvido, "
-        "preserve a lacuna em unresolved_points; não escolha por plausibilidade. temporal_text deve copiar apenas expressão temporal "
-        "explícita relevante, ou null. Toda proposição exige source_refs com quote literal conferível na página indicada. "
-        "Se o texto não contiver proposição factual material, facts=[] pode ser SUFFICIENT. "
-        "Responda somente no schema."
-    )
+    return """TASK: FACT_EXTRACT
+
+INPUT:
+- pages[] = source text.
+- actors[] = already resolved actor context.
+
+FOR EACH candidate proposition:
+1. If it is legal position, legal argument, request, judicial command, procedural obligation, or doctrine -> SKIP.
+2. If it asserts a real-world/procedural occurrence -> FACT.
+3. Assign epistemic_status:
+   - ALLEGED: a party/person asserts the proposition.
+   - ADMITTED: actor expressly admits/confesses the proposition.
+   - JUDICIAL_FINDING: court expressly establishes a factual finding.
+   - DOCUMENTED_EVENT: the source itself directly records the occurrence without inference.
+4. actor_id:
+   - use only an actor with resolution_status=RESOLVED;
+   - ALLEGED/ADMITTED require a resolved actor;
+   - JUDICIAL_FINDING may use only COURT;
+   - if required actor is ambiguous/unresolved -> do not guess; report unresolved_points.
+5. temporal_text = exact temporal expression from source, else null.
+6. source_refs = literal quote supporting the proposition.
+
+PRECEDENCE:
+LEGAL/REQUEST/OBLIGATION -> SKIP
+UNRESOLVED REQUIRED ACTOR -> UNRESOLVED
+EXPLICIT ADMISSION -> ADMITTED
+EXPLICIT COURT FINDING -> JUDICIAL_FINDING
+DIRECTLY RECORDED EVENT -> DOCUMENTED_EVENT
+OTHER ASSERTED FACT -> ALLEGED
+
+NEVER OUTPUT: PROVEN, TRUE, FALSE, evidentiary weight, legal conclusion.
+If there is no material fact: facts=[] with SUFFICIENT.
+OUTPUT: schema only."""
 
 
 def build_fact_extractor_input(

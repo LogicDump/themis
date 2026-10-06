@@ -171,6 +171,35 @@ Leitura dos baselines:
 
 Correção de diagnóstico: os rejects com caracteres `�` observados num benchmark intermediário não eram evidência de corrupção do modelo/runtime. O recorte de casos havia sido regravado pelo Windows PowerShell 5 e corrompido UTF-8. O runner agora filtra skills diretamente com `--skill`, sem regravar o JSONL gold.
 
+## Protocolo de inferência
+
+Skill Themis não é prompt narrativo; é protocolo de inferência.
+
+Cada skill deve separar:
+1. input contract mínimo;
+2. procedimento decisório ordenado;
+3. output contract estrito;
+4. hard guards determinísticos.
+
+Regras vigentes:
+- linguagem operacional compacta, orientada à IA;
+- precedência explícita entre decisões;
+- o LLM executa apenas decisões semânticas que não podem ser derivadas por código;
+- IDs, papéis, suficiência, autoria e estados derivados ficam fora do LLM sempre que possível;
+- outputs semanticamente perigosos devem ser rejeitados ou normalizados deterministicamente antes de persistir.
+
+Revisão V1 aplicada a Actor/Role, Fact, Claim/Request e Evidence Mapper:
+- Actor/Role: referências relacionais/pronominais abertas são forçadas deterministicamente a AMBIGUOUS;
+- Claim/Request: o LLM não emite mais actor_id; Themis deriva autoria por menção explícita resolvida ou Movement.actor seguro;
+- Evidence: PARTY_SUBMISSION autoafirmativa não pode ser promovida a ADMISSION; identidade material ausente força INCONCLUSIVE + IDENTITY_UNCLEAR.
+
+Baseline do E4B 6,6 GB após protocolos:
+- Actor/Role: precisão 0,90; recall 0,75; suficiência 0,90; 0 falsas resoluções perigosas;
+- Fact: precisão/recall 0,625/0,625; suficiência 1,00; 0 upgrades perigosos;
+- Claim/Request: 1,00/1,00 em posições e pedidos; suficiência 1,00; 0 actor mismatches;
+- Evidence Mapper: 8/10 outputs aceitos; items 0,875/0,75; links 0,875/0,75; fact state 0,75; suficiência 1,00; 0 support inventions perigosos.
+- Evidence residual para treino/hardening sem heurística ad hoc: inferência indireta de quitação (EV07) e suporte parcial por valor menor (EV08).
+
 ## Regra de treinamento
 
 O benchmark gold nunca entra no treinamento. Fine-tuning deve ser construído a partir de erros observados em conjuntos separados. Um único adapter jurídico pode servir várias skills; não criar um modelo por skill sem evidência de necessidade.

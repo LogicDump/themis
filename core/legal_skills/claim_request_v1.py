@@ -24,19 +24,17 @@ CLAIM_REQUEST_JSON_SCHEMA: dict[str, Any] = {
             "type": "object", "additionalProperties": False,
             "properties": {
                 "text": {"type": "string", "minLength": 1},
-                "actor_id": {"type": ["string", "null"]},
                 "source_refs": {"type": "array", "minItems": 1, "items": SOURCE_REF_SCHEMA},
             },
-            "required": ["text", "actor_id", "source_refs"],
+            "required": ["text", "source_refs"],
         }},
         "requests": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "properties": {
                 "text": {"type": "string", "minLength": 1},
-                "actor_id": {"type": ["string", "null"]},
                 "source_refs": {"type": "array", "minItems": 1, "items": SOURCE_REF_SCHEMA},
             },
-            "required": ["text", "actor_id", "source_refs"],
+            "required": ["text", "source_refs"],
         }},
     },
     "required": ["legal_positions", "requests"],
@@ -96,19 +94,30 @@ def derive_source_actor(source_document: dict[str, Any], participants: list[dict
 
 
 def build_claim_request_instructions() -> str:
-    return (
-        "Você é o Claim / Request Mapper do Themis. Extraia somente: "
-        "(1) legal_positions: teses, fundamentos, objeções ou consequências JURÍDICAS defendidas pela parte; "
-        "(2) requests: providências, tutela, condenação, reconhecimento, rejeição, acolhimento ou outro resultado pedido. "
-        "Não extraia alegações puramente factuais, eventos, decisões do juízo, obrigações impostas, referências a prova ou mera narrativa. "
-        "'A autora afirma que pagou' é fato, não legal_position. "
-        "'Sustenta a incidência do art. 300 do CPC' é legal_position. "
-        "'Requer a condenação ao pagamento' é request. "
-        "Se uma tese aparecer apenas como objeto de um pedido, registre o request e não duplique posição idêntica sem argumento independente. "
-        "actor_id só pode ser um actor RESOLVED recebido ou source_actor.actor_id quando source_actor.status=RESOLVED. "
-        "Para sujeito implícito como 'Requer' ou 'Sustenta', use source_actor apenas se resolvido; caso contrário use null. "
-        "Toda saída exige source_refs com quote literal conferível. Responda somente no schema."
-    )
+    return """TASK: CLAIM_REQUEST_MAP
+
+FOR EACH proposition in pages[]:
+1. FACT/occurrence/narrative only -> SKIP.
+2. JUDICIAL DECISION/COMMAND/OBLIGATION -> SKIP.
+3. EVIDENCE REFERENCE only -> SKIP.
+4. Legal thesis, legal ground, objection, legal qualification, legal consequence defended by a party -> legal_positions[].
+5. Requested judicial/procedural result or measure -> requests[].
+6. If a legal thesis appears only as the object of a request, emit the request only. Emit legal_position too only when an independent legal argument exists.
+
+TEXT:
+- preserve the material proposition; do not invent facts or legal basis.
+- source_refs must quote literal supporting text.
+
+ACTOR:
+- DO NOT output actor_id.
+- Themis derives attribution deterministically after validation from explicit resolved actor mentions in source_refs; otherwise from source_actor if safely resolved.
+
+NEVER:
+- convert factual allegation into legal_position;
+- convert court decision into request;
+- duplicate the same proposition as request + legal_position without independent argument.
+
+OUTPUT: schema only."""
 
 
 def build_claim_request_input(actor_skill_input: dict[str, Any], actor_output: dict[str, Any]) -> dict[str, Any]:
@@ -159,32 +168,42 @@ def validate_claim_request(value: Any, skill_input: dict[str, Any]) -> dict[str,
         raise ValueError("legal_positions/requests devem ser listas")
 
     source = validate_source_input(skill_input)
-    resolved_actor_ids = {
-        str(item["actor_id"])
-        for item in skill_input.get("actors") or []
-        if item.get("resolution_status") == "RESOLVED"
-    }
     source_actor = skill_input.get("source_actor") or {}
-    if source_actor.get("status") == "RESOLVED" and source_actor.get("actor_id"):
-        resolved_actor_ids.add(str(source_actor["actor_id"]))
+    resolved_actors = [
+        item for item in (skill_input.get("actors") or [])
+        if item.get("resolution_status") == "RESOLVED" and item.get("actor_id")
+    ]
 
     unresolved_points: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str | None]] = set()
 
+    def derive_actor(refs: list[dict[str, Any]]) -> tuple[str | None, str, str | None]:
+        quote_text = " ".join(str(ref.get("quote") or "") for ref in refs)
+        explicit = {
+            str(actor["actor_id"])
+            for actor in resolved_actors
+            if normalize_text(actor.get("mention") or "") in normalize_text(quote_text)
+        }
+        if len(explicit) == 1:
+            return next(iter(explicit)), "EXPLICIT_MENTION", None
+        if len(explicit) > 1:
+            return None, "UNRESOLVED", "ACTOR_ATTRIBUTION_AMBIGUOUS"
+        if source_actor.get("status") == "RESOLVED" and source_actor.get("actor_id"):
+            return str(source_actor["actor_id"]), "MOVEMENT_ACTOR", None
+        if source_actor.get("status") == "AMBIGUOUS":
+            return None, "UNRESOLVED", "IMPLICIT_ACTOR_AMBIGUOUS"
+        return None, "UNRESOLVED", "IMPLICIT_ACTOR_UNRESOLVED"
+
     def validate_items(collection: str, values: list[Any]) -> list[dict[str, Any]]:
         out = []
         for item in values:
-            if not isinstance(item, dict) or set(item) != {"text", "actor_id", "source_refs"}:
+            if not isinstance(item, dict) or set(item) != {"text", "source_refs"}:
                 raise ValueError(f"{collection} item divergente do schema")
             text = str(item["text"] or "").strip()
-            actor_id = item["actor_id"]
             if not text:
                 raise ValueError(f"{collection} com texto vazio")
-            if actor_id is not None:
-                actor_id = str(actor_id).strip()
-                if actor_id not in resolved_actor_ids:
-                    raise ValueError(f"{collection} actor_id inexistente/não resolvido")
             refs = validate_source_refs(item["source_refs"], source, field_name=f"{collection}.source_refs")
+            actor_id, attribution_mode, unresolved_code = derive_actor(refs)
             key = (collection, normalize_text(text), actor_id)
             if key in seen:
                 raise ValueError(f"{collection} duplicado")
@@ -193,19 +212,19 @@ def validate_claim_request(value: Any, skill_input: dict[str, Any]) -> dict[str,
                 "item_id": _stable_id(collection, source, text, actor_id),
                 "text": text,
                 "actor_id": actor_id,
+                "attribution_mode": attribution_mode,
                 "source_refs": refs,
             })
-            if actor_id is None:
-                status = str(source_actor.get("status") or "UNRESOLVED")
+            if unresolved_code:
                 unresolved_points.append({
-                    "code": "IMPLICIT_ACTOR_AMBIGUOUS" if status == "AMBIGUOUS" else "IMPLICIT_ACTOR_UNRESOLVED",
+                    "code": unresolved_code,
                     "reason": "Conteúdo extraído sem autor atribuível com segurança.",
                     "source_refs": refs,
                 })
         return out
     positions = validate_items("legal_positions", value["legal_positions"])
     requests = validate_items("requests", value["requests"])
-    if any(p["code"] == "IMPLICIT_ACTOR_AMBIGUOUS" for p in unresolved_points):
+    if any(p["code"] in {"IMPLICIT_ACTOR_AMBIGUOUS", "ACTOR_ATTRIBUTION_AMBIGUOUS"} for p in unresolved_points):
         sufficiency = "AMBIGUOUS"
     elif unresolved_points:
         sufficiency = "INSUFFICIENT"

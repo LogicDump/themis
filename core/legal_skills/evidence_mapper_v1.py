@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from core.legal_skills.source_contract_v1 import (
@@ -35,6 +36,12 @@ EVIDENCE_SOURCE_KINDS = (
     "EXPERT_REPORT",
     "VISUAL_ASSET",
     "OTHER",
+)
+_IDENTITY_UNCLEAR_RE = re.compile(
+    r"\b(sem\s+identifica[cç][aã]o\s+d[oa]\s+(?:benefici[aá]ri[oa]|destinat[aá]ri[oa])|"
+    r"(?:benefici[aá]ri[oa]|destinat[aá]ri[oa])\s+n[aã]o\s+identificad[oa]|"
+    r"identidade\s+(?:n[aã]o\s+)?(?:informada|identificada))\b",
+    re.IGNORECASE,
 )
 EVIDENCE_RELATIONS = ("SUPPORTS", "CONTRADICTS", "INCONCLUSIVE")
 DIRECTNESS_STATES = ("DIRECT", "INDIRECT", "UNKNOWN")
@@ -123,26 +130,46 @@ EVIDENCE_MAPPER_JSON_SCHEMA: dict[str, Any] = {
     "required": ["evidence_items", "links", "unresolved_points"],
 }
 def build_evidence_mapper_instructions() -> str:
-    return (
-        "Você é o Evidence Mapper do Themis. Trabalhe SOMENTE com os fatos já extraídos e com evidence_sources fornecidos. "
-        "Sua tarefa não é decidir se um fato é verdadeiro, provado, suficiente juridicamente ou qual lado deve vencer. "
-        "Identifique material probatório efetivamente disponível no contexto, crie evidence_items e ligue-o aos facts. "
-        "relation=SUPPORTS quando o material favorece a proposição factual; CONTRADICTS quando é incompatível com ela; "
-        "INCONCLUSIVE quando o material é pertinente mas não permite direção segura. "
-        "directness=DIRECT quando o próprio conteúdo registra/observa diretamente o fato relevante; INDIRECT quando exige passo inferencial; "
-        "UNKNOWN quando a fonte não permite classificar. scope=FULL somente quando o vínculo alcança toda a proposição; caso contrário PARTIAL. "
-        "source_kind=PARTY_SUBMISSION identifica petição/manifestação de parte: sua narrativa não é evidência do fato subjacente "
-        "e não deve gerar evidence_item; documento anexado deve chegar como evidence_source separado. "
-        "Uma admissão expressa de fato relevante pela própria parte contra seu interesse pode ser ADMISSION. "
-        "Decisão judicial que apenas afirma estar convencida não substitui a evidência subjacente; não a trate como prova do fato subjacente. "
-        "Documento apenas mencionado, mas cujo conteúdo não está em evidence_sources, NÃO pode virar evidence_item: registre "
-        "REFERENCED_EVIDENCE_NOT_AVAILABLE com a referência textual disponível. "
-        "Placeholder de imagem/ativo visual sem conteúdo visual analisável deve gerar VISUAL_CONTENT_NOT_AVAILABLE, não conclusão sobre a imagem. "
-        "limitations deve conter apenas limitações objetivamente sustentadas pela fonte; não invente fragilidades genéricas. "
-        "Todos os source_refs devem citar literalmente páginas dos evidence_sources e pertencer ao source_id do evidence_item correspondente. "
-        "Nunca use PROVEN/NOT_PROVEN, forte/fraco, suficiente/insuficiente como conclusão sobre o mérito do fato. "
-        "Responda somente no schema."
-    )
+    return """TASK: EVIDENCE_MAP
+
+INPUT:
+- facts[] = already validated factual propositions.
+- evidence_sources[] = material actually available in this context.
+
+SOURCE GATE — apply before any Fact×Evidence comparison:
+1. source_kind=PARTY_SUBMISSION:
+   - party narrative/repetition -> NOT EVIDENCE of underlying fact; emit no evidence_item;
+   - explicit admission against the declarant's interest -> ADMISSION may be emitted.
+2. source_kind=VISUAL_ASSET and content is only an unanalysed placeholder -> no evidence_item; unresolved VISUAL_CONTENT_NOT_AVAILABLE.
+3. document/evidence only REFERENCED but content absent -> no evidence_item; unresolved REFERENCED_EVIDENCE_NOT_AVAILABLE.
+4. otherwise, create evidence_item only for material actually present in evidence_sources.
+
+FOR EACH Fact × admissible Evidence:
+A. Compare material dimensions when present:
+   actor/identity, action/event, object, amount, date/time, location.
+B. If a REQUIRED dimension for the fact is UNKNOWN in evidence -> relation=INCONCLUSIVE.
+C. Else if a material dimension is incompatible -> relation=CONTRADICTS.
+D. Else if evidence is compatible with the proposition -> relation=SUPPORTS.
+E. directness:
+   DIRECT = source itself records/observes the relevant proposition;
+   INDIRECT = requires an inferential step;
+   UNKNOWN = cannot classify safely.
+F. scope:
+   FULL = all material fact dimensions covered;
+   PARTIAL = only part covered.
+G. limitations: emit only limitations explicitly supported by source/context.
+
+PRECEDENCE:
+SOURCE_GATE_REJECT > REQUIRED_DIMENSION_UNKNOWN > MATERIAL_CONTRADICTION > SUPPORT > INCONCLUSIVE
+
+NEVER:
+- decide PROVEN/NOT_PROVEN;
+- infer legal sufficiency or ultimate evidentiary weight;
+- invent authenticity disputes or generic weaknesses;
+- treat the absence of evidence in this input as absence of evidence in the process.
+
+SOURCE_REF: literal and verifiable, belonging to the same source_id.
+OUTPUT: schema only."""
 
 
 def _normalize_evidence_sources(process_id: str, evidence_sources: Any) -> list[dict[str, Any]]:
@@ -295,6 +322,7 @@ def validate_evidence_mapping(value: Any, skill_input: dict[str, Any]) -> dict[s
     evidence_items: list[dict[str, Any]] = []
     keys: dict[str, str] = {}
     key_sources: dict[str, str] = {}
+    key_kinds: dict[str, str] = {}
     for item in value["evidence_items"]:
         required = {"key", "source_id", "kind", "description", "source_refs"}
         if not isinstance(item, dict) or set(item) != required:
@@ -308,6 +336,8 @@ def validate_evidence_mapping(value: Any, skill_input: dict[str, Any]) -> dict[s
         source_meta = source_by_id[source_id]
         if source_meta["source_kind"] == "PARTY_SUBMISSION" and kind != "ADMISSION":
             raise ValueError("PARTY_SUBMISSION não pode ser evidência do fato subjacente")
+        if source_meta["source_kind"] == "PARTY_SUBMISSION" and kind == "ADMISSION" and not source_meta.get("actor_id"):
+            raise ValueError("ADMISSION exige declarant actor_id em PARTY_SUBMISSION")
         if source_meta["source_kind"] == "VISUAL_ASSET" and _visual_placeholder_only(source_meta):
             raise ValueError("VISUAL_ASSET sem conteúdo analisável não pode virar evidence_item")
         refs = validate_source_refs(item["source_refs"], flat_source, field_name=f"{key}.source_refs")
@@ -316,6 +346,7 @@ def validate_evidence_mapping(value: Any, skill_input: dict[str, Any]) -> dict[s
         evidence_id = _stable_evidence_id(skill_input["process_id"], source_id, kind, description)
         keys[key] = evidence_id
         key_sources[key] = source_id
+        key_kinds[key] = kind
         evidence_items.append({
             "evidence_id": evidence_id,
             "source_id": source_id,
@@ -350,8 +381,25 @@ def validate_evidence_mapping(value: Any, skill_input: dict[str, Any]) -> dict[s
         limitations = [str(code).upper() for code in limitations]
         if any(code not in LIMITATION_CODES for code in limitations):
             raise ValueError("limitation code inválido")
-        refs = validate_source_refs(item["source_refs"], flat_source, field_name="link.source_refs")
+
         expected_source_id = key_sources[evidence_key]
+        source_meta = source_by_id[expected_source_id]
+        if source_meta["source_kind"] == "PARTY_SUBMISSION" and key_kinds[evidence_key] == "ADMISSION":
+            declarant_id = source_meta.get("actor_id")
+            fact_actor_id = facts[fact_id].get("actor_id")
+            if not declarant_id or str(declarant_id) == str(fact_actor_id):
+                raise ValueError("self-serving PARTY_SUBMISSION não pode ser promovida a ADMISSION")
+
+        source_text = " ".join(str(page.get("content") or "") for page in source_meta.get("pages") or [])
+        if relation == "SUPPORTS" and _IDENTITY_UNCLEAR_RE.search(source_text):
+            relation = "INCONCLUSIVE"
+            directness = "UNKNOWN"
+            scope = "PARTIAL"
+            limitations = [code for code in limitations if code != "AUTHENTICITY_DISPUTED"]
+            if "IDENTITY_UNCLEAR" not in limitations:
+                limitations.append("IDENTITY_UNCLEAR")
+
+        refs = validate_source_refs(item["source_refs"], flat_source, field_name="link.source_refs")
         if any(page_to_source[(ref["document_id"], ref["pdf_page"])] != expected_source_id for ref in refs):
             raise ValueError("link.source_refs não pertencem à evidence source")
         key = (fact_id, keys[evidence_key], relation)

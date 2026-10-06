@@ -59,19 +59,34 @@ _COURT_RE = re.compile(
     r"\b(ju[ií]zo|juiz|ju[ií]za|magistrad[oa]|relator(?:a)?|desembargador(?:a)?)\b",
     re.IGNORECASE,
 )
+_OPEN_REFERENCE_RE = re.compile(
+    r"\b(parte\s+(?:contr[aá]ria|adversa)|"
+    r"seu\s+(?:patrono|advogado)|sua\s+(?:patrona|advogada)|"
+    r"ele|ela|eles|elas|aquele|aquela|aqueles|aquelas)\b",
+    re.IGNORECASE,
+)
 
 
 def build_actor_role_instructions() -> str:
-    return (
-        "Você é o Actor & Role Resolver do Themis. Extraia SOMENTE atores efetivamente mencionados no texto. "
-        "mention deve copiar literalmente a expressão usada no texto, nunca substituir pela identidade canônica da lista. "
-        "Quando a menção corresponder inequivocamente a um participante estruturado, use participant_id e RESOLVED. "
-        "Quando for ator explícito não cadastrado (inclusive juízo/magistrado), use participant_id=null e RESOLVED. "
-        "Referências relacionais ou pronominais como 'parte contrária', 'parte adversa', 'seu patrono', 'ele/ela' "
-        "não autorizam escolher participante por plausibilidade: use participant_id=null e AMBIGUOUS ou UNRESOLVED. "
-        "Não emita participantes que não aparecem no texto. Toda menção exige source_refs com quote literal conferível. "
-        "Responda somente no schema."
-    )
+    return """TASK: ACTOR_RESOLVE
+SOURCE: use only pages[] to detect mentions. actor/title/movement_type are metadata, never evidence of a textual actor.
+
+FOR EACH explicit actor mention:
+1. mention = exact substring from pages[].
+2. If mention names one participant unambiguously -> participant_id=<id>, RESOLVED.
+3. If mention is a process-role expression and exactly one participant has that role -> participant_id=<id>, RESOLVED.
+4. If role/name can map to multiple participants -> participant_id=null, AMBIGUOUS.
+5. If mention is COURT/magistrate -> participant_id=null, RESOLVED.
+6. If mention explicitly names an external person/entity not in participants -> participant_id=null, RESOLVED.
+7. If mention is relational/pronominal (parte contrária/adversa, seu patrono, ele/ela etc.) and antecedent is not explicit in the same text -> participant_id=null, AMBIGUOUS.
+
+NEVER:
+- infer a participant from plausibility, side, metadata actor, or representation alone;
+- emit an actor not literally mentioned;
+- canonicalize mention text.
+
+SOURCE_REF: every actor requires a literal, verifiable quote.
+OUTPUT: schema only."""
 
 
 def build_actor_role_input(source_document: dict[str, Any], process_frame: dict[str, Any]) -> dict[str, Any]:
@@ -169,6 +184,9 @@ def validate_actor_role(value: Any, skill_input: dict[str, Any]) -> dict[str, An
             raise ValueError("resolution_status inválido")
 
         refs = validate_source_refs(item["source_refs"], source, field_name="actor.source_refs")
+        if _OPEN_REFERENCE_RE.search(mention):
+            participant_id = None
+            status = "AMBIGUOUS"
         if status == "RESOLVED":
             if participant_id is not None:
                 participant_id = str(participant_id).strip()
