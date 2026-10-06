@@ -26429,8 +26429,10 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		if (pdfProcessIdRef.current === selectedPid && pdfBytesRef.current) return;
 		if (processInFlightRef.current.pdf[selectedPid]) return;
 		const processEntry = processes.find((process) => (process.process_id || process.id) === selectedPid);
+		const processProgress = processEntry?.pipeline_progress || {};
 		const processStatus = String(processEntry?.pipeline_status || processEntry?.status || "").toUpperCase();
-		if (processStatus && !["READY", "ACTIVE"].includes(processStatus)) {
+		const processPhase = String(processProgress.phase || processStatus).toUpperCase();
+		if (["CAPTURED", "QUEUED", "PROCESSING", "INGESTING", "VALIDATED", "EXTRACTING", "STRUCTURING"].includes(processPhase)) {
 			setPdfLoading(false);
 			setPdfError(null);
 			return;
@@ -26570,8 +26572,10 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	const loadProcessPdf = (processId, pageNumber = 1) => {
 		if (!processId) return;
 		const processEntry = processes.find((process) => (process.process_id || process.id) === processId);
+		const processProgress = processEntry?.pipeline_progress || {};
 		const processStatus = String(processEntry?.pipeline_status || processEntry?.status || "").toUpperCase();
-		if (processStatus && !["READY", "ACTIVE"].includes(processStatus)) {
+		const processPhase = String(processProgress.phase || processStatus).toUpperCase();
+		if (["CAPTURED", "QUEUED", "PROCESSING", "INGESTING", "VALIDATED", "EXTRACTING", "STRUCTURING"].includes(processPhase)) {
 			setPdfLoading(false);
 			setPdfError(null);
 			return Promise.resolve(null);
@@ -26903,15 +26907,17 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	const pipelineStatus = String(currentProcess?.pipeline_status || "").toUpperCase();
 	const rawPipelineProgress = currentProcess?.pipeline_progress;
 	const pipelineHasProgress = Boolean(rawPipelineProgress && typeof rawPipelineProgress === "object" && Object.keys(rawPipelineProgress).length > 0);
+	const pipelinePhase = String(rawPipelineProgress?.phase || pipelineStatus).toUpperCase();
 	const pipelineDocumentBusy = [
+		"CAPTURED",
 		"QUEUED",
 		"PROCESSING",
 		"INGESTING",
 		"VALIDATED",
 		"EXTRACTING",
 		"STRUCTURING"
-	].includes(pipelineStatus) || pipelineStatus === "CAPTURED" && pipelineHasProgress;
-	const pipelineIndexing = ["INDEXING", "FINALIZING"].includes(pipelineStatus);
+	].includes(pipelinePhase) && (pipelinePhase !== "CAPTURED" || pipelineHasProgress);
+	const pipelineIndexing = ["INDEXING", "FINALIZING"].includes(pipelinePhase);
 	const pipelineRunning = pipelineDocumentBusy || pipelineIndexing;
 	const pipelineProgress = rawPipelineProgress || {};
 	const pipelinePercent = Math.max(0, Math.min(100, Number(pipelineProgress.percentage) || 0));
@@ -27545,7 +27551,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												icon: "clock",
 												title: "PDF disponível após o processamento",
 												description: pipelineProgress.message || "O Themis está preparando os documentos deste processo."
-											}) : pipelineStatus === "ERROR" ? jsx(PanelEmpty, {
+											}) : false ? jsx(PanelEmpty, {
 												icon: "warning",
 												title: "PDF indisponível",
 												description: currentProcess?.pipeline_error || pipelineProgress.error || "O processamento do processo falhou."

@@ -883,11 +883,21 @@ def get_process_pdf(process_id: str):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=503, detail="O estado do pacote ainda não pode ser confirmado.") from exc
+        progress = manifest.get("pipeline_progress") or {}
         pipeline_status = str(manifest.get("pipeline_status") or "").upper()
-        if pipeline_status and pipeline_status != "READY":
-            progress = manifest.get("pipeline_progress") or {}
-            message = progress.get("message") or f"O processo está na etapa {progress.get('phase') or pipeline_status}."
-            raise HTTPException(status_code=409, detail=f"O PDF integral estará disponível após o processamento. {message}")
+        pipeline_phase = str(progress.get("phase") or pipeline_status).upper()
+        document_busy_phases = {
+            "CAPTURED",
+            "QUEUED",
+            "PROCESSING",
+            "INGESTING",
+            "VALIDATED",
+            "EXTRACTING",
+            "STRUCTURING",
+        }
+        if pipeline_phase in document_busy_phases:
+            message = progress.get("message") or f"O processo está na etapa {pipeline_phase}."
+            raise HTTPException(status_code=409, detail=f"O PDF integral estará disponível após o processamento documental. {message}")
 
     pdf_bytes = core_api.process_pdf_bytes(process_id)
     if pdf_bytes is None:
