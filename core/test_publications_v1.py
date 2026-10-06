@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from core.documentos.legal_event_projection_v1 import LegalEventProjection
+from core.documentos.legal_event_projection_v1 import LegalEventProjection, _publication_autos_target
 from core.documentos.process_event_store_v1 import (
     list_process_events,
     materialize_process_events,
@@ -186,3 +186,48 @@ def test_legal_event_projection_uses_djen_availability_when_publication_date_is_
         assert event["recipient_lawyers"][0]["advogado"]["numero_oab"] == "12345"
     finally:
         db.close()
+
+
+def test_publication_autos_target_prefers_originating_act_over_remittance_certificate():
+    text = "Manifeste-se a parte contrária sobre os embargos de declaração."
+    pages = [
+        {
+            "document_id": "old",
+            "page_number": 1,
+            "process_folio": 34,
+            "content": "Processo 0000833. Cumprimento de sentença. " + text,
+        },
+        {
+            "document_id": "act",
+            "page_number": 1,
+            "process_folio": 563,
+            "content": "ATO ORDINATÓRIO\n" + text,
+        },
+        {
+            "document_id": "certificate",
+            "page_number": 1,
+            "process_folio": 564,
+            "content": "CERTIDÃO DE REMESSA DE RELAÇÃO\nTeor do ato: " + text,
+        },
+    ]
+    target = _publication_autos_target(
+        text,
+        pages,
+        {
+            "old": "Ato Ordinatório",
+            "act": "Ato Ordinatório",
+            "certificate": "Certidão",
+        },
+        process_id=PROCESS_ID,
+        publication_date="2026-10-02",
+        document_dates={
+            "old": "15/04/2025 09:00",
+            "act": "01/10/2026 08:34",
+            "certificate": "01/10/2026 09:03",
+        },
+        anchor_text=text,
+        prefer_originating_act=True,
+    )
+    assert target is not None
+    assert target["document_id"] == "act"
+    assert target["process_folio"] == "563"

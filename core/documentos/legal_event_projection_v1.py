@@ -20,6 +20,7 @@ import json
 import re
 import sqlite3
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -457,6 +458,19 @@ def _piece_priority(label: str | None) -> int:
     return 9
 
 
+def _originating_act_priority(label: str | None) -> int:
+    normalized = _norm_match_text(label)
+    if "ato ordinatorio" in normalized:
+        return 0
+    if "despacho" in normalized or "decisao" in normalized or "sentenca" in normalized:
+        return 1
+    if "comunicacao" in normalized:
+        return 2
+    if "certidao" in normalized:
+        return 5
+    return 9
+
+
 def _hearing_autos_target(
     scheduled_at: str | None,
     hearing_type: str | None,
@@ -501,6 +515,41 @@ def _hearing_autos_target(
     }
 
 
+def _parse_document_date(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in (
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(text[:19] if "%S" in fmt else text, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def _publication_temporal_rank(
+    publication_date: str | None,
+    occurred_at: str | None,
+) -> tuple[int, int]:
+    published = _parse_document_date(publication_date)
+    occurred = _parse_document_date(occurred_at)
+    if published is None or occurred is None:
+        return (2, 10**9)
+    delta = (published.date() - occurred.date()).days
+    if delta >= 0:
+        return (0, delta)
+    return (1, abs(delta))
+
+
 def _publication_autos_target(
     publication_text: str | None,
     page_rows: list[sqlite3.Row],
@@ -508,17 +557,64 @@ def _publication_autos_target(
     *,
     process_id: str,
     communication_number: str | None = None,
+    publication_date: str | None = None,
+    document_dates: dict[str, str] | None = None,
+    anchor_text: str | None = None,
+    prefer_originating_act: bool = False,
 ) -> dict[str, Any] | None:
+    document_dates = document_dates or {}
+
+    def candidate_key(page: sqlite3.Row) -> tuple[int, int, int, int, int]:
+        temporal_bucket, temporal_distance = _publication_temporal_rank(
+            publication_date,
+            document_dates.get(str(page["document_id"])),
+        )
+        piece_label = document_types.get(str(page["document_id"]))
+        piece_priority = (
+            _originating_act_priority(piece_label)
+            if prefer_originating_act
+            else _piece_priority(piece_label)
+        )
+        return (
+            temporal_bucket,
+            temporal_distance,
+            piece_priority,
+            int(page["process_folio"] or 10**9),
+            page["page_number"],
+        )
+
+    normalized_anchor = _norm_match_text(anchor_text)
+    if len(normalized_anchor) >= 20:
+        anchored = [
+            page for page in page_rows
+            if normalized_anchor in _norm_match_text(page["content"])
+        ]
+        if anchored:
+            near = [
+                page for page in anchored
+                if _publication_temporal_rank(
+                    publication_date,
+                    document_dates.get(str(page["document_id"])),
+                )[0] == 0
+                and _publication_temporal_rank(
+                    publication_date,
+                    document_dates.get(str(page["document_id"])),
+                )[1] <= 30
+            ]
+            anchored = near or anchored
+            anchored.sort(key=candidate_key)
+            page = anchored[0]
+            return {
+                "process_id": process_id,
+                "document_id": page["document_id"],
+                "pdf_page": page["page_number"],
+                "process_folio": str(page["process_folio"]) if page["process_folio"] is not None else None,
+            }
+
     if communication_number:
         exact = [page for page in page_rows if str(communication_number) in str(page["content"] or "")]
         if exact:
-            exact.sort(
-                key=lambda page: (
-                    _piece_priority(document_types.get(str(page["document_id"]))),
-                    int(page["process_folio"] or 10**9),
-                    page["page_number"],
-                )
-            )
+            exact.sort(key=candidate_key)
             page = exact[0]
             return {
                 "process_id": process_id,
@@ -535,9 +631,11 @@ def _publication_autos_target(
         for chunk in re.split(r"[.;]", normalized)
         if len(chunk.strip()) >= 35
     ]
-    probes = sorted(chunks, key=len, reverse=True)[:5]
-    if not probes:
-        probes = [normalized[:160]]
+    # Do not keep only the longest chunks: DJEN headers and process metadata
+    # are often longer than the operative sentence itself. Keeping all
+    # meaningful chunks lets the actual order/intimation match the originating
+    # act, after which temporal gating removes stale historical repetitions.
+    probes = chunks or [normalized[:160]]
 
     scored: list[tuple[int, sqlite3.Row]] = []
     for page in page_rows:
@@ -557,25 +655,47 @@ def _publication_autos_target(
 
     if not scored:
         return None
-    scored.sort(
+
+    # If at least one textual match belongs to an act shortly before the
+    # publication, ignore undated/remote historical matches. This prevents
+    # repeated boilerplate from jumping to an old folio merely because that
+    # page has more overlapping publication text.
+    temporally_near: list[tuple[int, sqlite3.Row]] = []
+    for item in scored:
+        bucket, distance = _publication_temporal_rank(
+            publication_date,
+            document_dates.get(str(item[1]["document_id"])),
+        )
+        if bucket == 0 and distance <= 30:
+            temporally_near.append(item)
+    candidates = temporally_near or scored
+
+    candidates.sort(
         key=lambda item: (
             -item[0],
-            _piece_priority(document_types.get(str(item[1]["document_id"]))),
+            (
+                _originating_act_priority(document_types.get(str(item[1]["document_id"])))
+                if prefer_originating_act
+                else _piece_priority(document_types.get(str(item[1]["document_id"])))
+            ),
+            *_publication_temporal_rank(
+                publication_date,
+                document_dates.get(str(item[1]["document_id"])),
+            ),
             int(item[1]["process_folio"] or 10**9),
             item[1]["page_number"],
         )
     )
-    best_score = scored[0][0]
+    best_score = candidates[0][0]
     if best_score < 3:
         return None
-    page = scored[0][1]
+    page = candidates[0][1]
     return {
         "process_id": process_id,
         "document_id": page["document_id"],
         "pdf_page": page["page_number"],
         "process_folio": str(page["process_folio"]) if page["process_folio"] is not None else None,
     }
-
 
 def _has_table(db: sqlite3.Connection, table_name: str) -> bool:
     row = db.execute(
@@ -638,6 +758,25 @@ class LegalEventProjection:
         rows = db.execute(query, params).fetchall()
         events: list[dict[str, Any]] = []
         document_types = _document_piece_type_map(db)
+        document_dates: dict[str, str] = {}
+        if _has_table(db, "movement_pieces") and _has_table(db, "movements"):
+            for movement in db.execute(
+                """SELECT mp.document_id,m.occurred_at
+                   FROM movement_pieces mp
+                   JOIN movements m ON m.movement_id=mp.movement_id
+                   WHERE mp.document_id IS NOT NULL AND m.occurred_at IS NOT NULL"""
+            ).fetchall():
+                document_id = str(movement["document_id"])
+                occurred_at = str(movement["occurred_at"])
+                previous = document_dates.get(document_id)
+                if previous is None:
+                    document_dates[document_id] = occurred_at
+                else:
+                    previous_date = _parse_document_date(previous)
+                    current_date = _parse_document_date(occurred_at)
+                    if current_date and (previous_date is None or current_date > previous_date):
+                        document_dates[document_id] = occurred_at
+
         page_rows_by_process: dict[str, list[sqlite3.Row]] = {}
         if _has_table(db, "pages"):
             page_query = "SELECT p.document_id,p.page_number,p.process_folio,p.content,d.process_id FROM pages p JOIN documents d ON d.document_id=p.document_id"
@@ -652,7 +791,7 @@ class LegalEventProjection:
             if not display_details.get("origin_autos_target") and display_details.get("origin_publication_id"):
                 publication_id = str(display_details["origin_publication_id"]).split("publication:", 1)[-1]
                 pub_row = db.execute(
-                    "SELECT full_text,provenance_json,process_id FROM publications WHERE publication_id=?",
+                    "SELECT full_text,provenance_json,process_id,available_on,published_on FROM publications WHERE publication_id=?",
                     (publication_id,),
                 ).fetchone()
                 if pub_row:
@@ -665,6 +804,10 @@ class LegalEventProjection:
                         document_types,
                         process_id=str(pub_row["process_id"]),
                         communication_number=str(communication_number) if communication_number else None,
+                        publication_date=pub_row["available_on"] or pub_row["published_on"],
+                        document_dates=document_dates,
+                        anchor_text=r["description"],
+                        prefer_originating_act=True,
                     )
                     target = display_details.get("origin_autos_target") or {}
                     if target.get("process_folio"):
