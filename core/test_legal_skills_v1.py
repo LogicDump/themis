@@ -22,7 +22,16 @@ from core.legal_skills.evidence_mapper_v1 import (
     score_evidence_mapping,
     validate_evidence_mapping,
 )
-from core.legal_skills.runner_v1 import run_comprehension_slice, run_evidence_mapper_skill
+from core.legal_skills.contradiction_detector_v1 import (
+    build_contradiction_input,
+    score_contradictions,
+    validate_contradictions,
+)
+from core.legal_skills.runner_v1 import (
+    run_comprehension_slice,
+    run_evidence_mapper_skill,
+    run_contradiction_detector_skill,
+)
 
 
 def _source(text: str | None = None):
@@ -676,3 +685,239 @@ def test_evidence_mapper_forces_identity_unknown_support_to_inconclusive():
     assert link["directness"] == "UNKNOWN"
     assert "IDENTITY_UNCLEAR" in link["limitations"]
     assert "AUTHENTICITY_DISPUTED" not in link["limitations"]
+
+
+def _contradiction_fact_output(*facts):
+    return {
+        "schema_version": "fact-extractor-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "facts": list(facts),
+        "unresolved_points": [],
+    }
+
+
+def _cd_fact(fact_id, statement, *, actor_id="p_claimant", temporal_text=None, quote=None):
+    return {
+        "fact_id": fact_id,
+        "statement": statement,
+        "epistemic_status": "ALLEGED",
+        "actor_id": actor_id,
+        "temporal_text": temporal_text,
+        "source_refs": [{
+            "document_id": f"doc_{fact_id}",
+            "pdf_page": 1,
+            "quote": quote or statement,
+        }],
+    }
+
+
+def test_contradiction_detector_accepts_direct_fact_incompatibility():
+    f1 = _cd_fact("f1", "A autora efetuou o pagamento em 05/04/2026.", temporal_text="05/04/2026")
+    f2 = _cd_fact("f2", "A autora não efetuou o pagamento em 05/04/2026.", temporal_text="05/04/2026")
+    skill_input = build_contradiction_input("proc", [_contradiction_fact_output(f1, f2)])
+    output = validate_contradictions({
+        "fact_pairs": [{
+            "left_fact_id": "f1",
+            "right_fact_id": "f2",
+            "strength": "DIRECT",
+            "dimensions": ["EXISTENCE"],
+        }],
+    }, skill_input)
+    assert output["context_sufficiency"] == "SUFFICIENT"
+    assert output["fact_contradictions"][0]["strength"] == "DIRECT"
+    assert output["fact_contradictions"][0]["dimensions"] == ["EXISTENCE"]
+
+
+def test_contradiction_detector_ignores_identical_fact_pair():
+    f1 = _cd_fact("f1", "A autora reside em São Paulo.")
+    f2 = _cd_fact("f2", "A autora reside em São Paulo.")
+    skill_input = build_contradiction_input("proc", [_contradiction_fact_output(f1, f2)])
+    output = validate_contradictions({
+        "fact_pairs": [{
+            "left_fact_id": "f1",
+            "right_fact_id": "f2",
+            "strength": "DIRECT",
+            "dimensions": ["LOCATION"],
+        }],
+    }, skill_input)
+    assert output["fact_contradictions"] == []
+
+
+def test_contradiction_detector_potential_creates_unresolved_point():
+    f1 = _cd_fact("f1", "Foi realizada uma transferência de R$ 1.000,00.")
+    f2 = _cd_fact("f2", "Uma transferência de R$ 1.000,00 não foi realizada.")
+    skill_input = build_contradiction_input("proc", [_contradiction_fact_output(f1, f2)])
+    output = validate_contradictions({
+        "fact_pairs": [{
+            "left_fact_id": "f1",
+            "right_fact_id": "f2",
+            "strength": "POTENTIAL",
+            "dimensions": ["ACTION_EVENT"],
+        }],
+    }, skill_input)
+    assert output["context_sufficiency"] == "AMBIGUOUS"
+    assert output["unresolved_points"][0]["code"] == "CONTRADICTION_REFERENT_AMBIGUOUS"
+
+
+def test_contradiction_detector_projects_evidence_contradiction_deterministically():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    evidence = {
+        "schema_version": "evidence-mapper-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "evidence_items": [{
+            "evidence_id": "ev1",
+            "source_id": "s1",
+            "kind": "DOCUMENT",
+            "description": "extrato sem o pagamento",
+            "source_refs": [{
+                "document_id": "evdoc1",
+                "pdf_page": 1,
+                "quote": "Extrato não registra o pagamento.",
+            }],
+        }],
+        "links": [{
+            "fact_id": "f1",
+            "evidence_id": "ev1",
+            "relation": "CONTRADICTS",
+            "directness": "DIRECT",
+            "scope": "FULL",
+            "limitations": [],
+            "source_refs": [{
+                "document_id": "evdoc1",
+                "pdf_page": 1,
+                "quote": "Extrato não registra o pagamento.",
+            }],
+        }],
+        "fact_states": [{"fact_id": "f1", "evidence_state": "CONTRADICTION_PRESENT"}],
+        "unresolved_points": [],
+    }
+    skill_input = build_contradiction_input("proc", [_contradiction_fact_output(fact)], [evidence])
+    output = validate_contradictions({"fact_pairs": []}, skill_input)
+    assert len(output["evidence_contradictions"]) == 1
+    assert output["evidence_contradictions"][0]["fact_id"] == "f1"
+    assert output["mixed_evidence_fact_ids"] == []
+
+
+def test_contradiction_detector_tracks_mixed_evidence_without_asking_llm():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    evidence = {
+        "schema_version": "evidence-mapper-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "evidence_items": [
+            {
+                "evidence_id": "ev_support",
+                "source_id": "s1",
+                "kind": "DOCUMENT",
+                "description": "recibo",
+                "source_refs": [{"document_id": "d1", "pdf_page": 1, "quote": "Recibo de pagamento."}],
+            },
+            {
+                "evidence_id": "ev_against",
+                "source_id": "s2",
+                "kind": "DOCUMENT",
+                "description": "extrato",
+                "source_refs": [{"document_id": "d2", "pdf_page": 1, "quote": "Extrato sem pagamento."}],
+            },
+        ],
+        "links": [
+            {
+                "fact_id": "f1", "evidence_id": "ev_support", "relation": "SUPPORTS",
+                "directness": "DIRECT", "scope": "FULL", "limitations": [],
+                "source_refs": [{"document_id": "d1", "pdf_page": 1, "quote": "Recibo de pagamento."}],
+            },
+            {
+                "fact_id": "f1", "evidence_id": "ev_against", "relation": "CONTRADICTS",
+                "directness": "DIRECT", "scope": "FULL", "limitations": [],
+                "source_refs": [{"document_id": "d2", "pdf_page": 1, "quote": "Extrato sem pagamento."}],
+            },
+        ],
+        "fact_states": [{"fact_id": "f1", "evidence_state": "MIXED"}],
+        "unresolved_points": [],
+    }
+    skill_input = build_contradiction_input("proc", [_contradiction_fact_output(fact)], [evidence])
+    output = validate_contradictions({"fact_pairs": []}, skill_input)
+    assert output["mixed_evidence_fact_ids"] == ["f1"]
+    assert len(output["evidence_contradictions"]) == 1
+
+
+def test_contradiction_score_flags_dangerous_direct_invention():
+    expected = {
+        "context_sufficiency": "SUFFICIENT",
+        "fact_contradictions": [],
+        "evidence_contradictions": [],
+        "mixed_evidence_fact_ids": [],
+    }
+    actual = {
+        "context_sufficiency": "SUFFICIENT",
+        "fact_contradictions": [{
+            "left_fact_id": "f1", "right_fact_id": "f2", "strength": "DIRECT",
+        }],
+        "evidence_contradictions": [],
+        "mixed_evidence_fact_ids": [],
+    }
+    assert score_contradictions(expected, actual)["dangerous_direct_invention"] is True
+
+
+def test_contradiction_runner_validates_structured_output():
+    f1 = _cd_fact("f1", "A autora efetuou o pagamento.")
+    f2 = _cd_fact("f2", "A autora não efetuou o pagamento.")
+    result = asyncio.run(run_contradiction_detector_skill(
+        _FakeLLM([{
+            "fact_pairs": [{
+                "left_fact_id": "f1",
+                "right_fact_id": "f2",
+                "strength": "DIRECT",
+                "dimensions": ["EXISTENCE"],
+            }],
+        }]),
+        "proc",
+        [_contradiction_fact_output(f1, f2)],
+        timeout_seconds=5,
+    ))
+    assert result["output"]["fact_contradictions"][0]["strength"] == "DIRECT"
+
+
+def test_contradiction_detector_drops_direct_between_distinct_indefinite_events():
+    f1 = _cd_fact("f1", "A autora efetuou um pagamento de R$ 500,00 em 05/04/2026.", temporal_text="05/04/2026")
+    f2 = _cd_fact("f2", "A autora efetuou um pagamento de R$ 1.000,00 em 05/04/2026.", temporal_text="05/04/2026")
+    skill_input = build_contradiction_input("proc", [_contradiction_fact_output(f1, f2)])
+    output = validate_contradictions({
+        "fact_pairs": [{
+            "left_fact_id": "f1",
+            "right_fact_id": "f2",
+            "strength": "DIRECT",
+            "dimensions": ["AMOUNT"],
+        }],
+    }, skill_input)
+    assert output["fact_contradictions"] == []
+
+
+def test_contradiction_detector_downgrades_indefinite_event_negation_to_potential():
+    f1 = _cd_fact("f1", "Uma transferência de R$ 1.000,00 foi realizada.")
+    f2 = _cd_fact("f2", "Uma transferência de R$ 1.000,00 não foi realizada.")
+    skill_input = build_contradiction_input("proc", [_contradiction_fact_output(f1, f2)])
+    output = validate_contradictions({
+        "fact_pairs": [{
+            "left_fact_id": "f1",
+            "right_fact_id": "f2",
+            "strength": "DIRECT",
+            "dimensions": ["ACTION_EVENT"],
+        }],
+    }, skill_input)
+    assert output["fact_contradictions"][0]["strength"] == "POTENTIAL"
+    assert output["context_sufficiency"] == "AMBIGUOUS"
+
+
+def test_contradiction_detector_drops_changeable_state_at_nonoverlapping_times():
+    f1 = _cd_fact("f1", "A autora residia em São Paulo em janeiro de 2026.", temporal_text="janeiro de 2026")
+    f2 = _cd_fact("f2", "A autora residia no Rio de Janeiro em junho de 2026.", temporal_text="junho de 2026")
+    skill_input = build_contradiction_input("proc", [_contradiction_fact_output(f1, f2)])
+    output = validate_contradictions({
+        "fact_pairs": [{
+            "left_fact_id": "f1",
+            "right_fact_id": "f2",
+            "strength": "DIRECT",
+            "dimensions": ["LOCATION", "DATE_TIME"],
+        }],
+    }, skill_input)
+    assert output["fact_contradictions"] == []

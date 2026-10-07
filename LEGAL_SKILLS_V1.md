@@ -29,7 +29,7 @@ Cada skill deve ter:
 | 6 | Decision & Obligation Extractor | decisões/comandos/obrigações | PARCIAL — Event Layer cobre domínio específico |
 | 7 | Chronology Builder | cronologia jurídica | PARCIAL — provider-first/Event Layer |
 | 8 | Evidence Mapper | Fact ↔ evidência ↔ fonte | IMPLEMENTADO V1 — contrato + runner + testes + benchmark |
-| 9 | Contradiction Detector | contradições materiais | NÃO IMPLEMENTADO |
+| 9 | Contradiction Detector | contradições materiais | IMPLEMENTADO V1 — protocolo + runner + guardrails + benchmark |
 | 10 | Evidence Gap Analyzer | fatos relevantes sem suporte | NÃO IMPLEMENTADO |
 | 11 | Issue Mapper | questões controvertidas | PARCIAL — issue_map_v1 orientado a retrieval |
 | 12 | Burden of Proof Analyzer | ônus por questão/fato | NÃO IMPLEMENTADO |
@@ -142,16 +142,41 @@ Regras críticas:
 - provenance e vínculo entre source_id, página e quote são validados deterministicamente;
 - outputs perigosos são rejeitados antes de persistência.
 
+### Contradiction Detector V1
+
+Entrada interna:
+- facts[] já validados;
+- evidence_items[]/evidence_links[] apenas para projeção determinística.
+
+Entrada do LLM:
+- somente facts[]; evidência fica deliberadamente fora do modelo.
+
+Saída:
+- fact_pairs[] com DIRECT/POTENTIAL e dimensões materiais;
+- fact_contradictions derivados com provenance;
+- evidence_contradictions projetadas deterministicamente de Evidence Mapper CONTRADICTS;
+- mixed_evidence_fact_ids derivados;
+- unresolved_points para incompatibilidades POTENTIAL.
+
+Guardrails:
+- proposições idênticas não geram contradição;
+- evento indefinido não pode virar DIRECT apenas por semelhança;
+- negação sobre evento indefinido sem identidade suficiente é no máximo POTENTIAL;
+- estados mutáveis em períodos não sobrepostos não geram contradição;
+- falta de suporte/prova nunca é contradição;
+- skill nunca decide qual versão é verdadeira.
+
+Baseline E4B 6,6 GB: 10/10 válidos; fact-pair precision/recall 1,00/1,00; suficiência 1,00; evidence projection 1,00; mixed evidence 1,00; 0 DIRECT perigosos.
+
 ## Ordem de implementação vigente
 
-1. Consolidar Actor/Role + Fact + Claim/Request + Evidence com benchmark gold.
-2. Implementar Contradiction Detector.
-3. Implementar Evidence Gap Analyzer.
-4. Só então avançar para Issue/Burden/Research/Strategy.
+1. Consolidar Actor/Role + Fact + Claim/Request + Evidence + Contradiction com benchmark gold.
+2. Implementar Evidence Gap Analyzer.
+3. Só então avançar para Issue/Burden/Research/Strategy.
 
 ## Baselines sem fine-tuning
 
-Benchmark sintético gold V1: 40 casos, 10 por skill: Actor/Role, Fact Extractor, Claim/Request e Evidence Mapper.
+Benchmark sintético gold V1: 50 casos, 10 por skill: Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper e Contradiction Detector.
 
 ### Gemma 4 E4B antigo (~9,6 GB)
 - Actor/Role: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
@@ -188,7 +213,7 @@ Regras vigentes:
 - IDs, papéis, suficiência, autoria e estados derivados ficam fora do LLM sempre que possível;
 - outputs semanticamente perigosos devem ser rejeitados ou normalizados deterministicamente antes de persistir.
 
-Revisão V1 aplicada a Actor/Role, Fact, Claim/Request e Evidence Mapper:
+Revisão V1 aplicada a Actor/Role, Fact, Claim/Request, Evidence Mapper e Contradiction Detector:
 - Actor/Role: referências relacionais/pronominais abertas são forçadas deterministicamente a AMBIGUOUS;
 - Claim/Request: o LLM não emite mais actor_id; Themis deriva autoria por menção explícita resolvida ou Movement.actor seguro;
 - Evidence: PARTY_SUBMISSION autoafirmativa não pode ser promovida a ADMISSION; identidade material ausente força INCONCLUSIVE + IDENTITY_UNCLEAR.
@@ -197,7 +222,8 @@ Baseline do E4B 6,6 GB após protocolos:
 - Actor/Role: precisão 0,90; recall 0,75; suficiência 0,90; 0 falsas resoluções perigosas;
 - Fact: precisão/recall 0,625/0,625; suficiência 1,00; 0 upgrades perigosos;
 - Claim/Request: 1,00/1,00 em posições e pedidos; suficiência 1,00; 0 actor mismatches;
-- Evidence Mapper: 8/10 outputs aceitos; items 0,875/0,75; links 0,875/0,75; fact state 0,75; suficiência 1,00; 0 support inventions perigosos.
+- Evidence Mapper: 8/10 outputs aceitos; items 0,875/0,75; links variaram entre 0,875/0,75 no teste isolado e 0,75/0,625 na regressão completa; fact state 0,75; suficiência 1,00; 0 support inventions perigosos.
+- Contradiction Detector: 10/10 válidos; fact pairs 1,00/1,00; suficiência 1,00; evidence projection 1,00; mixed evidence 1,00; 0 DIRECT inventions perigosos.
 - Evidence residual para treino/hardening sem heurística ad hoc: inferência indireta de quitação (EV07) e suporte parcial por valor menor (EV08).
 
 ## Regra de treinamento

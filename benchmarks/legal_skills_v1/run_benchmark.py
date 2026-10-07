@@ -39,6 +39,14 @@ from core.legal_skills.evidence_mapper_v1 import (
     score_evidence_mapping,
     validate_evidence_mapping,
 )
+from core.legal_skills.contradiction_detector_v1 import (
+    CONTRADICTION_JSON_SCHEMA,
+    build_contradiction_input,
+    build_contradiction_instructions,
+    build_contradiction_llm_input,
+    score_contradictions,
+    validate_contradictions,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -119,6 +127,14 @@ def evidence_case_input(case: dict) -> dict:
     return build_evidence_mapper_input(fact_input, fact_output, case["evidence_sources"])
 
 
+def contradiction_case_input(case: dict) -> dict:
+    return build_contradiction_input(
+        "bench_proc",
+        case["fact_outputs"],
+        case.get("evidence_outputs") or [],
+    )
+
+
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
     if skill == "ACTOR_ROLE":
@@ -145,13 +161,24 @@ def run_case(case: dict, model: str) -> dict:
         schema = EVIDENCE_MAPPER_JSON_SCHEMA
         validator = lambda value: validate_evidence_mapping(value, skill_input)
         scorer = score_evidence_mapping
+    elif skill == "CONTRADICTION_DETECTOR":
+        skill_input = contradiction_case_input(case)
+        system = build_contradiction_instructions()
+        schema = CONTRADICTION_JSON_SCHEMA
+        validator = lambda value: validate_contradictions(value, skill_input)
+        scorer = score_contradictions
     else:
         raise ValueError(f"skill desconhecida: {skill}")
 
+    model_input = (
+        build_contradiction_llm_input(skill_input)
+        if skill == "CONTRADICTION_DETECTOR"
+        else skill_input
+    )
     raw, perf = call_ollama(
         model,
         system,
-        json.dumps(skill_input, ensure_ascii=False),
+        json.dumps(model_input, ensure_ascii=False),
         schema,
     )
     try:
@@ -218,6 +245,15 @@ def summarize(results: list[dict]) -> dict:
                 "fact_state_accuracy": sum(item["score"]["fact_state_accuracy"] for item in valid) / len(valid),
                 "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
                 "dangerous_support_invention_count": sum(bool(item["score"]["dangerous_support_invention"]) for item in valid),
+            })
+        elif skill == "CONTRADICTION_DETECTOR" and valid:
+            block.update({
+                "fact_pair_precision": sum(item["score"]["fact_pair_precision"] for item in valid) / len(valid),
+                "fact_pair_recall": sum(item["score"]["fact_pair_recall"] for item in valid) / len(valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "dangerous_direct_invention_count": sum(bool(item["score"]["dangerous_direct_invention"]) for item in valid),
+                "evidence_projection_accuracy": sum(bool(item["score"]["evidence_projection_match"]) for item in valid) / len(valid),
+                "mixed_evidence_accuracy": sum(bool(item["score"]["mixed_evidence_match"]) for item in valid) / len(valid),
             })
         summary[skill] = block
     return summary
