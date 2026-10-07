@@ -67,6 +67,14 @@ from core.legal_skills.burden_of_proof_v1 import (
     score_burden_allocations,
     validate_burden_allocations,
 )
+from core.legal_skills.legal_research_planner_v1 import (
+    RESEARCH_JSON_SCHEMA,
+    build_research_input,
+    build_research_instructions,
+    build_research_llm_input,
+    score_research_plan,
+    validate_research_plan,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -174,6 +182,16 @@ def burden_case_input(case: dict) -> dict:
     )
 
 
+def research_case_input(case: dict) -> dict:
+    return build_research_input(
+        "bench_proc",
+        case.get("issue_outputs") or [],
+        case.get("burden_outputs") or [],
+        jurisdiction=case.get("jurisdiction") or "BR",
+        court_context=case.get("court_context"),
+    )
+
+
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
     if skill == "EVIDENCE_GAP_ANALYZER":
@@ -238,6 +256,12 @@ def run_case(case: dict, model: str) -> dict:
         schema = BURDEN_JSON_SCHEMA
         validator = lambda value: validate_burden_allocations(value, skill_input)
         scorer = lambda expected, actual: score_burden_allocations(expected, actual, skill_input)
+    elif skill == "LEGAL_RESEARCH_PLANNER":
+        skill_input = research_case_input(case)
+        system = build_research_instructions()
+        schema = RESEARCH_JSON_SCHEMA
+        validator = lambda value: validate_research_plan(value, skill_input)
+        scorer = score_research_plan
     else:
         raise ValueError(f"skill desconhecida: {skill}")
 
@@ -247,6 +271,8 @@ def run_case(case: dict, model: str) -> dict:
         model_input = build_legal_issue_llm_input(skill_input)
     elif skill == "BURDEN_OF_PROOF":
         model_input = build_burden_llm_input(skill_input)
+    elif skill == "LEGAL_RESEARCH_PLANNER":
+        model_input = build_research_llm_input(skill_input)
     else:
         model_input = skill_input
     raw, perf = call_ollama(
@@ -373,6 +399,13 @@ def summarize(results: list[dict]) -> dict:
                 "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
                 "dangerous_invented_rule_count": sum(bool(item["score"]["dangerous_invented_rule"]) for item in valid),
                 "dangerous_shift_invention_count": sum(bool(item["score"]["dangerous_shift_invention"]) for item in valid),
+            })
+        elif skill == "LEGAL_RESEARCH_PLANNER" and valid:
+            block.update({
+                "query_precision": sum(item["score"]["query_precision"] for item in valid) / len(valid),
+                "query_recall": sum(item["score"]["query_recall"] for item in valid) / len(valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "dangerous_authority_invention_count": sum(bool(item["score"]["dangerous_authority_invention"]) for item in valid),
             })
         if skill == "BURDEN_OF_PROOF":
             block["rule_inventions"] = sum(row.get("safety", {}).get("rule_inventions", 0) for row in rows)

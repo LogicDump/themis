@@ -32,8 +32,8 @@ Cada skill deve ter:
 | 9 | Contradiction Detector | contradições materiais | IMPLEMENTADO V1 — protocolo + runner + guardrails + benchmark |
 | 10 | Evidence Gap Analyzer | cobertura/lacunas evidenciais por fato | IMPLEMENTADO V1 — determinístico + testes + gold |
 | 11 | Legal Issue Mapper | questões controvertidas jurídicas/factuais | IMPLEMENTADO V1 — separado do retrieval Issue Map |
-| 12 | Burden of Proof Analyzer | ônus por questão/fato | NÃO IMPLEMENTADO |
-| 13 | Legal Research Planner | consultas por issue | NÃO IMPLEMENTADO |
+| 12 | Burden of Proof Analyzer | ônus por questão/fato | IMPLEMENTADO V1 — seleção mínima de rule + derivação determinística |
+| 13 | Legal Research Planner | consultas por issue | IMPLEMENTADO V1 — objetivos determinísticos + query LLM |
 | 14 | Jurisprudence Retriever | precedentes candidatos | NÃO IMPLEMENTADO |
 | 15 | Precedent / Ratio Analyzer | ratio/aderência/distinguishing | NÃO IMPLEMENTADO |
 | 16 | Adversarial Reviewer | melhor argumento contrário/objeções | NÃO IMPLEMENTADO |
@@ -229,16 +229,41 @@ Regras:
 
 Baseline E4B 6,6 GB: 10/10 válidos; issue precision/recall 1,00/1,00; 0 kind mismatches; 0 link mismatches; suficiência 1,00; 0 issues sem vínculo.
 
+### Burden of Proof Analyzer V1
+
+Contrato mínimo:
+- LLM escolhe somente issue_id + fact_ids[] + rule_id;
+- burden_side, allocation_type, reason_code, authority e regime vêm deterministicamente da rule fornecida;
+- regra CONDITIONAL só produz efeito com precondition_status=SATISFIED;
+- ausência de rule aplicável gera unresolved determinístico;
+- evidence gap/contradiction não desloca ônus por si.
+
+Baseline E4B 6,6 GB: BP01–BP10 10/10 válidos; precision/recall/suficiência 1,00; 0 rule inventions; 0 SHIFTED/DYNAMIC não autorizados.
+
+### Legal Research Planner V1
+
+Contrato mínimo:
+- código deriva objetivos obrigatórios por kind da issue;
+- LEGAL/MIXED => CONTROLLING_RULE + PRECEDENT_LANDSCAPE;
+- PROCEDURAL => PROCEDURAL_RULE + PRECEDENT_LANDSCAPE;
+- FACTUAL puro => nenhuma pesquisa jurídica;
+- LLM emite somente issue_id + objective + query_text;
+- source_types/jurisdição/contexto e query_id são derivados;
+- autoridade específica só pode aparecer se já fornecida upstream em known_authorities;
+- planner nunca responde a issue nem afirma regra/holding.
+
+Baseline E4B 6,6 GB: RP01–RP10 10/10 válidos; query precision/recall 1,00/1,00; suficiência 1,00; 0 authority inventions.
+
 ## Ordem de implementação vigente
 
-1. Consolidar compreensão: Actor/Role + Fact + Claim/Request + Evidence + Contradiction + Evidence Gap + Legal Issue.
-2. Validar Burden of Proof Analyzer no runtime mediante job explícito.
-3. Depois Legal Research Planner + Jurisprudence/Precedent.
+1. Compreensão fechada em V1 até Legal Research Planner.
+2. Implementar Jurisprudence Retriever V1.
+3. Depois Precedent / Ratio Analyzer V1.
 4. Só então Adversarial/Strategy/Drafting.
 
 ## Baselines sem fine-tuning
 
-Benchmark/gold V1: 80 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer, Legal Issue Mapper e Burden of Proof Analyzer. Os 10 casos de Evidence Gap são determinísticos e não executam LLM.
+Benchmark/gold V1: 90 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer, Legal Issue Mapper, Burden of Proof Analyzer e Legal Research Planner. Os 10 casos de Evidence Gap são determinísticos e não executam LLM.
 
 ### Gemma 4 E4B antigo (~9,6 GB)
 - Actor/Role: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.

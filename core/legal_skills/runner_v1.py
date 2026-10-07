@@ -45,6 +45,13 @@ from core.legal_skills.burden_of_proof_v1 import (
     build_burden_llm_input,
     validate_burden_allocations,
 )
+from core.legal_skills.legal_research_planner_v1 import (
+    RESEARCH_JSON_SCHEMA,
+    build_research_input,
+    build_research_instructions,
+    build_research_llm_input,
+    validate_research_plan,
+)
 from core.legal_skills.legal_issue_mapper_v1 import (
     LEGAL_ISSUE_JSON_SCHEMA,
     build_legal_issue_input,
@@ -289,6 +296,48 @@ async def run_legal_issue_mapper_skill(
     )
     parsed, actual_provider, actual_model, usage = _structured_result(result)
     output = validate_legal_issues(parsed, skill_input)
+    return {
+        "input": skill_input,
+        "output": output,
+        "trace": {"provider": actual_provider, "model": actual_model, "usage": usage},
+    }
+
+
+async def run_legal_research_planner_skill(
+    llm: Any,
+    process_id: str,
+    issue_outputs: list[dict[str, Any]],
+    burden_outputs: list[dict[str, Any]] | None = None,
+    *,
+    jurisdiction: str = "BR",
+    court_context: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    timeout_seconds: float = THEMIS_LONG_LLM_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    skill_input = build_research_input(
+        process_id,
+        issue_outputs,
+        burden_outputs,
+        jurisdiction=jurisdiction,
+        court_context=court_context,
+    )
+    llm_input = build_research_llm_input(skill_input)
+    result = await call_long_job_llm(
+        llm,
+        "acomplete_structured",
+        timeout_seconds=timeout_seconds,
+        instructions=build_research_instructions(),
+        input=[{"type": "text", "text": json.dumps(llm_input, ensure_ascii=False)}],
+        json_schema=RESEARCH_JSON_SCHEMA,
+        schema_name="themis_legal_research_planner_v1",
+        provider=provider,
+        model=model,
+        max_tokens=4096,
+        purpose="themis.legal_skills.legal_research_planner",
+    )
+    parsed, actual_provider, actual_model, usage = _structured_result(result)
+    output = validate_research_plan(parsed, skill_input)
     return {
         "input": skill_input,
         "output": output,

@@ -41,6 +41,11 @@ from core.legal_skills.legal_issue_mapper_v1 import (
     score_legal_issues,
     validate_legal_issues,
 )
+from core.legal_skills.legal_research_planner_v1 import (
+    build_research_input,
+    score_research_plan,
+    validate_research_plan,
+)
 from core.legal_skills.runner_v1 import (
     run_comprehension_slice,
     run_evidence_mapper_skill,
@@ -48,6 +53,7 @@ from core.legal_skills.runner_v1 import (
     run_evidence_gap_analyzer_skill,
     run_legal_issue_mapper_skill,
     run_burden_of_proof_skill,
+    run_legal_research_planner_skill,
 )
 
 
@@ -1603,3 +1609,175 @@ def test_burden_supplied_non_gold_rule_is_not_invented():
     rule = _burden_rule(rule_id="alternative")
     actual = {"allocations": [{"issue_id": "i1", "fact_ids": ["f1"], "rule_id": "alternative", "burden_side": "CLAIMANT", "allocation_type": "DEFAULT"}]}
     assert not score_burden_allocations({"allocations": []}, actual, {"burden_rules": [rule]})["dangerous_invented_rule"]
+
+
+def _research_issue_output(issue_id, question, kind="LEGAL"):
+    return {
+        "schema_version": "legal-issue-mapper-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "issues": [{
+            "issue_id": issue_id,
+            "question": question,
+            "kind": kind,
+            "fact_ids": [],
+            "legal_position_ids": ["lp1"] if kind != "FACTUAL" else [],
+            "request_ids": ["rq1"] if kind != "FACTUAL" else [],
+            "actor_ids": [],
+            "contradiction_ids": [],
+            "evidence_gap_codes": [],
+            "source_refs": [],
+        }],
+        "unresolved_points": [],
+    }
+
+
+def test_research_planner_derives_required_objectives():
+    skill_input = build_research_input(
+        "proc",
+        [
+            _research_issue_output("i1", "Qual regra rege a rescisão?", "LEGAL"),
+            _research_issue_output("i2", "A audiência ocorreu?", "FACTUAL"),
+            _research_issue_output("i3", "A manifestação é tempestiva?", "PROCEDURAL"),
+        ],
+    )
+    required = {(x["issue_id"], x["objective"]) for x in skill_input["required_queries"]}
+    assert required == {
+        ("i1", "CONTROLLING_RULE"),
+        ("i1", "PRECEDENT_LANDSCAPE"),
+        ("i3", "PROCEDURAL_RULE"),
+        ("i3", "PRECEDENT_LANDSCAPE"),
+    }
+
+
+def test_research_planner_accepts_exact_required_queries():
+    skill_input = build_research_input(
+        "proc",
+        [_research_issue_output("i1", "Qual regra rege a rescisão contratual?", "LEGAL")],
+        jurisdiction="BR",
+        court_context="TJSP",
+    )
+    output = validate_research_plan({
+        "queries": [
+            {
+                "issue_id": "i1",
+                "objective": "CONTROLLING_RULE",
+                "query_text": "rescisão contratual requisitos legais efeitos",
+            },
+            {
+                "issue_id": "i1",
+                "objective": "PRECEDENT_LANDSCAPE",
+                "query_text": "jurisprudência critérios e limites da rescisão contratual",
+            },
+        ],
+    }, skill_input)
+    assert output["context_sufficiency"] == "SUFFICIENT"
+    assert all(x["jurisdiction"] == "BR" for x in output["queries"])
+    assert all(x["court_context"] == "TJSP" for x in output["queries"])
+
+
+def test_research_planner_marks_missing_query_unresolved():
+    skill_input = build_research_input(
+        "proc",
+        [_research_issue_output("i1", "Qual regra rege a rescisão contratual?", "LEGAL")],
+    )
+    output = validate_research_plan({
+        "queries": [{
+            "issue_id": "i1",
+            "objective": "CONTROLLING_RULE",
+            "query_text": "rescisão contratual requisitos legais",
+        }],
+    }, skill_input)
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+    assert output["unresolved_points"][0]["objective"] == "PRECEDENT_LANDSCAPE"
+
+
+def test_research_planner_rejects_unsupplied_specific_authority():
+    skill_input = build_research_input(
+        "proc",
+        [_research_issue_output("i1", "Quais requisitos da tutela provisória?", "LEGAL")],
+    )
+    with pytest.raises(ValueError, match="inventa autoridade específica"):
+        validate_research_plan({
+            "queries": [
+                {"issue_id": "i1", "objective": "CONTROLLING_RULE", "query_text": "art. 300 CPC tutela provisória"},
+                {"issue_id": "i1", "objective": "PRECEDENT_LANDSCAPE", "query_text": "jurisprudência tutela provisória requisitos"},
+            ],
+        }, skill_input)
+
+
+def test_research_planner_allows_known_authority_from_burden():
+    issue = _research_issue_output("i1", "Como se distribui o ônus da prova?", "LEGAL")
+    burden = {
+        "schema_version": "burden-of-proof-analyzer-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "allocations": [{
+            "allocation_id": "b1",
+            "issue_id": "i1",
+            "fact_ids": ["f1"],
+            "rule_id": "r1",
+            "burden_side": "CLAIMANT",
+            "allocation_type": "DEFAULT",
+            "reason_code": "CONSTITUTIVE_FACT",
+            "authority": "CPC art. 373, I",
+            "regime": "CPC",
+        }],
+        "unresolved_points": [],
+    }
+    skill_input = build_research_input("proc", [issue], [burden])
+    output = validate_research_plan({
+        "queries": [
+            {"issue_id": "i1", "objective": "CONTROLLING_RULE", "query_text": "CPC art. 373, I fato constitutivo ônus da prova"},
+            {"issue_id": "i1", "objective": "PRECEDENT_LANDSCAPE", "query_text": "jurisprudência distribuição do ônus da prova fato constitutivo"},
+        ],
+    }, skill_input)
+    assert output["context_sufficiency"] == "SUFFICIENT"
+
+
+def test_research_planner_rejects_unrequested_objective():
+    skill_input = build_research_input(
+        "proc",
+        [_research_issue_output("i1", "Qual regra rege a rescisão?", "LEGAL")],
+    )
+    with pytest.raises(ValueError, match="não solicitada"):
+        validate_research_plan({
+            "queries": [{
+                "issue_id": "i1",
+                "objective": "PROCEDURAL_RULE",
+                "query_text": "rescisão contratual procedimento",
+            }],
+        }, skill_input)
+
+
+def test_research_score_flags_authority_invention():
+    expected = {
+        "context_sufficiency": "SUFFICIENT",
+        "known_authorities": [],
+        "queries": [
+            {"issue_id": "i1", "objective": "CONTROLLING_RULE"},
+            {"issue_id": "i1", "objective": "PRECEDENT_LANDSCAPE"},
+        ],
+    }
+    actual = {
+        "context_sufficiency": "SUFFICIENT",
+        "queries": [
+            {"issue_id": "i1", "objective": "CONTROLLING_RULE", "query_text": "art. 300 CPC tutela provisória"},
+            {"issue_id": "i1", "objective": "PRECEDENT_LANDSCAPE", "query_text": "jurisprudência tutela provisória"},
+        ],
+    }
+    assert score_research_plan(expected, actual)["dangerous_authority_invention"] is True
+
+
+def test_research_runner_validates_structured_output():
+    issue = _research_issue_output("i1", "Qual regra rege a rescisão contratual?", "LEGAL")
+    result = asyncio.run(run_legal_research_planner_skill(
+        _FakeLLM([{
+            "queries": [
+                {"issue_id": "i1", "objective": "CONTROLLING_RULE", "query_text": "rescisão contratual requisitos legais efeitos"},
+                {"issue_id": "i1", "objective": "PRECEDENT_LANDSCAPE", "query_text": "jurisprudência critérios e limites da rescisão contratual"},
+            ],
+        }]),
+        "proc",
+        [issue],
+        timeout_seconds=5,
+    ))
+    assert result["output"]["context_sufficiency"] == "SUFFICIENT"
