@@ -56,6 +56,13 @@ from core.legal_skills.jurisprudence_retriever_v1 import (
     build_jurisprudence_input,
     retrieve_jurisprudence,
 )
+from core.legal_skills.precedent_ratio_analyzer_v1 import (
+    PRECEDENT_RATIO_JSON_SCHEMA,
+    build_precedent_ratio_input,
+    build_precedent_ratio_instructions,
+    build_precedent_ratio_llm_input,
+    validate_precedent_ratio,
+)
 from core.legal_skills.legal_issue_mapper_v1 import (
     LEGAL_ISSUE_JSON_SCHEMA,
     build_legal_issue_input,
@@ -364,6 +371,52 @@ def run_jurisprudence_retriever_skill(
             "model": None,
             "usage": None,
         },
+    }
+
+
+async def run_precedent_ratio_analyzer_skill(
+    llm: Any,
+    issue_outputs: list[dict[str, Any]],
+    fact_outputs: list[dict[str, Any]],
+    research_outputs: list[dict[str, Any]],
+    jurisprudence_outputs: list[dict[str, Any]],
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    timeout_seconds: float = THEMIS_LONG_LLM_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    skill_input = build_precedent_ratio_input(
+        issue_outputs,
+        fact_outputs,
+        research_outputs,
+        jurisprudence_outputs,
+    )
+    if not skill_input["required_pairs"]:
+        return {
+            "input": skill_input,
+            "output": validate_precedent_ratio({"analyses": []}, skill_input),
+            "trace": {"executor": "deterministic", "provider": None, "model": None, "usage": None},
+        }
+    llm_input = build_precedent_ratio_llm_input(skill_input)
+    result = await call_long_job_llm(
+        llm,
+        "acomplete_structured",
+        timeout_seconds=timeout_seconds,
+        instructions=build_precedent_ratio_instructions(),
+        input=[{"type": "text", "text": json.dumps(llm_input, ensure_ascii=False)}],
+        json_schema=PRECEDENT_RATIO_JSON_SCHEMA,
+        schema_name="themis_precedent_ratio_analyzer_v1",
+        provider=provider,
+        model=model,
+        max_tokens=4096,
+        purpose="themis.legal_skills.precedent_ratio_analyzer",
+    )
+    parsed, actual_provider, actual_model, usage = _structured_result(result)
+    output = validate_precedent_ratio(parsed, skill_input)
+    return {
+        "input": skill_input,
+        "output": output,
+        "trace": {"provider": actual_provider, "model": actual_model, "usage": usage},
     }
 
 

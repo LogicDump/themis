@@ -80,6 +80,14 @@ from core.legal_skills.jurisprudence_retriever_v1 import (
     retrieve_jurisprudence,
     score_jurisprudence_retrieval,
 )
+from core.legal_skills.precedent_ratio_analyzer_v1 import (
+    PRECEDENT_RATIO_JSON_SCHEMA,
+    build_precedent_ratio_input,
+    build_precedent_ratio_instructions,
+    build_precedent_ratio_llm_input,
+    score_precedent_ratio,
+    validate_precedent_ratio,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -201,6 +209,15 @@ def jurisprudence_case_input(case: dict) -> dict:
     return build_jurisprudence_input(case.get("research_outputs") or [])
 
 
+def precedent_ratio_case_input(case: dict) -> dict:
+    return build_precedent_ratio_input(
+        case.get("issue_outputs") or [],
+        case.get("fact_outputs") or [],
+        case.get("research_outputs") or [],
+        case.get("jurisprudence_outputs") or [],
+    )
+
+
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
     if skill == "JURISPRUDENCE_RETRIEVER":
@@ -287,6 +304,12 @@ def run_case(case: dict, model: str) -> dict:
         schema = RESEARCH_JSON_SCHEMA
         validator = lambda value: validate_research_plan(value, skill_input)
         scorer = score_research_plan
+    elif skill == "PRECEDENT_RATIO_ANALYZER":
+        skill_input = precedent_ratio_case_input(case)
+        system = build_precedent_ratio_instructions()
+        schema = PRECEDENT_RATIO_JSON_SCHEMA
+        validator = lambda value: validate_precedent_ratio(value, skill_input)
+        scorer = score_precedent_ratio
     else:
         raise ValueError(f"skill desconhecida: {skill}")
 
@@ -298,6 +321,8 @@ def run_case(case: dict, model: str) -> dict:
         model_input = build_burden_llm_input(skill_input)
     elif skill == "LEGAL_RESEARCH_PLANNER":
         model_input = build_research_llm_input(skill_input)
+    elif skill == "PRECEDENT_RATIO_ANALYZER":
+        model_input = build_precedent_ratio_llm_input(skill_input)
     else:
         model_input = skill_input
     raw, perf = call_ollama(
@@ -441,6 +466,16 @@ def summarize(results: list[dict]) -> dict:
                 "rejection_count_accuracy": sum(bool(item["score"]["rejection_count_match"]) for item in valid) / len(valid),
                 "provider_failure_count_accuracy": sum(bool(item["score"]["provider_failure_count_match"]) for item in valid) / len(valid),
                 "dangerous_unprovenanced_acceptance_count": sum(bool(item["score"]["dangerous_unprovenanced_acceptance"]) for item in valid),
+            })
+        elif skill == "PRECEDENT_RATIO_ANALYZER" and valid:
+            block.update({
+                "analysis_precision": sum(item["score"]["analysis_precision"] for item in valid) / len(valid),
+                "analysis_recall": sum(item["score"]["analysis_recall"] for item in valid) / len(valid),
+                "applicability_mismatch_count": sum(item["score"]["applicability_mismatch_count"] for item in valid),
+                "ratio_mismatch_count": sum(item["score"]["ratio_mismatch_count"] for item in valid),
+                "fact_link_mismatch_count": sum(item["score"]["fact_link_mismatch_count"] for item in valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "dangerous_unprovenanced_ratio_count": sum(bool(item["score"]["dangerous_unprovenanced_ratio"]) for item in valid),
             })
         if skill == "BURDEN_OF_PROOF":
             block["rule_inventions"] = sum(row.get("safety", {}).get("rule_inventions", 0) for row in rows)

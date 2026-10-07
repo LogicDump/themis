@@ -35,7 +35,7 @@ Cada skill deve ter:
 | 12 | Burden of Proof Analyzer | ônus por questão/fato | IMPLEMENTADO V1 — seleção mínima de rule + derivação determinística |
 | 13 | Legal Research Planner | consultas por issue | IMPLEMENTADO V1 — objetivos determinísticos + query LLM |
 | 14 | Jurisprudence Retriever | precedentes candidatos | IMPLEMENTADO V1 — provider-neutral + determinístico + provenance/fail-closed |
-| 15 | Precedent / Ratio Analyzer | ratio/aderência/distinguishing | NÃO IMPLEMENTADO |
+| 15 | Precedent / Ratio Analyzer | ratio/aderência/distinguishing | IMPLEMENTADO V1 — ratio extrativa + applicability + provenance |
 | 16 | Adversarial Reviewer | melhor argumento contrário/objeções | NÃO IMPLEMENTADO |
 | 17 | Strategy Synthesizer | tese principal/subsidiárias/riscos | NÃO IMPLEMENTADO |
 | 18 | Draft Planner | estrutura lógica da peça | NÃO IMPLEMENTADO |
@@ -282,16 +282,38 @@ Regras:
 
 Gold JR01–JR10: 10/10 válidos; candidate precision/recall 1,00/1,00; status/suficiência/rejeições/falhas 1,00; 0 candidatos sem provenance aceitos; tempo efetivo ~0 ms.
 
+### Precedent / Ratio Analyzer V1
+
+Entrada:
+- issues[] e facts[] já validados;
+- Legal Research Planner queries[];
+- Jurisprudence Retriever candidates[] com excerpts e provenance.
+
+Responsabilidade do LLM:
+- classificar applicability: DIRECT / ANALOGOUS / DISTINGUISHABLE / UNCLEAR;
+- copiar ratio/holding literalmente do excerpt recuperado;
+- selecionar somente fact_ids atuais materialmente usados na comparação.
+
+Derivação/guardrails:
+- issue/candidate pairs, metadata e provenance são derivados pelo Themis;
+- ratio_quote precisa existir literalmente em retrieval_hit.excerpt;
+- DIRECT / ANALOGOUS / DISTINGUISHABLE exigem ratio_quote conferível;
+- UNCLEAR é abstenção segura, com ratio_quote=null e fact_ids normalizados para [];
+- condição explícita do precedente negada por fato atual => DISTINGUISHABLE;
+- não classifica precedente como favorável/adverso, não decide mérito, estratégia ou peso persuasivo.
+
+Baseline E4B 6,6 GB PR01–PR10: 10/10 válidos; analysis precision/recall 1,00/1,00; applicability, ratio, fact links e suficiência 1,00; 0 ratios sem provenance.
+
 ## Ordem de implementação vigente
 
-1. Compreensão/pesquisa fechada em V1 até Jurisprudence Retriever.
-2. Implementar Precedent / Ratio Analyzer V1.
-3. Depois Adversarial Reviewer + Strategy Synthesizer.
+1. Compreensão/pesquisa/precedentes fechados em V1 até Precedent / Ratio Analyzer.
+2. Implementar Adversarial Reviewer V1.
+3. Depois Strategy Synthesizer V1.
 4. Só então Draft Planner/Drafting/QA.
 
 ## Baselines sem fine-tuning
 
-Benchmark/gold V1: 100 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer, Legal Issue Mapper, Burden of Proof Analyzer, Legal Research Planner e Jurisprudence Retriever. Evidence Gap e Jurisprudence Retriever são determinísticos e não executam LLM.
+Benchmark/gold V1: 110 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer, Legal Issue Mapper, Burden of Proof Analyzer, Legal Research Planner, Jurisprudence Retriever e Precedent / Ratio Analyzer. Evidence Gap e Jurisprudence Retriever são determinísticos e não executam LLM.
 
 ### Gemma 4 E4B antigo (~9,6 GB)
 - Actor/Role: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
@@ -342,6 +364,7 @@ Baseline do E4B 6,6 GB após protocolos:
 - Evidence Gap Analyzer: determinístico; 10/10 gold; cobertura/gap codes/open-gap/suficiência 1,00; 0 fechamento perigoso.
 - Legal Issue Mapper: 10/10 válidos; issue precision/recall 1,00/1,00; 0 kind mismatches; 0 link mismatches; suficiência 1,00; 0 issues sem vínculo.
 - Jurisprudence Retriever: determinístico; 10/10 gold; candidate precision/recall 1,00/1,00; status/suficiência/rejeições/falhas 1,00; 0 candidatos sem provenance aceitos.
+- Precedent / Ratio Analyzer: 10/10 válidos; analysis precision/recall 1,00/1,00; applicability/ratio/fact links/suficiência 1,00; 0 ratios sem provenance.
 - Regressão completa de 70 casos confirmou Legal Issue Mapper e Contradiction Detector em 1,00/1,00, Claim/Request em 1,00/1,00, Evidence Gap em 1,00 determinístico e 0 erros perigosos aceitos nas métricas de segurança.
 - Evidence residual para treino/hardening sem heurística ad hoc: inferência indireta de quitação (EV07) e suporte parcial por valor menor (EV08).
 

@@ -51,6 +51,11 @@ from core.legal_skills.jurisprudence_retriever_v1 import (
     retrieve_jurisprudence,
     score_jurisprudence_retrieval,
 )
+from core.legal_skills.precedent_ratio_analyzer_v1 import (
+    build_precedent_ratio_input,
+    score_precedent_ratio,
+    validate_precedent_ratio,
+)
 from core.legal_skills.runner_v1 import (
     run_comprehension_slice,
     run_evidence_mapper_skill,
@@ -60,6 +65,7 @@ from core.legal_skills.runner_v1 import (
     run_burden_of_proof_skill,
     run_legal_research_planner_skill,
     run_jurisprudence_retriever_skill,
+    run_precedent_ratio_analyzer_skill,
 )
 
 
@@ -1959,3 +1965,210 @@ def test_jurisprudence_runner_is_deterministic():
     )
     assert result["trace"]["executor"] == "deterministic"
     assert result["output"]["query_results"][0]["status"] == "FOUND"
+
+
+def _precedent_fact_output(fact_id="f1", statement="O contrato foi rescindido por inadimplemento."):
+    return {
+        "schema_version": "fact-extractor-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "facts": [{
+            "fact_id": fact_id,
+            "statement": statement,
+            "epistemic_status": "ALLEGED",
+            "actor_id": "p1",
+            "temporal_text": None,
+            "source_refs": [{"document_id": "doc1", "pdf_page": 1, "quote": statement}],
+        }],
+        "unresolved_points": [],
+    }
+
+
+def _precedent_issue_output(
+    issue_id="i1",
+    question="O inadimplemento autoriza a resolução contratual?",
+    fact_ids=None,
+):
+    return {
+        "schema_version": "legal-issue-mapper-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "issues": [{
+            "issue_id": issue_id,
+            "question": question,
+            "kind": "MIXED",
+            "fact_ids": fact_ids if fact_ids is not None else ["f1"],
+            "legal_position_ids": [],
+            "request_ids": [],
+            "actor_ids": [],
+            "contradiction_ids": [],
+            "evidence_gap_codes": [],
+            "source_refs": [],
+        }],
+        "unresolved_points": [],
+    }
+
+
+def _precedent_pipeline_inputs(excerpt="O inadimplemento substancial autoriza a resolução do contrato."):
+    research = _jurisprudence_research_output(_jurisprudence_query())
+    provider = _provider_response(results=[_provider_hit(excerpt=excerpt)])
+    jr_input = build_jurisprudence_input([research])
+    jurisprudence = retrieve_jurisprudence(jr_input, [provider])
+    return (
+        [_precedent_issue_output()],
+        [_precedent_fact_output()],
+        [research],
+        [jurisprudence],
+    )
+
+
+def test_precedent_ratio_input_derives_exact_issue_candidate_pair():
+    issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs = _precedent_pipeline_inputs()
+    skill_input = build_precedent_ratio_input(
+        issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs
+    )
+    assert len(skill_input["items"]) == 1
+    item = skill_input["items"][0]
+    assert item["issue"]["issue_id"] == "i1"
+    assert item["issue"]["facts"][0]["fact_id"] == "f1"
+    assert item["candidate"]["candidate_id"].startswith("precedent_")
+
+
+def test_precedent_ratio_accepts_exact_ratio_quote():
+    quote = "O inadimplemento substancial autoriza a resolução do contrato."
+    issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs = _precedent_pipeline_inputs(quote)
+    skill_input = build_precedent_ratio_input(
+        issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs
+    )
+    candidate_id = skill_input["required_pairs"][0]["candidate_id"]
+    output = validate_precedent_ratio({
+        "analyses": [{
+            "issue_id": "i1",
+            "candidate_id": candidate_id,
+            "applicability": "DIRECT",
+            "ratio_quote": quote,
+            "fact_ids": ["f1"],
+        }],
+    }, skill_input)
+    analysis = output["analyses"][0]
+    assert analysis["applicability"] == "DIRECT"
+    assert analysis["source_ref"]["quote"] == quote
+    assert output["context_sufficiency"] == "SUFFICIENT"
+
+
+def test_precedent_ratio_rejects_invented_ratio_quote():
+    issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs = _precedent_pipeline_inputs()
+    skill_input = build_precedent_ratio_input(
+        issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs
+    )
+    candidate_id = skill_input["required_pairs"][0]["candidate_id"]
+    with pytest.raises(ValueError, match="provenance"):
+        validate_precedent_ratio({
+            "analyses": [{
+                "issue_id": "i1",
+                "candidate_id": candidate_id,
+                "applicability": "DIRECT",
+                "ratio_quote": "O tribunal fixou tese jamais presente no trecho.",
+                "fact_ids": ["f1"],
+            }],
+        }, skill_input)
+
+
+def test_precedent_ratio_unclear_is_safe_abstention():
+    issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs = _precedent_pipeline_inputs(
+        "Recurso conhecido. Demais questões serão analisadas."
+    )
+    skill_input = build_precedent_ratio_input(
+        issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs
+    )
+    candidate_id = skill_input["required_pairs"][0]["candidate_id"]
+    output = validate_precedent_ratio({
+        "analyses": [{
+            "issue_id": "i1",
+            "candidate_id": candidate_id,
+            "applicability": "UNCLEAR",
+            "ratio_quote": None,
+            "fact_ids": ["f1"],
+        }],
+    }, skill_input)
+    assert output["analyses"][0]["fact_ids"] == []
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+    assert output["unresolved_points"][0]["code"] == "PRECEDENT_APPLICABILITY_UNCLEAR"
+
+
+def test_precedent_ratio_rejects_fact_outside_issue():
+    issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs = _precedent_pipeline_inputs()
+    skill_input = build_precedent_ratio_input(
+        issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs
+    )
+    candidate_id = skill_input["required_pairs"][0]["candidate_id"]
+    with pytest.raises(ValueError, match="fora da issue"):
+        validate_precedent_ratio({
+            "analyses": [{
+                "issue_id": "i1",
+                "candidate_id": candidate_id,
+                "applicability": "DIRECT",
+                "ratio_quote": "O inadimplemento substancial autoriza a resolução do contrato.",
+                "fact_ids": ["f999"],
+            }],
+        }, skill_input)
+
+
+def test_precedent_ratio_missing_analysis_is_unresolved():
+    issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs = _precedent_pipeline_inputs()
+    skill_input = build_precedent_ratio_input(
+        issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs
+    )
+    output = validate_precedent_ratio({"analyses": []}, skill_input)
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+    assert output["unresolved_points"][0]["code"] == "PRECEDENT_ANALYSIS_MISSING"
+
+
+def test_precedent_ratio_scorer_flags_missing_provenance():
+    expected = {
+        "context_sufficiency": "SUFFICIENT",
+        "analyses": [{
+            "issue_id": "i1",
+            "candidate_id": "p1",
+            "applicability": "DIRECT",
+            "ratio_quote": "regra",
+            "fact_ids": [],
+        }],
+    }
+    actual = {
+        "context_sufficiency": "SUFFICIENT",
+        "analyses": [{
+            "issue_id": "i1",
+            "candidate_id": "p1",
+            "applicability": "DIRECT",
+            "ratio_quote": "regra",
+            "fact_ids": [],
+            "source_ref": None,
+        }],
+    }
+    assert score_precedent_ratio(expected, actual)["dangerous_unprovenanced_ratio"] is True
+
+
+def test_precedent_ratio_runner_validates_structured_output():
+    quote = "O inadimplemento substancial autoriza a resolução do contrato."
+    issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs = _precedent_pipeline_inputs(quote)
+    skill_input = build_precedent_ratio_input(
+        issue_outputs, fact_outputs, research_outputs, jurisprudence_outputs
+    )
+    candidate_id = skill_input["required_pairs"][0]["candidate_id"]
+    result = asyncio.run(run_precedent_ratio_analyzer_skill(
+        _FakeLLM([{
+            "analyses": [{
+                "issue_id": "i1",
+                "candidate_id": candidate_id,
+                "applicability": "DIRECT",
+                "ratio_quote": quote,
+                "fact_ids": ["f1"],
+            }],
+        }]),
+        issue_outputs,
+        fact_outputs,
+        research_outputs,
+        jurisprudence_outputs,
+        timeout_seconds=5,
+    ))
+    assert result["output"]["context_sufficiency"] == "SUFFICIENT"
+    assert result["output"]["analyses"][0]["applicability"] == "DIRECT"
