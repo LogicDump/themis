@@ -31,11 +31,17 @@ from core.legal_skills.evidence_gap_analyzer_v1 import (
     analyze_evidence_gaps,
     score_evidence_gaps,
 )
+from core.legal_skills.legal_issue_mapper_v1 import (
+    build_legal_issue_input,
+    score_legal_issues,
+    validate_legal_issues,
+)
 from core.legal_skills.runner_v1 import (
     run_comprehension_slice,
     run_evidence_mapper_skill,
     run_contradiction_detector_skill,
     run_evidence_gap_analyzer_skill,
+    run_legal_issue_mapper_skill,
 )
 
 
@@ -1079,3 +1085,232 @@ def test_gap_score_flags_dangerous_closed_gap():
         "gap_items": [{"fact_id": "f1", "support_coverage": "FULL", "gap_open": False, "gap_codes": []}],
     }
     assert score_evidence_gaps(expected, actual)["dangerous_closed_gap"] is True
+
+
+def _issue_claim_output(*, positions=None, requests=None):
+    return {
+        "schema_version": "claim-request-mapper-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "source_actor": {},
+        "legal_positions": positions or [],
+        "requests": requests or [],
+        "unresolved_points": [],
+    }
+
+
+def _issue_position(item_id, text, actor_id="p_claimant"):
+    return {
+        "item_id": item_id,
+        "text": text,
+        "actor_id": actor_id,
+        "attribution_mode": "EXPLICIT_MENTION",
+        "source_refs": [{"document_id": f"d_{item_id}", "pdf_page": 1, "quote": text}],
+    }
+
+
+def _issue_request(item_id, text, actor_id="p_claimant"):
+    return {
+        "item_id": item_id,
+        "text": text,
+        "actor_id": actor_id,
+        "attribution_mode": "EXPLICIT_MENTION",
+        "source_refs": [{"document_id": f"d_{item_id}", "pdf_page": 1, "quote": text}],
+    }
+
+
+def _issue_gap_output(fact_id, *, open_gap=False, codes=None):
+    return {
+        "schema_version": "evidence-gap-analyzer-v1",
+        "context_sufficiency": "INSUFFICIENT" if open_gap else "SUFFICIENT",
+        "gap_items": [{
+            "gap_id": f"gap_{fact_id}",
+            "fact_id": fact_id,
+            "epistemic_status": "ALLEGED",
+            "support_coverage": "NONE" if open_gap else "FULL",
+            "gap_open": open_gap,
+            "gap_codes": codes or ([] if not open_gap else ["NO_EVIDENCE_IN_CONTEXT"]),
+            "supporting_evidence_ids": [],
+            "contradictory_evidence_ids": [],
+            "inconclusive_evidence_ids": [],
+            "limitations": [],
+            "source_refs": [],
+        }],
+        "open_gap_fact_ids": [fact_id] if open_gap else [],
+    }
+
+
+def test_legal_issue_mapper_accepts_factual_contradiction():
+    f1 = _cd_fact("f1", "A autora efetuou o pagamento.")
+    f2 = _cd_fact("f2", "A autora não efetuou o pagamento.")
+    contradiction = {
+        "schema_version": "contradiction-detector-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "fact_contradictions": [{
+            "contradiction_id": "cd1",
+            "kind": "FACT_FACT",
+            "left_fact_id": "f1",
+            "right_fact_id": "f2",
+            "strength": "DIRECT",
+            "dimensions": ["EXISTENCE"],
+            "left_source_refs": f1["source_refs"],
+            "right_source_refs": f2["source_refs"],
+        }],
+        "evidence_contradictions": [],
+        "mixed_evidence_fact_ids": [],
+        "unresolved_points": [],
+    }
+    skill_input = build_legal_issue_input(
+        "proc", [_contradiction_fact_output(f1, f2)], [], [contradiction], []
+    )
+    output = validate_legal_issues({
+        "issues": [{
+            "question": "Houve o pagamento alegado?",
+            "kind": "FACTUAL",
+            "fact_ids": ["f1", "f2"],
+            "legal_position_ids": [],
+            "request_ids": [],
+        }],
+    }, skill_input)
+    assert output["issues"][0]["kind"] == "FACTUAL"
+    assert output["issues"][0]["contradiction_ids"] == ["cd1"]
+
+
+def test_legal_issue_mapper_discards_background_fact_without_live_controversy():
+    f1 = _cd_fact("f1", "A ação foi ajuizada em 01/02/2026.")
+    skill_input = build_legal_issue_input("proc", [_contradiction_fact_output(f1)])
+    output = validate_legal_issues({
+        "issues": [{
+            "question": "Quando a ação foi ajuizada?",
+            "kind": "FACTUAL",
+            "fact_ids": ["f1"],
+            "legal_position_ids": [],
+            "request_ids": [],
+        }],
+    }, skill_input)
+    assert output["issues"] == []
+
+
+def test_legal_issue_mapper_accepts_legal_issue_from_position_and_request():
+    position = _issue_position("lp1", "A pretensão está prescrita.", "p_respondent")
+    request = _issue_request("rq1", "Requer o reconhecimento da prescrição.", "p_respondent")
+    skill_input = build_legal_issue_input(
+        "proc", [], [_issue_claim_output(positions=[position], requests=[request])]
+    )
+    output = validate_legal_issues({
+        "issues": [{
+            "question": "A pretensão está prescrita?",
+            "kind": "LEGAL",
+            "fact_ids": [],
+            "legal_position_ids": ["lp1"],
+            "request_ids": ["rq1"],
+        }],
+    }, skill_input)
+    assert output["issues"][0]["legal_position_ids"] == ["lp1"]
+    assert output["issues"][0]["request_ids"] == ["rq1"]
+
+
+def test_legal_issue_mapper_accepts_mixed_issue():
+    fact = _cd_fact("f1", "O requerido foi citado em 10/01/2026.", temporal_text="10/01/2026")
+    position = _issue_position("lp1", "A contestação é tempestiva.", "p_respondent")
+    request = _issue_request("rq1", "Requer o recebimento da contestação.", "p_respondent")
+    skill_input = build_legal_issue_input(
+        "proc",
+        [_contradiction_fact_output(fact)],
+        [_issue_claim_output(positions=[position], requests=[request])],
+    )
+    output = validate_legal_issues({
+        "issues": [{
+            "question": "A contestação foi apresentada tempestivamente?",
+            "kind": "MIXED",
+            "fact_ids": ["f1"],
+            "legal_position_ids": ["lp1"],
+            "request_ids": ["rq1"],
+        }],
+    }, skill_input)
+    assert output["issues"][0]["kind"] == "MIXED"
+
+
+def test_legal_issue_mapper_marks_underlying_gap_without_turning_gap_into_issue():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    request = _issue_request("rq1", "Requer a condenação do requerido à restituição.")
+    skill_input = build_legal_issue_input(
+        "proc",
+        [_contradiction_fact_output(fact)],
+        [_issue_claim_output(requests=[request])],
+        [],
+        [_issue_gap_output("f1", open_gap=True)],
+    )
+    output = validate_legal_issues({
+        "issues": [{
+            "question": "É devida a restituição do valor alegadamente pago?",
+            "kind": "MIXED",
+            "fact_ids": ["f1"],
+            "legal_position_ids": [],
+            "request_ids": ["rq1"],
+        }],
+    }, skill_input)
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+    assert output["unresolved_points"][0]["code"] == "UNDERLYING_EVIDENCE_GAP"
+
+
+def test_legal_issue_mapper_normalizes_mixed_without_fact_to_legal():
+    position = _issue_position("lp1", "A pretensão está prescrita.")
+    skill_input = build_legal_issue_input(
+        "proc", [], [_issue_claim_output(positions=[position])]
+    )
+    output = validate_legal_issues({
+        "issues": [{
+            "question": "A pretensão está prescrita?",
+            "kind": "MIXED",
+            "fact_ids": [],
+            "legal_position_ids": ["lp1"],
+            "request_ids": [],
+        }],
+    }, skill_input)
+    assert output["issues"][0]["kind"] == "LEGAL"
+
+
+def test_legal_issue_score_detects_link_mismatch():
+    expected = {
+        "context_sufficiency": "SUFFICIENT",
+        "issues": [{
+            "kind": "LEGAL",
+            "fact_ids": [],
+            "legal_position_ids": ["lp1"],
+            "request_ids": ["rq1"],
+        }],
+    }
+    actual = {
+        "context_sufficiency": "SUFFICIENT",
+        "issues": [{
+            "kind": "LEGAL",
+            "fact_ids": [],
+            "legal_position_ids": ["lp1"],
+            "request_ids": [],
+        }],
+    }
+    score = score_legal_issues(expected, actual)
+    assert score["issue_precision"] == 0.0
+    assert score["issue_recall"] == 0.0
+    assert score["link_mismatch_count"] == 1
+
+
+def test_legal_issue_runner_validates_structured_output():
+    position = _issue_position("lp1", "A pretensão está prescrita.", "p_respondent")
+    request = _issue_request("rq1", "Requer o reconhecimento da prescrição.", "p_respondent")
+    result = asyncio.run(run_legal_issue_mapper_skill(
+        _FakeLLM([{
+            "issues": [{
+                "question": "A pretensão está prescrita?",
+                "kind": "LEGAL",
+                "fact_ids": [],
+                "legal_position_ids": ["lp1"],
+                "request_ids": ["rq1"],
+            }],
+        }]),
+        "proc",
+        [],
+        [_issue_claim_output(positions=[position], requests=[request])],
+        timeout_seconds=5,
+    ))
+    assert result["output"]["issues"][0]["kind"] == "LEGAL"

@@ -31,7 +31,7 @@ Cada skill deve ter:
 | 8 | Evidence Mapper | Fact ↔ evidência ↔ fonte | IMPLEMENTADO V1 — contrato + runner + testes + benchmark |
 | 9 | Contradiction Detector | contradições materiais | IMPLEMENTADO V1 — protocolo + runner + guardrails + benchmark |
 | 10 | Evidence Gap Analyzer | cobertura/lacunas evidenciais por fato | IMPLEMENTADO V1 — determinístico + testes + gold |
-| 11 | Issue Mapper | questões controvertidas | PARCIAL — issue_map_v1 orientado a retrieval |
+| 11 | Legal Issue Mapper | questões controvertidas jurídicas/factuais | IMPLEMENTADO V1 — separado do retrieval Issue Map |
 | 12 | Burden of Proof Analyzer | ônus por questão/fato | NÃO IMPLEMENTADO |
 | 13 | Legal Research Planner | consultas por issue | NÃO IMPLEMENTADO |
 | 14 | Jurisprudence Retriever | precedentes candidatos | NÃO IMPLEMENTADO |
@@ -201,16 +201,44 @@ Regras:
 
 Gold EG01–EG10: cobertura 1,00; gap codes 1,00; open-gap 1,00; suficiência 1,00; 0 fechamento perigoso; tempo efetivo ~0 ms.
 
+### Legal Issue Mapper V1
+
+É uma skill jurídica própria e NÃO substitui `core/drafting/issue_map_v1.py`, que continua existindo apenas para gerar queries de retrieval a partir do ato-alvo.
+
+Entrada:
+- facts[] validados;
+- legal_positions[] e requests[] do Claim/Request Mapper;
+- fact_contradictions[];
+- Evidence Gap state apenas como contexto auxiliar.
+
+Saída:
+- issues[] com questão neutra;
+- kind FACTUAL / LEGAL / MIXED / PROCEDURAL;
+- vínculos canônicos fact_ids / legal_position_ids / request_ids;
+- actor_ids, contradiction_ids, evidence_gap_codes e provenance derivados pelo Themis;
+- unresolved_points quando a issue depende de fact com evidence gap aberto.
+
+Regras:
+- evidence gap isolado não vira issue;
+- background fact sem controvérsia não vira issue;
+- FACTUAL isolada exige fact_contradiction upstream;
+- request material deve ser coberto por uma issue, mesmo sem oposição já apresentada;
+- o LLM não inventa IDs/provenance;
+- FACTUAL/LEGAL/MIXED são normalizados deterministicamente pelos vínculos; PROCEDURAL permanece subtipo semântico;
+- não decide mérito, ônus da prova, estratégia, precedentes ou nova base legal.
+
+Baseline E4B 6,6 GB: 10/10 válidos; issue precision/recall 1,00/1,00; 0 kind mismatches; 0 link mismatches; suficiência 1,00; 0 issues sem vínculo.
+
 ## Ordem de implementação vigente
 
-1. Consolidar Actor/Role + Fact + Claim/Request + Evidence + Contradiction + Evidence Gap.
-2. Avançar para Issue Mapper V1 jurídico (separado do issue_map_v1 de retrieval).
-3. Depois Burden of Proof Analyzer.
-4. Só então Research/Precedent/Strategy.
+1. Consolidar compreensão: Actor/Role + Fact + Claim/Request + Evidence + Contradiction + Evidence Gap + Legal Issue.
+2. Implementar Burden of Proof Analyzer.
+3. Depois Legal Research Planner + Jurisprudence/Precedent.
+4. Só então Adversarial/Strategy/Drafting.
 
 ## Baselines sem fine-tuning
 
-Benchmark/gold V1: 60 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector e Evidence Gap Analyzer. Os 10 casos de Evidence Gap são determinísticos e não executam LLM.
+Benchmark/gold V1: 70 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer e Legal Issue Mapper. Os 10 casos de Evidence Gap são determinísticos e não executam LLM.
 
 ### Gemma 4 E4B antigo (~9,6 GB)
 - Actor/Role: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
@@ -247,18 +275,20 @@ Regras vigentes:
 - IDs, papéis, suficiência, autoria e estados derivados ficam fora do LLM sempre que possível;
 - outputs semanticamente perigosos devem ser rejeitados ou normalizados deterministicamente antes de persistir.
 
-Revisão V1 aplicada a Actor/Role, Fact, Claim/Request, Evidence Mapper e Contradiction Detector:
+Revisão V1 aplicada a Actor/Role, Fact, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer e Legal Issue Mapper:
 - Actor/Role: referências relacionais/pronominais abertas são forçadas deterministicamente a AMBIGUOUS;
 - Claim/Request: o LLM não emite mais actor_id; Themis deriva autoria por menção explícita resolvida ou Movement.actor seguro;
 - Evidence: PARTY_SUBMISSION autoafirmativa não pode ser promovida a ADMISSION; identidade material ausente força INCONCLUSIVE + IDENTITY_UNCLEAR.
 
 Baseline do E4B 6,6 GB após protocolos:
-- Actor/Role: precisão 0,90; recall 0,75; suficiência 0,90; 0 falsas resoluções perigosas;
+- Actor/Role: precisão 0,90; recall 0,75; suficiência 1,00 na regressão completa de 70 casos; 0 falsas resoluções perigosas;
 - Fact: precisão/recall 0,625/0,625; suficiência 1,00; 0 upgrades perigosos;
 - Claim/Request: 1,00/1,00 em posições e pedidos; suficiência 1,00; 0 actor mismatches;
 - Evidence Mapper: 8/10 outputs aceitos; items 0,875/0,75; links variaram entre 0,875/0,75 no teste isolado e 0,75/0,625 na regressão completa; fact state 0,75; suficiência 1,00; 0 support inventions perigosos.
 - Contradiction Detector: 10/10 válidos; fact pairs 1,00/1,00; suficiência 1,00; evidence projection 1,00; mixed evidence 1,00; 0 DIRECT inventions perigosos.
 - Evidence Gap Analyzer: determinístico; 10/10 gold; cobertura/gap codes/open-gap/suficiência 1,00; 0 fechamento perigoso.
+- Legal Issue Mapper: 10/10 válidos; issue precision/recall 1,00/1,00; 0 kind mismatches; 0 link mismatches; suficiência 1,00; 0 issues sem vínculo.
+- Regressão completa de 70 casos confirmou Legal Issue Mapper e Contradiction Detector em 1,00/1,00, Claim/Request em 1,00/1,00, Evidence Gap em 1,00 determinístico e 0 erros perigosos aceitos nas métricas de segurança.
 - Evidence residual para treino/hardening sem heurística ad hoc: inferência indireta de quitação (EV07) e suporte parcial por valor menor (EV08).
 
 ## Regra de treinamento

@@ -51,6 +51,14 @@ from core.legal_skills.evidence_gap_analyzer_v1 import (
     analyze_evidence_gaps,
     score_evidence_gaps,
 )
+from core.legal_skills.legal_issue_mapper_v1 import (
+    LEGAL_ISSUE_JSON_SCHEMA,
+    build_legal_issue_input,
+    build_legal_issue_instructions,
+    build_legal_issue_llm_input,
+    score_legal_issues,
+    validate_legal_issues,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -139,6 +147,16 @@ def contradiction_case_input(case: dict) -> dict:
     )
 
 
+def legal_issue_case_input(case: dict) -> dict:
+    return build_legal_issue_input(
+        "bench_proc",
+        case.get("fact_outputs") or [],
+        case.get("claim_outputs") or [],
+        case.get("contradiction_outputs") or [],
+        case.get("gap_outputs") or [],
+    )
+
+
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
     if skill == "EVIDENCE_GAP_ANALYZER":
@@ -191,14 +209,21 @@ def run_case(case: dict, model: str) -> dict:
         schema = CONTRADICTION_JSON_SCHEMA
         validator = lambda value: validate_contradictions(value, skill_input)
         scorer = score_contradictions
+    elif skill == "LEGAL_ISSUE_MAPPER":
+        skill_input = legal_issue_case_input(case)
+        system = build_legal_issue_instructions()
+        schema = LEGAL_ISSUE_JSON_SCHEMA
+        validator = lambda value: validate_legal_issues(value, skill_input)
+        scorer = score_legal_issues
     else:
         raise ValueError(f"skill desconhecida: {skill}")
 
-    model_input = (
-        build_contradiction_llm_input(skill_input)
-        if skill == "CONTRADICTION_DETECTOR"
-        else skill_input
-    )
+    if skill == "CONTRADICTION_DETECTOR":
+        model_input = build_contradiction_llm_input(skill_input)
+    elif skill == "LEGAL_ISSUE_MAPPER":
+        model_input = build_legal_issue_llm_input(skill_input)
+    else:
+        model_input = skill_input
     raw, perf = call_ollama(
         model,
         system,
@@ -286,6 +311,15 @@ def summarize(results: list[dict]) -> dict:
                 "open_gap_accuracy": sum(bool(item["score"]["open_gap_match"]) for item in valid) / len(valid),
                 "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
                 "dangerous_closed_gap_count": sum(bool(item["score"]["dangerous_closed_gap"]) for item in valid),
+            })
+        elif skill == "LEGAL_ISSUE_MAPPER" and valid:
+            block.update({
+                "issue_precision": sum(item["score"]["issue_precision"] for item in valid) / len(valid),
+                "issue_recall": sum(item["score"]["issue_recall"] for item in valid) / len(valid),
+                "kind_mismatch_count": sum(item["score"]["kind_mismatch_count"] for item in valid),
+                "link_mismatch_count": sum(item["score"]["link_mismatch_count"] for item in valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "dangerous_unlinked_issue_count": sum(bool(item["score"]["dangerous_unlinked_issue"]) for item in valid),
             })
         summary[skill] = block
     return summary
