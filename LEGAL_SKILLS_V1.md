@@ -30,7 +30,7 @@ Cada skill deve ter:
 | 7 | Chronology Builder | cronologia jurídica | PARCIAL — provider-first/Event Layer |
 | 8 | Evidence Mapper | Fact ↔ evidência ↔ fonte | IMPLEMENTADO V1 — contrato + runner + testes + benchmark |
 | 9 | Contradiction Detector | contradições materiais | IMPLEMENTADO V1 — protocolo + runner + guardrails + benchmark |
-| 10 | Evidence Gap Analyzer | fatos relevantes sem suporte | NÃO IMPLEMENTADO |
+| 10 | Evidence Gap Analyzer | cobertura/lacunas evidenciais por fato | IMPLEMENTADO V1 — determinístico + testes + gold |
 | 11 | Issue Mapper | questões controvertidas | PARCIAL — issue_map_v1 orientado a retrieval |
 | 12 | Burden of Proof Analyzer | ônus por questão/fato | NÃO IMPLEMENTADO |
 | 13 | Legal Research Planner | consultas por issue | NÃO IMPLEMENTADO |
@@ -168,15 +168,49 @@ Guardrails:
 
 Baseline E4B 6,6 GB: 10/10 válidos; fact-pair precision/recall 1,00/1,00; suficiência 1,00; evidence projection 1,00; mixed evidence 1,00; 0 DIRECT perigosos.
 
+### Evidence Gap Analyzer V1
+
+Executação: **100% determinística; sem LLM**.
+
+Entrada:
+- facts[] já validados;
+- Evidence Mapper outputs;
+- Contradiction Detector outputs.
+
+Saída por fato:
+- support_coverage: NONE / PARTIAL / FULL / SELF_DOCUMENTED;
+- gap_open;
+- gap_codes;
+- evidence IDs de suporte, contradição e inconclusão;
+- limitações + provenance.
+
+Gap codes principais:
+- NO_EVIDENCE_IN_CONTEXT / NO_SUPPORT_IN_CONTEXT;
+- PARTIAL_SUPPORT / INCONCLUSIVE_EVIDENCE / CONFLICTING_EVIDENCE;
+- REFERENCED_EVIDENCE_NOT_AVAILABLE / VISUAL_CONTENT_NOT_AVAILABLE;
+- AMBIGUOUS_EVIDENCE_REFERENCE / UNRESOLVED_EVIDENCE;
+- FACTUAL_CONTRADICTION_UNRESOLVED.
+
+Regras:
+- ausência significa apenas ausência no contexto fornecido;
+- FULL não significa fato provado nem suficiência jurídica;
+- JUDICIAL_FINDING e DOCUMENTED_EVENT podem ser SELF_DOCUMENTED sem exigir evidência externa adicional;
+- conflito de evidência/contradição factual mantém lacuna aberta;
+- materialidade jurídica e ônus da prova NÃO pertencem a esta skill; entram em Issue/Burden;
+- os facts analisados devem ser selecionados upstream para a tarefa corrente.
+
+Gold EG01–EG10: cobertura 1,00; gap codes 1,00; open-gap 1,00; suficiência 1,00; 0 fechamento perigoso; tempo efetivo ~0 ms.
+
 ## Ordem de implementação vigente
 
-1. Consolidar Actor/Role + Fact + Claim/Request + Evidence + Contradiction com benchmark gold.
-2. Implementar Evidence Gap Analyzer.
-3. Só então avançar para Issue/Burden/Research/Strategy.
+1. Consolidar Actor/Role + Fact + Claim/Request + Evidence + Contradiction + Evidence Gap.
+2. Avançar para Issue Mapper V1 jurídico (separado do issue_map_v1 de retrieval).
+3. Depois Burden of Proof Analyzer.
+4. Só então Research/Precedent/Strategy.
 
 ## Baselines sem fine-tuning
 
-Benchmark sintético gold V1: 50 casos, 10 por skill: Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper e Contradiction Detector.
+Benchmark/gold V1: 60 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector e Evidence Gap Analyzer. Os 10 casos de Evidence Gap são determinísticos e não executam LLM.
 
 ### Gemma 4 E4B antigo (~9,6 GB)
 - Actor/Role: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
@@ -224,6 +258,7 @@ Baseline do E4B 6,6 GB após protocolos:
 - Claim/Request: 1,00/1,00 em posições e pedidos; suficiência 1,00; 0 actor mismatches;
 - Evidence Mapper: 8/10 outputs aceitos; items 0,875/0,75; links variaram entre 0,875/0,75 no teste isolado e 0,75/0,625 na regressão completa; fact state 0,75; suficiência 1,00; 0 support inventions perigosos.
 - Contradiction Detector: 10/10 válidos; fact pairs 1,00/1,00; suficiência 1,00; evidence projection 1,00; mixed evidence 1,00; 0 DIRECT inventions perigosos.
+- Evidence Gap Analyzer: determinístico; 10/10 gold; cobertura/gap codes/open-gap/suficiência 1,00; 0 fechamento perigoso.
 - Evidence residual para treino/hardening sem heurística ad hoc: inferência indireta de quitação (EV07) e suporte parcial por valor menor (EV08).
 
 ## Regra de treinamento

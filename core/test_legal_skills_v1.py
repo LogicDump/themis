@@ -27,10 +27,15 @@ from core.legal_skills.contradiction_detector_v1 import (
     score_contradictions,
     validate_contradictions,
 )
+from core.legal_skills.evidence_gap_analyzer_v1 import (
+    analyze_evidence_gaps,
+    score_evidence_gaps,
+)
 from core.legal_skills.runner_v1 import (
     run_comprehension_slice,
     run_evidence_mapper_skill,
     run_contradiction_detector_skill,
+    run_evidence_gap_analyzer_skill,
 )
 
 
@@ -696,11 +701,11 @@ def _contradiction_fact_output(*facts):
     }
 
 
-def _cd_fact(fact_id, statement, *, actor_id="p_claimant", temporal_text=None, quote=None):
+def _cd_fact(fact_id, statement, *, actor_id="p_claimant", temporal_text=None, quote=None, status="ALLEGED"):
     return {
         "fact_id": fact_id,
         "statement": statement,
-        "epistemic_status": "ALLEGED",
+        "epistemic_status": status,
         "actor_id": actor_id,
         "temporal_text": temporal_text,
         "source_refs": [{
@@ -921,3 +926,156 @@ def test_contradiction_detector_drops_changeable_state_at_nonoverlapping_times()
         }],
     }, skill_input)
     assert output["fact_contradictions"] == []
+
+
+def _gap_evidence_output(fact_id, *, relation=None, scope="FULL", unresolved=None):
+    items = []
+    links = []
+    if relation:
+        items = [{
+            "evidence_id": "ev1",
+            "source_id": "s1",
+            "kind": "DOCUMENT",
+            "description": "documento",
+            "source_refs": [{"document_id": "ed1", "pdf_page": 1, "quote": "Documento."}],
+        }]
+        links = [{
+            "fact_id": fact_id,
+            "evidence_id": "ev1",
+            "relation": relation,
+            "directness": "DIRECT" if relation != "INCONCLUSIVE" else "UNKNOWN",
+            "scope": scope,
+            "limitations": [],
+            "source_refs": [{"document_id": "ed1", "pdf_page": 1, "quote": "Documento."}],
+        }]
+    return {
+        "schema_version": "evidence-mapper-v1",
+        "context_sufficiency": "INSUFFICIENT" if unresolved else "SUFFICIENT",
+        "evidence_items": items,
+        "links": links,
+        "fact_states": [],
+        "unresolved_points": unresolved or [],
+    }
+
+
+def test_gap_analyzer_no_evidence_in_context():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    output = analyze_evidence_gaps("proc", [_contradiction_fact_output(fact)])
+    item = output["gap_items"][0]
+    assert item["support_coverage"] == "NONE"
+    assert item["gap_codes"] == ["NO_EVIDENCE_IN_CONTEXT"]
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+
+
+def test_gap_analyzer_full_support_closes_gap():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    evidence = _gap_evidence_output("f1", relation="SUPPORTS", scope="FULL")
+    output = analyze_evidence_gaps("proc", [_contradiction_fact_output(fact)], [evidence])
+    item = output["gap_items"][0]
+    assert item["support_coverage"] == "FULL"
+    assert item["gap_open"] is False
+    assert output["context_sufficiency"] == "SUFFICIENT"
+
+
+def test_gap_analyzer_partial_support_remains_open():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento integral.")
+    evidence = _gap_evidence_output("f1", relation="SUPPORTS", scope="PARTIAL")
+    output = analyze_evidence_gaps("proc", [_contradiction_fact_output(fact)], [evidence])
+    assert output["gap_items"][0]["gap_codes"] == ["PARTIAL_SUPPORT"]
+
+
+def test_gap_analyzer_inconclusive_evidence():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    evidence = _gap_evidence_output("f1", relation="INCONCLUSIVE", scope="PARTIAL")
+    output = analyze_evidence_gaps("proc", [_contradiction_fact_output(fact)], [evidence])
+    item = output["gap_items"][0]
+    assert "NO_SUPPORT_IN_CONTEXT" in item["gap_codes"]
+    assert "INCONCLUSIVE_EVIDENCE" in item["gap_codes"]
+
+
+def test_gap_analyzer_conflicting_evidence_is_ambiguous():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    evidence = {
+        "schema_version": "evidence-mapper-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "evidence_items": [
+            {"evidence_id": "ev1", "source_id": "s1", "kind": "DOCUMENT", "description": "recibo", "source_refs": [{"document_id": "d1", "pdf_page": 1, "quote": "Recibo."}]},
+            {"evidence_id": "ev2", "source_id": "s2", "kind": "DOCUMENT", "description": "extrato", "source_refs": [{"document_id": "d2", "pdf_page": 1, "quote": "Extrato."}]},
+        ],
+        "links": [
+            {"fact_id": "f1", "evidence_id": "ev1", "relation": "SUPPORTS", "directness": "DIRECT", "scope": "FULL", "limitations": [], "source_refs": [{"document_id": "d1", "pdf_page": 1, "quote": "Recibo."}]},
+            {"fact_id": "f1", "evidence_id": "ev2", "relation": "CONTRADICTS", "directness": "DIRECT", "scope": "FULL", "limitations": [], "source_refs": [{"document_id": "d2", "pdf_page": 1, "quote": "Extrato."}]},
+        ],
+        "fact_states": [],
+        "unresolved_points": [],
+    }
+    output = analyze_evidence_gaps("proc", [_contradiction_fact_output(fact)], [evidence])
+    assert output["context_sufficiency"] == "AMBIGUOUS"
+    assert "CONFLICTING_EVIDENCE" in output["gap_items"][0]["gap_codes"]
+
+
+def test_gap_analyzer_projects_missing_referenced_evidence():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    unresolved = [{
+        "fact_id": "f1",
+        "code": "REFERENCED_EVIDENCE_NOT_AVAILABLE",
+        "reason": "Documento citado ausente.",
+        "source_refs": [{"document_id": "d1", "pdf_page": 1, "quote": "Conforme documento de fl. 120."}],
+    }]
+    evidence = _gap_evidence_output("f1", unresolved=unresolved)
+    output = analyze_evidence_gaps("proc", [_contradiction_fact_output(fact)], [evidence])
+    assert "REFERENCED_EVIDENCE_NOT_AVAILABLE" in output["gap_items"][0]["gap_codes"]
+
+
+def test_gap_analyzer_self_documented_event_without_external_evidence():
+    fact = _cd_fact("f1", "A audiência ocorreu em 05/04/2026.", status="DOCUMENTED_EVENT")
+    output = analyze_evidence_gaps("proc", [_contradiction_fact_output(fact)])
+    item = output["gap_items"][0]
+    assert item["support_coverage"] == "SELF_DOCUMENTED"
+    assert item["gap_open"] is False
+
+
+def test_gap_analyzer_projects_factual_contradiction():
+    f1 = _cd_fact("f1", "A autora efetuou o pagamento.")
+    f2 = _cd_fact("f2", "A autora não efetuou o pagamento.")
+    contradiction = {
+        "schema_version": "contradiction-detector-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "fact_contradictions": [{
+            "contradiction_id": "cd1",
+            "kind": "FACT_FACT",
+            "left_fact_id": "f1",
+            "right_fact_id": "f2",
+            "strength": "DIRECT",
+            "dimensions": ["EXISTENCE"],
+            "left_source_refs": f1["source_refs"],
+            "right_source_refs": f2["source_refs"],
+        }],
+        "evidence_contradictions": [],
+        "mixed_evidence_fact_ids": [],
+        "unresolved_points": [],
+    }
+    output = analyze_evidence_gaps("proc", [_contradiction_fact_output(f1, f2)], [], [contradiction])
+    assert output["context_sufficiency"] == "AMBIGUOUS"
+    assert all("FACTUAL_CONTRADICTION_UNRESOLVED" in x["gap_codes"] for x in output["gap_items"])
+
+
+def test_gap_analyzer_runner_is_deterministic_no_llm():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    result = run_evidence_gap_analyzer_skill("proc", [_contradiction_fact_output(fact)])
+    assert result["trace"]["executor"] == "deterministic"
+    assert result["trace"]["model"] is None
+
+
+def test_gap_score_flags_dangerous_closed_gap():
+    expected = {
+        "context_sufficiency": "INSUFFICIENT",
+        "open_gap_fact_ids": ["f1"],
+        "gap_items": [{"fact_id": "f1", "support_coverage": "NONE", "gap_open": True, "gap_codes": ["NO_EVIDENCE_IN_CONTEXT"]}],
+    }
+    actual = {
+        "context_sufficiency": "SUFFICIENT",
+        "open_gap_fact_ids": [],
+        "gap_items": [{"fact_id": "f1", "support_coverage": "FULL", "gap_open": False, "gap_codes": []}],
+    }
+    assert score_evidence_gaps(expected, actual)["dangerous_closed_gap"] is True

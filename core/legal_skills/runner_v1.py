@@ -37,6 +37,7 @@ from core.legal_skills.contradiction_detector_v1 import (
     build_contradiction_llm_input,
     validate_contradictions,
 )
+from core.legal_skills.evidence_gap_analyzer_v1 import analyze_evidence_gaps
 
 
 def _normalize_usage(value: Any) -> Any:
@@ -236,6 +237,29 @@ async def run_contradiction_detector_skill(
         "input": skill_input,
         "output": output,
         "trace": {"provider": actual_provider, "model": actual_model, "usage": usage},
+    }
+
+
+def run_evidence_gap_analyzer_skill(
+    process_id: str,
+    fact_outputs: list[dict[str, Any]],
+    evidence_outputs: list[dict[str, Any]] | None = None,
+    contradiction_outputs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    output = analyze_evidence_gaps(
+        process_id,
+        fact_outputs,
+        evidence_outputs,
+        contradiction_outputs,
+    )
+    return {
+        "output": output,
+        "trace": {
+            "executor": "deterministic",
+            "provider": None,
+            "model": None,
+            "usage": None,
+        },
     }
 
 

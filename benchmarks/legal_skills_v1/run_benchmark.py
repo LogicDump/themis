@@ -47,6 +47,10 @@ from core.legal_skills.contradiction_detector_v1 import (
     score_contradictions,
     validate_contradictions,
 )
+from core.legal_skills.evidence_gap_analyzer_v1 import (
+    analyze_evidence_gaps,
+    score_evidence_gaps,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -137,6 +141,26 @@ def contradiction_case_input(case: dict) -> dict:
 
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
+    if skill == "EVIDENCE_GAP_ANALYZER":
+        started = time.perf_counter()
+        actual = analyze_evidence_gaps(
+            "bench_proc",
+            case["fact_outputs"],
+            case.get("evidence_outputs") or [],
+            case.get("contradiction_outputs") or [],
+        )
+        perf = {"elapsed_s": time.perf_counter() - started}
+        score = score_evidence_gaps(case["expected"], actual)
+        return {
+            "id": case["id"],
+            "skill": skill,
+            "expected": case["expected"],
+            "actual": actual,
+            "score": score,
+            "error": None,
+            "raw": "",
+            "perf": perf,
+        }
     if skill == "ACTOR_ROLE":
         skill_input = actor_case_input(case)
         system = build_actor_role_instructions()
@@ -254,6 +278,14 @@ def summarize(results: list[dict]) -> dict:
                 "dangerous_direct_invention_count": sum(bool(item["score"]["dangerous_direct_invention"]) for item in valid),
                 "evidence_projection_accuracy": sum(bool(item["score"]["evidence_projection_match"]) for item in valid) / len(valid),
                 "mixed_evidence_accuracy": sum(bool(item["score"]["mixed_evidence_match"]) for item in valid) / len(valid),
+            })
+        elif skill == "EVIDENCE_GAP_ANALYZER" and valid:
+            block.update({
+                "coverage_accuracy": sum(item["score"]["coverage_accuracy"] for item in valid) / len(valid),
+                "gap_code_accuracy": sum(item["score"]["gap_code_accuracy"] for item in valid) / len(valid),
+                "open_gap_accuracy": sum(bool(item["score"]["open_gap_match"]) for item in valid) / len(valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "dangerous_closed_gap_count": sum(bool(item["score"]["dangerous_closed_gap"]) for item in valid),
             })
         summary[skill] = block
     return summary
