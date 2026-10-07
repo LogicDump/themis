@@ -75,6 +75,11 @@ from core.legal_skills.legal_research_planner_v1 import (
     score_research_plan,
     validate_research_plan,
 )
+from core.legal_skills.jurisprudence_retriever_v1 import (
+    build_jurisprudence_input,
+    retrieve_jurisprudence,
+    score_jurisprudence_retrieval,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -192,8 +197,28 @@ def research_case_input(case: dict) -> dict:
     )
 
 
+def jurisprudence_case_input(case: dict) -> dict:
+    return build_jurisprudence_input(case.get("research_outputs") or [])
+
+
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
+    if skill == "JURISPRUDENCE_RETRIEVER":
+        started = time.perf_counter()
+        skill_input = jurisprudence_case_input(case)
+        actual = retrieve_jurisprudence(skill_input, case.get("provider_responses") or [])
+        perf = {"elapsed_s": time.perf_counter() - started}
+        score = score_jurisprudence_retrieval(case["expected"], actual)
+        return {
+            "id": case["id"],
+            "skill": skill,
+            "expected": case["expected"],
+            "actual": actual,
+            "score": score,
+            "error": None,
+            "raw": "",
+            "perf": perf,
+        }
     if skill == "EVIDENCE_GAP_ANALYZER":
         started = time.perf_counter()
         actual = analyze_evidence_gaps(
@@ -406,6 +431,16 @@ def summarize(results: list[dict]) -> dict:
                 "query_recall": sum(item["score"]["query_recall"] for item in valid) / len(valid),
                 "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
                 "dangerous_authority_invention_count": sum(bool(item["score"]["dangerous_authority_invention"]) for item in valid),
+            })
+        elif skill == "JURISPRUDENCE_RETRIEVER" and valid:
+            block.update({
+                "candidate_precision": sum(item["score"]["candidate_precision"] for item in valid) / len(valid),
+                "candidate_recall": sum(item["score"]["candidate_recall"] for item in valid) / len(valid),
+                "query_status_accuracy": sum(bool(item["score"]["query_status_match"]) for item in valid) / len(valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "rejection_count_accuracy": sum(bool(item["score"]["rejection_count_match"]) for item in valid) / len(valid),
+                "provider_failure_count_accuracy": sum(bool(item["score"]["provider_failure_count_match"]) for item in valid) / len(valid),
+                "dangerous_unprovenanced_acceptance_count": sum(bool(item["score"]["dangerous_unprovenanced_acceptance"]) for item in valid),
             })
         if skill == "BURDEN_OF_PROOF":
             block["rule_inventions"] = sum(row.get("safety", {}).get("rule_inventions", 0) for row in rows)

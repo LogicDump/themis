@@ -34,7 +34,7 @@ Cada skill deve ter:
 | 11 | Legal Issue Mapper | questões controvertidas jurídicas/factuais | IMPLEMENTADO V1 — separado do retrieval Issue Map |
 | 12 | Burden of Proof Analyzer | ônus por questão/fato | IMPLEMENTADO V1 — seleção mínima de rule + derivação determinística |
 | 13 | Legal Research Planner | consultas por issue | IMPLEMENTADO V1 — objetivos determinísticos + query LLM |
-| 14 | Jurisprudence Retriever | precedentes candidatos | NÃO IMPLEMENTADO |
+| 14 | Jurisprudence Retriever | precedentes candidatos | IMPLEMENTADO V1 — provider-neutral + determinístico + provenance/fail-closed |
 | 15 | Precedent / Ratio Analyzer | ratio/aderência/distinguishing | NÃO IMPLEMENTADO |
 | 16 | Adversarial Reviewer | melhor argumento contrário/objeções | NÃO IMPLEMENTADO |
 | 17 | Strategy Synthesizer | tese principal/subsidiárias/riscos | NÃO IMPLEMENTADO |
@@ -254,16 +254,44 @@ Contrato mínimo:
 
 Baseline E4B 6,6 GB: RP01–RP10 10/10 válidos; query precision/recall 1,00/1,00; suficiência 1,00; 0 authority inventions.
 
+### Jurisprudence Retriever V1
+
+Execução: **100% determinística; sem LLM**.
+
+Entrada:
+- `Legal Research Planner.queries[]`;
+- apenas queries com `BINDING_AUTHORITY` e/ou `JURISPRUDENCE`;
+- respostas normalizadas de providers externos, agrupadas por `query_id`.
+
+Saída:
+- `candidates[]` de precedentes;
+- identidade judicial mínima `court + identifier`;
+- `query_ids[]` e `source_types[]`;
+- `retrieval_hits[]` preservando rank/score do provider e provenance;
+- status por query: FOUND / NO_RESULTS / FAILED / INVALID_RESULTS / NOT_ATTEMPTED;
+- rejected_results, provider_failures, unresolved_points e context_sufficiency.
+
+Regras:
+- não decide ratio, aderência, distinguishing, força persuasiva ou mérito;
+- legislação pura é ignorada por esta skill;
+- resultado exige tribunal, identificador, data, excerpt e locator verificável;
+- provenance exige provider, provider_result_id, retrieved_at e content_sha256;
+- resultado incompleto é rejeitado fail-closed, nunca promovido a candidato;
+- deduplicação V1 usa identidade judicial `court + identifier`; múltiplas queries/providers preservam todos os retrieval_hits;
+- rank/score permanecem dados do provider; o Retriever V1 não cria ranking jurídico entre precedentes.
+
+Gold JR01–JR10: 10/10 válidos; candidate precision/recall 1,00/1,00; status/suficiência/rejeições/falhas 1,00; 0 candidatos sem provenance aceitos; tempo efetivo ~0 ms.
+
 ## Ordem de implementação vigente
 
-1. Compreensão fechada em V1 até Legal Research Planner.
-2. Implementar Jurisprudence Retriever V1.
-3. Depois Precedent / Ratio Analyzer V1.
-4. Só então Adversarial/Strategy/Drafting.
+1. Compreensão/pesquisa fechada em V1 até Jurisprudence Retriever.
+2. Implementar Precedent / Ratio Analyzer V1.
+3. Depois Adversarial Reviewer + Strategy Synthesizer.
+4. Só então Draft Planner/Drafting/QA.
 
 ## Baselines sem fine-tuning
 
-Benchmark/gold V1: 90 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer, Legal Issue Mapper, Burden of Proof Analyzer e Legal Research Planner. Os 10 casos de Evidence Gap são determinísticos e não executam LLM.
+Benchmark/gold V1: 100 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer, Legal Issue Mapper, Burden of Proof Analyzer, Legal Research Planner e Jurisprudence Retriever. Evidence Gap e Jurisprudence Retriever são determinísticos e não executam LLM.
 
 ### Gemma 4 E4B antigo (~9,6 GB)
 - Actor/Role: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
@@ -313,6 +341,7 @@ Baseline do E4B 6,6 GB após protocolos:
 - Contradiction Detector: 10/10 válidos; fact pairs 1,00/1,00; suficiência 1,00; evidence projection 1,00; mixed evidence 1,00; 0 DIRECT inventions perigosos.
 - Evidence Gap Analyzer: determinístico; 10/10 gold; cobertura/gap codes/open-gap/suficiência 1,00; 0 fechamento perigoso.
 - Legal Issue Mapper: 10/10 válidos; issue precision/recall 1,00/1,00; 0 kind mismatches; 0 link mismatches; suficiência 1,00; 0 issues sem vínculo.
+- Jurisprudence Retriever: determinístico; 10/10 gold; candidate precision/recall 1,00/1,00; status/suficiência/rejeições/falhas 1,00; 0 candidatos sem provenance aceitos.
 - Regressão completa de 70 casos confirmou Legal Issue Mapper e Contradiction Detector em 1,00/1,00, Claim/Request em 1,00/1,00, Evidence Gap em 1,00 determinístico e 0 erros perigosos aceitos nas métricas de segurança.
 - Evidence residual para treino/hardening sem heurística ad hoc: inferência indireta de quitação (EV07) e suporte parcial por valor menor (EV08).
 

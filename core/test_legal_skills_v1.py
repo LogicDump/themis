@@ -46,6 +46,11 @@ from core.legal_skills.legal_research_planner_v1 import (
     score_research_plan,
     validate_research_plan,
 )
+from core.legal_skills.jurisprudence_retriever_v1 import (
+    build_jurisprudence_input,
+    retrieve_jurisprudence,
+    score_jurisprudence_retrieval,
+)
 from core.legal_skills.runner_v1 import (
     run_comprehension_slice,
     run_evidence_mapper_skill,
@@ -54,6 +59,7 @@ from core.legal_skills.runner_v1 import (
     run_legal_issue_mapper_skill,
     run_burden_of_proof_skill,
     run_legal_research_planner_skill,
+    run_jurisprudence_retriever_skill,
 )
 
 
@@ -1781,3 +1787,175 @@ def test_research_runner_validates_structured_output():
         timeout_seconds=5,
     ))
     assert result["output"]["context_sufficiency"] == "SUFFICIENT"
+
+
+def _jurisprudence_research_output(*queries):
+    return {
+        "schema_version": "legal-research-planner-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "queries": list(queries),
+        "unresolved_points": [],
+    }
+
+
+def _jurisprudence_query(query_id="q1", source_types=None):
+    return {
+        "query_id": query_id,
+        "issue_id": "i1",
+        "objective": "PRECEDENT_LANDSCAPE",
+        "query_text": "jurisprudência critérios e limites da rescisão contratual",
+        "source_types": source_types or ["BINDING_AUTHORITY", "JURISPRUDENCE"],
+        "jurisdiction": "BR",
+        "court_context": "TJSP",
+    }
+
+
+def _provider_hit(
+    *,
+    result_id="r1",
+    identifier="0001234-56.2025.8.26.0000",
+    court="TJSP",
+    excerpt="Ementa oficial do julgado.",
+    source_type="JURISPRUDENCE",
+    rank=1,
+):
+    return {
+        "provider_result_id": result_id,
+        "source_type": source_type,
+        "court": court,
+        "judging_body": "1ª Câmara de Direito Privado",
+        "identifier": identifier,
+        "date": "2026-04-10",
+        "date_kind": "JUDGMENT",
+        "excerpt": excerpt,
+        "source_url": "https://example.invalid/acordao/" + result_id,
+        "document_ref": None,
+        "rank": rank,
+        "score": None,
+    }
+
+
+def _provider_response(query_id="q1", *, provider="FAKE", results=None, status="OK", error_code=None):
+    return {
+        "query_id": query_id,
+        "provider": provider,
+        "status": status,
+        "retrieved_at": "2026-10-07T01:00:00Z",
+        "results": results or [],
+        "error_code": error_code,
+    }
+
+
+def test_jurisprudence_input_keeps_only_judicial_sources():
+    output = build_jurisprudence_input([
+        _jurisprudence_research_output(
+            _jurisprudence_query("q1"),
+            _jurisprudence_query("q2", ["LEGISLATION"]),
+        )
+    ])
+    assert [item["query_id"] for item in output["queries"]] == ["q1"]
+    assert output["queries"][0]["allowed_source_types"] == ["BINDING_AUTHORITY", "JURISPRUDENCE"]
+
+
+def test_jurisprudence_retriever_accepts_provenanced_candidate():
+    skill_input = build_jurisprudence_input([
+        _jurisprudence_research_output(_jurisprudence_query())
+    ])
+    output = retrieve_jurisprudence(
+        skill_input,
+        [_provider_response(results=[_provider_hit()])],
+    )
+    assert output["context_sufficiency"] == "SUFFICIENT"
+    assert output["query_results"][0]["status"] == "FOUND"
+    assert len(output["candidates"]) == 1
+    hit = output["candidates"][0]["retrieval_hits"][0]
+    assert hit["provenance"]["provider"] == "FAKE"
+    assert len(hit["provenance"]["content_sha256"]) == 64
+
+
+def test_jurisprudence_retriever_rejects_missing_locator_fail_closed():
+    skill_input = build_jurisprudence_input([
+        _jurisprudence_research_output(_jurisprudence_query())
+    ])
+    hit = _provider_hit()
+    hit["source_url"] = None
+    hit["document_ref"] = None
+    output = retrieve_jurisprudence(
+        skill_input,
+        [_provider_response(results=[hit])],
+    )
+    assert output["candidates"] == []
+    assert output["query_results"][0]["status"] == "INVALID_RESULTS"
+    assert output["rejected_results"][0]["code"] == "LOCATOR_MISSING"
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+
+
+def test_jurisprudence_retriever_deduplicates_same_judicial_identity():
+    skill_input = build_jurisprudence_input([
+        _jurisprudence_research_output(
+            _jurisprudence_query("q1"),
+            {**_jurisprudence_query("q2"), "issue_id": "i2"},
+        )
+    ])
+    output = retrieve_jurisprudence(
+        skill_input,
+        [
+            _provider_response("q1", provider="P1", results=[_provider_hit(result_id="a")]),
+            _provider_response("q2", provider="P2", results=[_provider_hit(result_id="b")]),
+        ],
+    )
+    assert len(output["candidates"]) == 1
+    candidate = output["candidates"][0]
+    assert candidate["query_ids"] == ["q1", "q2"]
+    assert len(candidate["retrieval_hits"]) == 2
+
+
+def test_jurisprudence_retriever_tracks_provider_failure_without_fabricating_candidate():
+    skill_input = build_jurisprudence_input([
+        _jurisprudence_research_output(_jurisprudence_query())
+    ])
+    output = retrieve_jurisprudence(
+        skill_input,
+        [_provider_response(status="FAILED", error_code="UNAVAILABLE")],
+    )
+    assert output["candidates"] == []
+    assert output["query_results"][0]["status"] == "FAILED"
+    assert output["provider_failures"][0]["error_code"] == "UNAVAILABLE"
+
+
+def test_jurisprudence_score_flags_unprovenanced_acceptance():
+    expected = {
+        "context_sufficiency": "SUFFICIENT",
+        "query_results": [{"query_id": "q1", "status": "FOUND"}],
+        "candidates": [{"court": "TJSP", "identifier": "123"}],
+        "rejection_count": 0,
+        "provider_failure_count": 0,
+    }
+    actual = {
+        "context_sufficiency": "SUFFICIENT",
+        "query_results": [{"query_id": "q1", "status": "FOUND"}],
+        "candidates": [{
+            "court": "TJSP",
+            "identifier": "123",
+            "retrieval_hits": [{
+                "excerpt": "x",
+                "source_url": None,
+                "document_ref": None,
+                "provenance": {},
+            }],
+        }],
+        "rejected_results": [],
+        "provider_failures": [],
+    }
+    score = score_jurisprudence_retrieval(expected, actual)
+    assert score["dangerous_unprovenanced_acceptance"] is True
+
+
+def test_jurisprudence_runner_is_deterministic():
+    research = _jurisprudence_research_output(_jurisprudence_query())
+    result = run_jurisprudence_retriever_skill(
+        [research],
+        [_provider_response(results=[_provider_hit()])],
+    )
+    assert result["trace"]["executor"] == "deterministic"
+    assert result["output"]["query_results"][0]["status"] == "FOUND"

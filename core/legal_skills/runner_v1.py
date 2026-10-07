@@ -52,6 +52,10 @@ from core.legal_skills.legal_research_planner_v1 import (
     build_research_llm_input,
     validate_research_plan,
 )
+from core.legal_skills.jurisprudence_retriever_v1 import (
+    build_jurisprudence_input,
+    retrieve_jurisprudence,
+)
 from core.legal_skills.legal_issue_mapper_v1 import (
     LEGAL_ISSUE_JSON_SCHEMA,
     build_legal_issue_input,
@@ -342,6 +346,24 @@ async def run_legal_research_planner_skill(
         "input": skill_input,
         "output": output,
         "trace": {"provider": actual_provider, "model": actual_model, "usage": usage},
+    }
+
+
+def run_jurisprudence_retriever_skill(
+    research_outputs: list[dict[str, Any]],
+    provider_responses: list[dict[str, Any]],
+) -> dict[str, Any]:
+    skill_input = build_jurisprudence_input(research_outputs)
+    output = retrieve_jurisprudence(skill_input, provider_responses)
+    return {
+        "input": skill_input,
+        "output": output,
+        "trace": {
+            "executor": "deterministic",
+            "provider": None,
+            "model": None,
+            "usage": None,
+        },
     }
 
 
