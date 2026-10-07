@@ -38,6 +38,13 @@ from core.legal_skills.contradiction_detector_v1 import (
     validate_contradictions,
 )
 from core.legal_skills.evidence_gap_analyzer_v1 import analyze_evidence_gaps
+from core.legal_skills.burden_of_proof_v1 import (
+    BURDEN_JSON_SCHEMA,
+    build_burden_input,
+    build_burden_instructions,
+    build_burden_llm_input,
+    validate_burden_allocations,
+)
 from core.legal_skills.legal_issue_mapper_v1 import (
     LEGAL_ISSUE_JSON_SCHEMA,
     build_legal_issue_input,
@@ -282,6 +289,50 @@ async def run_legal_issue_mapper_skill(
     )
     parsed, actual_provider, actual_model, usage = _structured_result(result)
     output = validate_legal_issues(parsed, skill_input)
+    return {
+        "input": skill_input,
+        "output": output,
+        "trace": {"provider": actual_provider, "model": actual_model, "usage": usage},
+    }
+
+
+async def run_burden_of_proof_skill(
+    llm: Any,
+    process_id: str,
+    issue_outputs: list[dict[str, Any]],
+    fact_outputs: list[dict[str, Any]],
+    burden_rules: list[dict[str, Any]],
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    timeout_seconds: float = THEMIS_LONG_LLM_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    skill_input = build_burden_input(process_id, issue_outputs, fact_outputs, burden_rules)
+    if not any(issue["fact_ids"] for issue in skill_input["issues"]) or not any(
+        rule["applicability"] == "GENERAL" or rule["precondition_status"] == "SATISFIED"
+        for rule in skill_input["burden_rules"]
+    ):
+        return {
+            "input": skill_input,
+            "output": validate_burden_allocations({"allocations": []}, skill_input),
+            "trace": {"executor": "deterministic", "provider": None, "model": None, "usage": None},
+        }
+    llm_input = build_burden_llm_input(skill_input)
+    result = await call_long_job_llm(
+        llm,
+        "acomplete_structured",
+        timeout_seconds=timeout_seconds,
+        instructions=build_burden_instructions(),
+        input=[{"type": "text", "text": json.dumps(llm_input, ensure_ascii=False)}],
+        json_schema=BURDEN_JSON_SCHEMA,
+        schema_name="themis_burden_of_proof_v1",
+        provider=provider,
+        model=model,
+        max_tokens=4096,
+        purpose="themis.legal_skills.burden_of_proof",
+    )
+    parsed, actual_provider, actual_model, usage = _structured_result(result)
+    output = validate_burden_allocations(parsed, skill_input)
     return {
         "input": skill_input,
         "output": output,

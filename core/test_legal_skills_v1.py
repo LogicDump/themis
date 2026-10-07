@@ -31,6 +31,11 @@ from core.legal_skills.evidence_gap_analyzer_v1 import (
     analyze_evidence_gaps,
     score_evidence_gaps,
 )
+from core.legal_skills.burden_of_proof_v1 import (
+    build_burden_input,
+    score_burden_allocations,
+    validate_burden_allocations,
+)
 from core.legal_skills.legal_issue_mapper_v1 import (
     build_legal_issue_input,
     score_legal_issues,
@@ -42,6 +47,7 @@ from core.legal_skills.runner_v1 import (
     run_contradiction_detector_skill,
     run_evidence_gap_analyzer_skill,
     run_legal_issue_mapper_skill,
+    run_burden_of_proof_skill,
 )
 
 
@@ -1314,3 +1320,286 @@ def test_legal_issue_runner_validates_structured_output():
         timeout_seconds=5,
     ))
     assert result["output"]["issues"][0]["kind"] == "LEGAL"
+
+
+def _burden_fact_output(*facts):
+    return {
+        "schema_version": "fact-extractor-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "facts": list(facts),
+        "unresolved_points": [],
+    }
+
+
+def _burden_issue_output(issue_id, question, fact_ids, kind="MIXED"):
+    return {
+        "schema_version": "legal-issue-mapper-v1",
+        "context_sufficiency": "SUFFICIENT",
+        "issues": [{
+            "issue_id": issue_id,
+            "question": question,
+            "kind": kind,
+            "fact_ids": list(fact_ids),
+            "legal_position_ids": [],
+            "request_ids": [],
+            "actor_ids": [],
+            "contradiction_ids": [],
+            "evidence_gap_codes": [],
+            "source_refs": [],
+        }],
+        "unresolved_points": [],
+    }
+
+
+def _burden_rule(
+    rule_id="r1",
+    statement="Incumbe ao autor provar o fato constitutivo de seu direito.",
+    authority="CPC art. 373, I",
+    regime="CPC",
+    applicability="GENERAL",
+    allowed_sides=None,
+    allowed_types=None,
+    conditions=None,
+    precondition_status="SATISFIED",
+):
+    return {
+        "rule_id": rule_id,
+        "statement": statement,
+        "authority": authority,
+        "regime": regime,
+        "applicability": applicability,
+        "burden_side": (allowed_sides or ["CLAIMANT"])[0],
+        "allocation_type": (allowed_types or ["DEFAULT"])[0],
+        "reason_code": "DYNAMIC_RULE" if allowed_types == ["DYNAMIC"] else "CONSTITUTIVE_FACT",
+        "precondition_status": precondition_status,
+        "conditions": conditions or [],
+    }
+
+
+def test_burden_analyzer_accepts_supplied_default_rule():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    issue = _burden_issue_output("i1", "Houve pagamento?", ["f1"])
+    skill_input = build_burden_input("proc", [issue], [_burden_fact_output(fact)], [_burden_rule()])
+    output = validate_burden_allocations({
+        "allocations": [{
+            "issue_id": "i1",
+            "fact_ids": ["f1"],
+            "rule_id": "r1",
+        }],
+    }, skill_input)
+    assert output["context_sufficiency"] == "SUFFICIENT"
+    assert output["allocations"][0]["authority"] == "CPC art. 373, I"
+
+
+def test_burden_analyzer_rejects_invented_rule():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    issue = _burden_issue_output("i1", "Houve pagamento?", ["f1"])
+    skill_input = build_burden_input("proc", [issue], [_burden_fact_output(fact)], [_burden_rule()])
+    with pytest.raises(ValueError, match="rule_id inexistente"):
+        validate_burden_allocations({
+            "allocations": [{
+                "issue_id": "i1",
+                "fact_ids": ["f1"],
+                "rule_id": "invented",
+
+
+
+            }],
+        }, skill_input)
+
+
+def test_burden_analyzer_rejects_unauthorized_shift():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    issue = _burden_issue_output("i1", "Houve pagamento?", ["f1"])
+    skill_input = build_burden_input("proc", [issue], [_burden_fact_output(fact)], [_burden_rule()])
+    with pytest.raises(ValueError, match="divergente do schema"):
+        validate_burden_allocations({
+            "allocations": [{
+                "issue_id": "i1",
+                "fact_ids": ["f1"],
+                "rule_id": "r1",
+                "allocation_type": "SHIFTED",
+            }],
+        }, skill_input)
+
+
+def test_burden_analyzer_allows_explicit_dynamic_rule():
+    fact = _cd_fact("f1", "A requerida detém exclusivamente os registros técnicos.")
+    issue = _burden_issue_output("i1", "Quem possui acesso aos registros técnicos?", ["f1"])
+    rule = _burden_rule(
+        rule_id="dyn1",
+        statement="Pode haver distribuição dinâmica quando a prova estiver em poder exclusivo da parte contrária.",
+        authority="Regra fornecida para teste",
+        applicability="CONDITIONAL",
+        allowed_sides=["RESPONDENT"],
+        allowed_types=["DYNAMIC"],
+        conditions=["prova em poder exclusivo da requerida"],
+    )
+    skill_input = build_burden_input("proc", [issue], [_burden_fact_output(fact)], [rule])
+    output = validate_burden_allocations({
+        "allocations": [{
+            "issue_id": "i1",
+            "fact_ids": ["f1"],
+            "rule_id": "dyn1",
+
+
+
+        }],
+    }, skill_input)
+    assert output["allocations"][0]["allocation_type"] == "DYNAMIC"
+
+
+def test_burden_analyzer_requires_unresolved_without_rule():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    issue = _burden_issue_output("i1", "Houve pagamento?", ["f1"])
+    skill_input = build_burden_input("proc", [issue], [_burden_fact_output(fact)], [])
+    output = validate_burden_allocations({"allocations": []}, skill_input)
+    assert output["context_sufficiency"] == "INSUFFICIENT"
+    assert output["unresolved_points"][0]["code"] == "RULE_NOT_SUPPLIED"
+
+
+def test_burden_analyzer_does_not_require_pure_legal_issue_allocation():
+    issue = _burden_issue_output("i1", "É aplicável a cláusula contratual?", [], kind="LEGAL")
+    skill_input = build_burden_input("proc", [issue], [], [])
+    output = validate_burden_allocations({"allocations": []}, skill_input)
+    assert output["context_sufficiency"] == "SUFFICIENT"
+    assert output["allocations"] == []
+
+
+def test_burden_analyzer_fact_must_belong_to_issue():
+    f1 = _cd_fact("f1", "A autora efetuou o pagamento.")
+    f2 = _cd_fact("f2", "A autora entregou as chaves.")
+    issue = _burden_issue_output("i1", "Houve pagamento?", ["f1"])
+    skill_input = build_burden_input("proc", [issue], [_burden_fact_output(f1, f2)], [_burden_rule()])
+    with pytest.raises(ValueError, match="não pertence à issue"):
+        validate_burden_allocations({
+            "allocations": [{
+                "issue_id": "i1",
+                "fact_ids": ["f2"],
+                "rule_id": "r1",
+            }],
+        }, skill_input)
+
+
+def test_burden_runner_validates_structured_output():
+    fact = _cd_fact("f1", "A autora efetuou o pagamento.")
+    issue = _burden_issue_output("i1", "Houve pagamento?", ["f1"])
+    result = asyncio.run(run_burden_of_proof_skill(
+        _FakeLLM([{
+            "allocations": [{
+                "issue_id": "i1",
+                "fact_ids": ["f1"],
+                "rule_id": "r1",
+            }],
+        }]),
+        "proc",
+        [issue],
+        [_burden_fact_output(fact)],
+        [_burden_rule()],
+        timeout_seconds=5,
+    ))
+    assert result["output"]["allocations"][0]["burden_side"] == "CLAIMANT"
+
+def test_burden_score_flags_dangerous_shift_invention():
+    expected = {
+        "context_sufficiency": "SUFFICIENT",
+        "allocations": [{
+            "issue_id": "i1",
+            "fact_ids": ["f1"],
+            "rule_id": "r1",
+            "burden_side": "CLAIMANT",
+            "allocation_type": "DEFAULT",
+        }],
+    }
+    actual = {
+        "context_sufficiency": "SUFFICIENT",
+        "allocations": [{
+            "issue_id": "i1",
+            "fact_ids": ["f1"],
+            "rule_id": "r1",
+            "burden_side": "RESPONDENT",
+            "allocation_type": "SHIFTED",
+        }],
+    }
+    assert score_burden_allocations(expected, actual, {"burden_rules": [_burden_rule()]})["dangerous_shift_invention"] is True
+
+
+
+
+@pytest.mark.parametrize("status", ["UNKNOWN", "UNSATISFIED", None])
+def test_burden_conditional_open_status_is_omitted(status):
+    rule = _burden_rule(applicability="CONDITIONAL", allowed_types=["DYNAMIC"])
+    if status is None:
+        rule.pop("precondition_status")
+    else:
+        rule["precondition_status"] = status
+    inp = build_burden_input("proc", [_burden_issue_output("i1", "Houve pagamento?", ["f1"])],
+                             [_burden_fact_output(_cd_fact("f1", "Pagamento alegado."))], [rule])
+    actual = validate_burden_allocations({"allocations": [{"issue_id": "i1", "fact_ids": ["f1"], "rule_id": "r1"}]}, inp)
+    assert actual == validate_burden_allocations({"allocations": []}, inp)
+    assert actual["allocations"] == []
+    assert actual["context_sufficiency"] == "INSUFFICIENT"
+
+
+def test_burden_partial_coverage_and_overlap():
+    inp = build_burden_input("proc", [_burden_issue_output("i1", "Houve pagamento e entrega?", ["f1", "f2"])],
+        [_burden_fact_output(_cd_fact("f1", "Pagamento alegado."), _cd_fact("f2", "Entrega alegada."))], [_burden_rule()])
+    selection = {"issue_id": "i1", "fact_ids": ["f1"], "rule_id": "r1"}
+    actual = validate_burden_allocations({"allocations": [selection]}, inp)
+    assert actual["unresolved_points"] == [{"issue_id": "i1", "fact_ids": ["f2"], "code": "RULE_NOT_SUPPLIED"}]
+    with pytest.raises(ValueError, match="sobreposta"):
+        validate_burden_allocations({"allocations": [selection, {**selection, "fact_ids": ["f1", "f2"]}]}, inp)
+
+
+@pytest.mark.parametrize("field", ["burden_side", "allocation_type", "reason_code", "authority", "regime"])
+def test_burden_rejects_model_derived_fields(field):
+    inp = build_burden_input("proc", [_burden_issue_output("i1", "Houve pagamento?", ["f1"])],
+        [_burden_fact_output(_cd_fact("f1", "Pagamento alegado."))], [_burden_rule()])
+    with pytest.raises(ValueError, match="schema"):
+        validate_burden_allocations({"allocations": [{"issue_id": "i1", "fact_ids": ["f1"], "rule_id": "r1", field: "FORGED"}]}, inp)
+
+
+def test_burden_gold_minimal_protocol():
+    import json
+    from pathlib import Path
+    cases = [json.loads(line) for line in (Path(__file__).resolve().parents[1] / "benchmarks/legal_skills_v1/cases.jsonl").read_text(encoding="utf-8").splitlines()]
+    cases = [case for case in cases if case["skill"] == "BURDEN_OF_PROOF"]
+    assert [case["id"] for case in cases] == [f"BP{i:02d}" for i in range(1, 11)]
+    for case in cases:
+        inp = build_burden_input("proc", case["issue_outputs"], case["fact_outputs"], case["burden_rules"])
+        selections = [{field: item[field] for field in ("issue_id", "fact_ids", "rule_id")} for item in case["expected"]["allocations"]]
+        actual = validate_burden_allocations({"allocations": selections}, inp)
+        score = score_burden_allocations(case["expected"], actual, inp)
+        assert score["allocation_precision"] == score["allocation_recall"] == 1
+        assert score["sufficiency_match"]
+        for item in actual["allocations"]:
+            rule = next(rule for rule in inp["burden_rules"] if rule["rule_id"] == item["rule_id"])
+            assert all(item[field] == rule[field] for field in ("burden_side", "allocation_type", "reason_code", "authority", "regime"))
+
+
+def test_burden_runner_without_eligible_rules_skips_llm():
+    result = asyncio.run(run_burden_of_proof_skill(None, "proc",
+        [_burden_issue_output("i1", "Houve pagamento?", ["f1"])],
+        [_burden_fact_output(_cd_fact("f1", "Pagamento alegado."))], []))
+    assert result["trace"]["executor"] == "deterministic"
+    assert result["output"]["context_sufficiency"] == "INSUFFICIENT"
+
+
+@pytest.mark.parametrize("selection,metric", [
+    ({"issue_id": "i1", "fact_ids": ["f1"], "rule_id": "invented"}, "rule_inventions"),
+    ({"issue_id": "i1", "fact_ids": ["f1"], "rule_id": "r_const", "allocation_type": "SHIFTED"}, "unauthorized_shift_dynamic"),
+])
+def test_burden_benchmark_counts_rejected_dangerous_output(monkeypatch, selection, metric):
+    import json
+    from benchmarks.legal_skills_v1 import run_benchmark as bench
+    case = next(json.loads(line) for line in bench.Path(bench.__file__).with_name("cases.jsonl").read_text(encoding="utf-8").splitlines() if json.loads(line)["id"] == "BP01")
+    monkeypatch.setattr(bench, "call_ollama", lambda *args: (json.dumps({"allocations": [selection]}), {}))
+    result = bench.run_case(case, "test")
+    assert result["error"] is not None
+    assert bench.summarize([result])["BURDEN_OF_PROOF"][metric] == 1
+
+
+def test_burden_supplied_non_gold_rule_is_not_invented():
+    rule = _burden_rule(rule_id="alternative")
+    actual = {"allocations": [{"issue_id": "i1", "fact_ids": ["f1"], "rule_id": "alternative", "burden_side": "CLAIMANT", "allocation_type": "DEFAULT"}]}
+    assert not score_burden_allocations({"allocations": []}, actual, {"burden_rules": [rule]})["dangerous_invented_rule"]

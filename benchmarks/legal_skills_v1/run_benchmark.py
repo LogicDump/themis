@@ -59,6 +59,14 @@ from core.legal_skills.legal_issue_mapper_v1 import (
     score_legal_issues,
     validate_legal_issues,
 )
+from core.legal_skills.burden_of_proof_v1 import (
+    BURDEN_JSON_SCHEMA,
+    build_burden_input,
+    build_burden_instructions,
+    build_burden_llm_input,
+    score_burden_allocations,
+    validate_burden_allocations,
+)
 
 
 def _request_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -157,6 +165,15 @@ def legal_issue_case_input(case: dict) -> dict:
     )
 
 
+def burden_case_input(case: dict) -> dict:
+    return build_burden_input(
+        "bench_proc",
+        case.get("issue_outputs") or [],
+        case.get("fact_outputs") or [],
+        case.get("burden_rules") or [],
+    )
+
+
 def run_case(case: dict, model: str) -> dict:
     skill = case["skill"]
     if skill == "EVIDENCE_GAP_ANALYZER":
@@ -215,6 +232,12 @@ def run_case(case: dict, model: str) -> dict:
         schema = LEGAL_ISSUE_JSON_SCHEMA
         validator = lambda value: validate_legal_issues(value, skill_input)
         scorer = score_legal_issues
+    elif skill == "BURDEN_OF_PROOF":
+        skill_input = burden_case_input(case)
+        system = build_burden_instructions()
+        schema = BURDEN_JSON_SCHEMA
+        validator = lambda value: validate_burden_allocations(value, skill_input)
+        scorer = lambda expected, actual: score_burden_allocations(expected, actual, skill_input)
     else:
         raise ValueError(f"skill desconhecida: {skill}")
 
@@ -222,6 +245,8 @@ def run_case(case: dict, model: str) -> dict:
         model_input = build_contradiction_llm_input(skill_input)
     elif skill == "LEGAL_ISSUE_MAPPER":
         model_input = build_legal_issue_llm_input(skill_input)
+    elif skill == "BURDEN_OF_PROOF":
+        model_input = build_burden_llm_input(skill_input)
     else:
         model_input = skill_input
     raw, perf = call_ollama(
@@ -239,6 +264,25 @@ def run_case(case: dict, model: str) -> dict:
         actual = None
         score = {}
         error = f"{type(exc).__name__}: {exc}"
+    safety = {}
+    if skill == "BURDEN_OF_PROOF":
+        rules = {r["rule_id"]: r for r in skill_input["burden_rules"]}
+        try:
+            selections = json.loads(raw).get("allocations", [])
+            invented = unauthorized = 0
+            for selection in selections:
+                rule_id = selection.get("rule_id")
+                rule = rules.get(rule_id) if isinstance(rule_id, str) else None
+                invented += int(rule is None)
+                unauthorized += int(
+                    selection.get("allocation_type") in {"SHIFTED", "DYNAMIC"}
+                    or (rule is not None and rule["allocation_type"] in {"SHIFTED", "DYNAMIC"}
+                        and rule["applicability"] == "CONDITIONAL"
+                        and rule["precondition_status"] != "SATISFIED")
+                )
+            safety = {"rule_inventions": invented, "unauthorized_shift_dynamic": unauthorized}
+        except (ValueError, AttributeError, TypeError):
+            safety = {"rule_inventions": 0, "unauthorized_shift_dynamic": 0}
     return {
         "id": case["id"],
         "skill": skill,
@@ -246,6 +290,7 @@ def run_case(case: dict, model: str) -> dict:
         "actual": actual,
         "score": score,
         "error": error,
+        "safety": safety,
         "raw": raw,
         "perf": perf,
     }
@@ -321,6 +366,17 @@ def summarize(results: list[dict]) -> dict:
                 "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
                 "dangerous_unlinked_issue_count": sum(bool(item["score"]["dangerous_unlinked_issue"]) for item in valid),
             })
+        elif skill == "BURDEN_OF_PROOF" and valid:
+            block.update({
+                "allocation_precision": sum(item["score"]["allocation_precision"] for item in valid) / len(valid),
+                "allocation_recall": sum(item["score"]["allocation_recall"] for item in valid) / len(valid),
+                "sufficiency_accuracy": sum(bool(item["score"]["sufficiency_match"]) for item in valid) / len(valid),
+                "dangerous_invented_rule_count": sum(bool(item["score"]["dangerous_invented_rule"]) for item in valid),
+                "dangerous_shift_invention_count": sum(bool(item["score"]["dangerous_shift_invention"]) for item in valid),
+            })
+        if skill == "BURDEN_OF_PROOF":
+            block["rule_inventions"] = sum(row.get("safety", {}).get("rule_inventions", 0) for row in rows)
+            block["unauthorized_shift_dynamic"] = sum(row.get("safety", {}).get("unauthorized_shift_dynamic", 0) for row in rows)
         summary[skill] = block
     return summary
 
@@ -369,7 +425,9 @@ def main() -> int:
         encoding="utf-8",
     )
     print(json.dumps(payload["summary"], ensure_ascii=False, indent=2))
-    return 0
+    burden = payload["summary"].get("BURDEN_OF_PROOF", {})
+    return int(bool(burden.get("rule_inventions") or burden.get("unauthorized_shift_dynamic")
+                    or burden.get("parse_or_validation_failures")))
 
 
 if __name__ == "__main__":

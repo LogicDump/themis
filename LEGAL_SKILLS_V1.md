@@ -232,13 +232,13 @@ Baseline E4B 6,6 GB: 10/10 válidos; issue precision/recall 1,00/1,00; 0 kind mi
 ## Ordem de implementação vigente
 
 1. Consolidar compreensão: Actor/Role + Fact + Claim/Request + Evidence + Contradiction + Evidence Gap + Legal Issue.
-2. Implementar Burden of Proof Analyzer.
+2. Validar Burden of Proof Analyzer no runtime mediante job explícito.
 3. Depois Legal Research Planner + Jurisprudence/Precedent.
 4. Só então Adversarial/Strategy/Drafting.
 
 ## Baselines sem fine-tuning
 
-Benchmark/gold V1: 70 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer e Legal Issue Mapper. Os 10 casos de Evidence Gap são determinísticos e não executam LLM.
+Benchmark/gold V1: 80 casos — 10 por skill para Actor/Role, Fact Extractor, Claim/Request, Evidence Mapper, Contradiction Detector, Evidence Gap Analyzer, Legal Issue Mapper e Burden of Proof Analyzer. Os 10 casos de Evidence Gap são determinísticos e não executam LLM.
 
 ### Gemma 4 E4B antigo (~9,6 GB)
 - Actor/Role: 10/10 outputs válidos; precisão 0,90; recall 0,55; suficiência 1,00; 0 falsas resoluções perigosas.
@@ -294,3 +294,28 @@ Baseline do E4B 6,6 GB após protocolos:
 ## Regra de treinamento
 
 O benchmark gold nunca entra no treinamento. Fine-tuning deve ser construído a partir de erros observados em conjuntos separados. Um único adapter jurídico pode servir várias skills; não criar um modelo por skill sem evidência de necessidade.
+
+## Burden of Proof Analyzer V1
+
+Protocolo mínimo: LLM emite apenas `allocations[{issue_id, fact_ids, rule_id}]`.
+Cada regra fornecida declara consequências unívocas: `burden_side`, `allocation_type`,
+`reason_code`, `authority` e `regime`; código copia esses campos sem decisão do modelo.
+Listas `allowed_sides`/`allowed_types` não substituem esse contrato.
+
+`CONDITIONAL` exige `precondition_status=SATISFIED`. Status ausente é `UNKNOWN`;
+`UNKNOWN`/`UNSATISFIED` omitem a seleção e deixam os fatos descobertos unresolved.
+IDs inventados, campos extras, fatos externos à issue e alocações sobrepostas são rejeitados.
+Todo fato da issue sem cobertura recebe `RULE_NOT_SUPPLIED` deterministicamente.
+Issues sem fatos não recebem allocation. Evidence gaps e contradictions não mudam ônus.
+Sem regras elegíveis ou sem fatos, o runner resolve sem chamar LLM.
+
+BP01–BP10 preservam fatos, questões e expectativas; regras agora declaram consequências
+singulares e status explícito. BP05 tem condição satisfeita, BP06/BP09 desconhecida.
+Gold é exclusivamente avaliação e nunca entra em treinamento.
+O benchmark conta invenções de regra e SHIFTED/DYNAMIC não autorizados na resposta bruta,
+inclusive rejeitada, e retorna falha se houver esses erros ou outputs inválidos.
+Implementação source; sem deploy ou homologação de runtime.
+
+Validação source: pytest legal skills + drafting context; benchmark `gemma4:e4b`
+BP01–BP10: 10/10 válidos, precisão/recall/suficiência 1,00, 0 rule inventions,
+0 SHIFTED/DYNAMIC não autorizados e nenhum erro residual observado no gold.
