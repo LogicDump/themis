@@ -77,6 +77,8 @@ O pareamento com o Hermes Desktop em execução é automático via Native Messag
 
 > **Privacidade e Soberania**: A autenticação, certificados digitais, cookies de sessão e senhas permanecem exclusivamente no seu navegador. Nenhuma credencial é enviada ou armazenada pelo Themis.
 
+A visão **PDF** mantém um único documento integral e a numeração física das páginas/fólios. A abertura usa blocos autenticados sob demanda (PDF.js), sem transferir todo o documento; a ação **Imprimir** carrega o PDF completo apenas quando solicitada. O primeiro acesso pode precisar construir o cache integral localmente, que é reutilizado nas aberturas seguintes.
+
 ---
 
 ## Estrutura de Dados

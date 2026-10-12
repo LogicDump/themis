@@ -25476,7 +25476,7 @@ async function loadPdfJsRuntime(ctx) {
 		throw error;
 	}
 }
-function PdfJsViewer({ pdfData, runtimePromise, pageNumber = 1, active = false, onPageChange, onError }) {
+function PdfJsViewer({ pdfData, rest, runtimePromise, pageNumber = 1, active = false, onPageChange, onError }) {
 	const containerRef = useRef(null);
 	const viewerRef = useRef(null);
 	const eventBusRef = useRef(null);
@@ -25555,8 +25555,19 @@ function PdfJsViewer({ pdfData, runtimePromise, pageNumber = 1, active = false, 
 		if (active.frame?.parentNode) active.frame.parentNode.removeChild(active.frame);
 		printFrameRef.current = null;
 	};
-	const printPdf = () => {
-		if (!printUrlRef.current) return;
+	const printPdf = async () => {
+		if (!pdfData?.processId) return;
+		if (!printUrlRef.current) {
+			try {
+				const response = await rest(`/processes/${encodeURIComponent(pdfData.processId)}/pdf`);
+				if (!response?.content_base64) throw new Error("PDF indisponível para impressão");
+				const bytes = decodeBase64Bytes(response.content_base64);
+				printUrlRef.current = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+			} catch (error) {
+				onError?.(error);
+				return;
+			}
+		}
 		cleanupPrintFrame();
 		const frame = document.createElement("iframe");
 		frame.setAttribute("aria-hidden", "true");
@@ -25593,8 +25604,7 @@ function PdfJsViewer({ pdfData, runtimePromise, pageNumber = 1, active = false, 
 		let rotationChangingHandler = null;
 		let findMatchesHandler = null;
 		let findStateHandler = null;
-		const printableBytes = pdfData.slice();
-		printUrlRef.current = URL.createObjectURL(new Blob([printableBytes], { type: "application/pdf" }));
+
 		setCurrentPage(pendingPageRef.current);
 		setPageInput(String(pendingPageRef.current));
 		setPagesCount(0);
@@ -25605,7 +25615,7 @@ function PdfJsViewer({ pdfData, runtimePromise, pageNumber = 1, active = false, 
 		setFindResult("");
 		Promise.resolve(runtimePromise).then(async (runtime) => {
 			if (cancelled || !containerRef.current) return;
-			const { EventBus, PDFFindController, PDFLinkService, PDFRenderingQueue, PDFViewer, GlobalWorkerOptions, getDocument } = runtime.module;
+			const { EventBus, PDFFindController, PDFLinkService, PDFRenderingQueue, PDFViewer, GlobalWorkerOptions, getDocument, PDFDataRangeTransport } = runtime.module;
 			if (!EventBus || !PDFFindController || !PDFLinkService || !PDFRenderingQueue || !PDFViewer || !getDocument) throw new Error("Bundle PDF.js sem os componentes oficiais esperados");
 			GlobalWorkerOptions.workerSrc = runtime.workerUrl;
 			eventBus = new EventBus();
@@ -25667,8 +25677,22 @@ function PdfJsViewer({ pdfData, runtimePromise, pageNumber = 1, active = false, 
 				viewer.currentScaleValue = "page-width";
 			};
 			eventBus.on("pagesinit", pagesInitHandler);
+			class ThemisRange extends PDFDataRangeTransport {
+				constructor() { super(pdfData.size, null, false); this.aborted = false; }
+				requestDataRange(begin, end) {
+					if (this.aborted || cancelled) return;
+					const path = "/processes/" + encodeURIComponent(pdfData.processId) + "/pdf/range?start=" + begin + "&end=" + end + "&version=" + pdfData.version;
+					rest(path).then((data) => {
+						if (!this.aborted && !cancelled && data.start === begin) this.onDataRange(begin, decodeBase64Bytes(data.content_base64));
+					}).catch((error) => { if (!this.aborted && !cancelled) onError?.(error); });
+				}
+				abort() { this.aborted = true; }
+			}
 			loadingTask = getDocument({
-				data: pdfData,
+				range: new ThemisRange(),
+				rangeChunkSize: 65536,
+				disableAutoFetch: true,
+				disableStream: true,
 				isEvalSupported: false,
 				enableXfa: false
 			});
@@ -26576,21 +26600,20 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		setPdfLoading(true);
 		setPdfError(null);
 		const runtimePromise = ensurePdfJsRuntime();
-		const request = ctx.rest(`/processes/${encodeURIComponent(processId)}/pdf`).then((data) => {
-			if (!data?.content_base64) throw new Error("Conteúdo do PDF integral do processo indisponível");
-			const bytes = decodeBase64Bytes(data.content_base64);
-			return runtimePromise.then(() => bytes);
-		}).then((bytes) => {
+		const request = ctx.rest(`/processes/${encodeURIComponent(processId)}/pdf/meta`).then((meta) => {
+			if (!meta?.size || !meta?.version) throw new Error("PDF integral indisponível");
+			return runtimePromise.then(() => ({ ...meta, processId }));
+		}).then((descriptor) => {
 			if (selectedPidRef.current !== processId) return null;
-			pdfBytesRef.current = bytes;
+			pdfBytesRef.current = descriptor;
 			pdfProcessIdRef.current = processId;
-			setPdfData(bytes);
+			setPdfData(descriptor);
 			setPdfView({
 				processId,
 				pageNumber: targetPage
 			});
 			setPdfLoading(false);
-			return bytes;
+			return descriptor;
 		}).catch((err) => {
 			console.error("[Themis] Erro ao carregar PDF integral do processo:", err);
 			if (selectedPidRef.current === processId) {
@@ -27533,6 +27556,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												description: pdfError
 											}) : pdfData && pdfProcessIdRef.current === selectedPid ? jsx(PdfJsViewer, {
 												pdfData,
+												rest: ctx.rest,
 												runtimePromise: pdfJsRuntimeRef.current.promise,
 												pageNumber: pdfView?.pageNumber || 1,
 												active: activeSection === "pdf",

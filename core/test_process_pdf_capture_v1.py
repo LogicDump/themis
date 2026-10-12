@@ -85,3 +85,54 @@ def test_zero_new_sync_does_not_reset_ready_manifest(tmp_path, monkeypatch):
     assert state["pipeline_status"] == "READY"
     assert state["pipeline_progress"]["phase"] == "READY"
     assert state["counts"]["documents"] == 1
+
+def test_bounded_range_matches_one_integral_pdf(tmp_path, monkeypatch):
+    monkeypatch.setenv("THEMIS_DATA_ROOT", str(tmp_path))
+    from dashboard import plugin_api
+    import base64
+
+    _capture(tmp_path, [_pdf(2), _pdf(3)], "a" * 64)
+    full = core_api.process_pdf_bytes(CNJ)
+    meta = plugin_api.get_process_pdf_meta(CNJ)
+    assert meta["size"] == len(full)
+    slices = []
+    for start in range(0, len(full), 65536):
+        end = min(len(full), start + 65536)
+        part = plugin_api.get_process_pdf_range(CNJ, start=start, end=end, version=meta["version"])
+        assert part["start"] == start
+        slices.append(base64.b64decode(part["content_base64"]))
+    assert b"".join(slices) == full
+    assert len(PdfReader(io.BytesIO(full)).pages) == 5
+
+def test_range_rejects_invalid_limits_or_old_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("THEMIS_DATA_ROOT", str(tmp_path))
+    from dashboard import plugin_api
+    from fastapi import HTTPException
+
+    _capture(tmp_path, [_pdf(2), _pdf(3)], "b" * 64)
+    meta = plugin_api.get_process_pdf_meta(CNJ)
+    for args in (
+        {"start": 0, "end": 262145, "version": meta["version"]},
+        {"start": 12, "end": 12, "version": meta["version"]},
+        {"start": 0, "end": 1, "version": "0" * 64},
+    ):
+        try:
+            plugin_api.get_process_pdf_range(CNJ, **args)
+        except HTTPException as exc:
+            assert exc.status_code in (409, 422)
+        else:
+            raise AssertionError("Faixa inválida aceita")
+
+
+def test_integral_page_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("THEMIS_DATA_ROOT", str(tmp_path))
+    originals = []
+    for width in (511, 612, 713):
+        writer = PdfWriter()
+        writer.add_blank_page(width=width, height=792)
+        output = io.BytesIO()
+        writer.write(output)
+        originals.append(output.getvalue())
+    _capture(tmp_path, originals, "c" * 64)
+    pages = PdfReader(io.BytesIO(core_api.process_pdf_bytes(CNJ))).pages
+    assert [int(page.mediabox.width) for page in pages] == [511, 612, 713]
