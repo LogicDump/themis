@@ -24298,7 +24298,7 @@ var init_pdf_viewer_export = __esmMin((() => {
 //#region .tmp/pdfjs-build-entry.mjs
 globalThis.pdfjsLib = pdf_exports;
 var pdfjsViewer = await Promise.resolve().then(() => (init_pdf_viewer_export(), pdf_viewer_export_exports));
-var { getDocument, GlobalWorkerOptions, version } = pdf_exports;
+var { getDocument, GlobalWorkerOptions, PDFDataRangeTransport, version } = pdf_exports;
 var { EventBus, PDFFindController, PDFLinkService, PDFRenderingQueue, PDFViewer } = pdfjsViewer;
 //#endregion
-export { EventBus, GlobalWorkerOptions, PDFFindController, PDFLinkService, PDFRenderingQueue, PDFViewer, getDocument, version };
+export { EventBus, GlobalWorkerOptions, PDFDataRangeTransport, PDFFindController, PDFLinkService, PDFRenderingQueue, PDFViewer, getDocument, version };

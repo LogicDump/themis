@@ -17,6 +17,7 @@ var __exportAll$1 = (all, no_symbols) => {
 var pdfjs_viewer_bundle_exports = /* @__PURE__ */ __exportAll$1({
 	EventBus: () => EventBus,
 	GlobalWorkerOptions: () => GlobalWorkerOptions,
+	PDFDataRangeTransport: () => PDFDataRangeTransport,
 	PDFFindController: () => PDFFindController,
 	PDFLinkService: () => PDFLinkService,
 	PDFRenderingQueue: () => PDFRenderingQueue,
@@ -24496,7 +24497,7 @@ var init_pdf_viewer_export = __esmMin((() => {
 }));
 globalThis.pdfjsLib = pdf_exports;
 var pdfjsViewer = await Promise.resolve().then(() => (init_pdf_viewer_export(), pdf_viewer_export_exports));
-var { getDocument, GlobalWorkerOptions, version } = pdf_exports;
+var { getDocument, GlobalWorkerOptions, PDFDataRangeTransport, version } = pdf_exports;
 var { EventBus, PDFFindController, PDFLinkService, PDFRenderingQueue, PDFViewer } = pdfjsViewer;
 //#endregion
 //#region hermes-plugin/plugins/themis/desktop/plugin.js
