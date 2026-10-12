@@ -1881,16 +1881,6 @@ def _source_process_pdf_path(process_id: str, path: Path | None = None) -> Path 
     pieces = manifest.get("pecas") or []
     if not pieces or (manifest.get("validation") or {}).get("all_valid") is not True:
         return None
-    # Hot path: the immutable integral cache already matches the exact
-    # captured inventory. Do not stat thousands of source objects per range.
-    source_state = str(manifest.get("source_state_sha256") or "")
-    derivados = package / "derivados"
-    cached = derivados / "processo_integral.pdf"
-    state_file = derivados / "processo_integral.source_state"
-    if (len(pieces) > 1 and re.fullmatch(r"[0-9a-f]{64}", source_state)
-            and cached.is_file() and cached.stat().st_size > 0
-            and state_file.is_file() and state_file.read_text(encoding="ascii").strip() == source_state):
-        return cached
     paths = []
     for piece in sorted(pieces, key=lambda item: int(item["order"])):
         sha = str(piece.get("sha256") or "")
@@ -1903,8 +1893,15 @@ def _source_process_pdf_path(process_id: str, path: Path | None = None) -> Path 
     if len(paths) == 1:
         return paths[0]
 
+    source_state = str(manifest.get("source_state_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", source_state):
         return None
+    derivados = package / "derivados"
+    cached = derivados / "processo_integral.pdf"
+    state_file = derivados / "processo_integral.source_state"
+    if (cached.is_file() and cached.stat().st_size > 0
+            and state_file.is_file() and state_file.read_text(encoding="ascii").strip() == source_state):
+        return cached
 
     import pypdfium2 as pdfium
     derivados.mkdir(parents=True, exist_ok=True)

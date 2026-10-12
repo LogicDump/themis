@@ -872,44 +872,6 @@ def get_autos(
     return val
 
 
-@router.get("/processes/{process_id}/pdf/range")
-def get_process_pdf_range(
-    process_id: str,
-    start: int = Query(..., ge=0),
-    end: int = Query(..., ge=1),
-    version: str = Query(...),
-):
-    """Authenticated bounded PDF.js range, exclusive end; never read whole PDF."""
-    import re as _re
-    if not _re.fullmatch(r"[0-9a-f]{64}", version) or end <= start or end - start > 262144:
-        raise HTTPException(status_code=422, detail="Intervalo PDF inválido")
-    from core.api.core_api import process_pdf_path
-    pdf = process_pdf_path(process_id)
-    if pdf is None:
-        raise HTTPException(status_code=404, detail="PDF indisponível")
-    stat = pdf.stat()
-    current = f"{stat.st_size}:{stat.st_mtime_ns}"
-    digest = hashlib.sha256(current.encode()).hexdigest()
-    if digest != version or end > stat.st_size:
-        raise HTTPException(status_code=409, detail="Versão do PDF mudou; reabra o documento")
-    with pdf.open("rb") as handle:
-        handle.seek(start)
-        payload = handle.read(end - start)
-    return {"start": start, "content_base64": base64.b64encode(payload).decode("ascii")}
-
-
-@router.get("/processes/{process_id}/pdf/meta")
-def get_process_pdf_meta(process_id: str):
-    """Stable snapshot identity for the PDF.js range transport."""
-    from core.api.core_api import process_pdf_path
-    pdf = process_pdf_path(process_id)
-    if pdf is None:
-        raise HTTPException(status_code=404, detail="PDF indisponível")
-    stat = pdf.stat()
-    version = hashlib.sha256(f"{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()
-    return {"process_id": process_id, "size": stat.st_size, "version": version}
-
-
 @router.get("/processes/{process_id}/pdf")
 def get_process_pdf(process_id: str):
     """Return the Core-resolved integral PDF for the whole process."""
