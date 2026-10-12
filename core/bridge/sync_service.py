@@ -133,7 +133,9 @@ def _persisted_provider_document_ids(store: Store, cnj: str) -> dict[str, str]:
             source = prior_by_order[ordinal]
             identity = esaj_provider_item_identity(source["document"], source["part_index"], source["part"])
         document_id = str(piece.get("document_id") or piece.get("sha256") or "").strip()
-        if identity and document_id:
+        sha = str(piece.get("sha256") or "").strip()
+        original = store.process_objetos_path(cnj) / f"{sha}.pdf"
+        if identity and document_id and re.fullmatch(r"[0-9a-f]{64}", sha) and original.is_file() and original.stat().st_size > 0:
             known[str(identity)] = document_id
     return known
 
@@ -848,26 +850,33 @@ def plan_process_sync(
             encoding="utf-8",
         )
 
-    store.process_manifest_path(cnj).write_text(
-        json.dumps(
-            {
-                "cnj": cnj,
-                "status": "CAPTURED",
-                "pipeline_status": "CAPTURED",
-                "total_documents": len(documents),
-                "total_movements": len(movements),
-                "total_participants": len(participants),
-                "source": "pastadigital_esaj",
-                "synced_at": capture_time,
-                "folio_stats": folio_stats,
-                "latest_snapshot_version": stamp_safe,
-                "has_cpopg_snapshot": bool(cpopg)
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    manifest_path = store.process_manifest_path(cnj)
+    previous_manifest = {}
+    if manifest_path.is_file():
+        previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    current_manifest = {
+        **previous_manifest,
+        "cnj": cnj,
+        "total_documents": len(documents),
+        "total_movements": len(movements),
+        "total_participants": len(participants),
+        "source": "pastadigital_esaj",
+        "synced_at": capture_time,
+        "folio_stats": folio_stats,
+        "latest_snapshot_version": stamp_safe,
+        "has_cpopg_snapshot": bool(cpopg),
+    }
+    if needed or not previous_manifest:
+        current_manifest.update(status="CAPTURED", pipeline_status="CAPTURED")
+        current_manifest.pop("pipeline_progress", None)
+    temporary_manifest = manifest_path.with_name(f".{manifest_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary_manifest.write_text(
+            json.dumps(current_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        os.replace(temporary_manifest, manifest_path)
+    finally:
+        temporary_manifest.unlink(missing_ok=True)
 
     db = store.connect()
     try:

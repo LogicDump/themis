@@ -877,6 +877,15 @@ def get_process_pdf(process_id: str):
     """Return the Core-resolved integral PDF for the whole process."""
     from core.runtime_paths import process_package_dir
 
+    # Original PDFs are viewable as soon as the ZIP is validated, regardless
+    # of the slower extraction/embedding pipeline.
+    pdf_bytes = core_api.process_pdf_bytes(process_id)
+    if pdf_bytes is not None:
+        return {
+            "process_id": process_id,
+            "content_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+        }
+
     manifest_path = process_package_dir(process_id) / "manifest.json"
     if manifest_path.is_file():
         try:
@@ -886,6 +895,11 @@ def get_process_pdf(process_id: str):
         progress = manifest.get("pipeline_progress") or {}
         pipeline_status = str(manifest.get("pipeline_status") or "").upper()
         pipeline_phase = str(progress.get("phase") or pipeline_status).upper()
+        if pipeline_status == "ERROR":
+            raise HTTPException(
+                status_code=503,
+                detail=f"Processamento documental falhou: {progress.get('error') or 'consulte o status da sincronização'}",
+            )
         document_busy_phases = {
             "CAPTURED",
             "QUEUED",
@@ -970,7 +984,7 @@ def bridge_status():
 
 
 @router.post("/bridge/sync/plan")
-def bridge_sync_plan(payload: dict[str, Any]):
+def bridge_sync_plan(payload: dict[str, Any], background_tasks: BackgroundTasks):
     """Planeja sincronização de processo e-SAJ, identifica novas peças e persiste partes/movs."""
     cnj = payload.get("cnj")
     if not cnj:
@@ -999,6 +1013,17 @@ def bridge_sync_plan(payload: dict[str, Any]):
             page_context=page_context,
             cpopg=cpopg,
         )
+        # A failed/interrupted first import may have all originals already
+        # captured. No new download must not mean no retry of structuring.
+        if not plan.get("needs_download"):
+            package_store = store.for_process(cnj)
+            manifest_file = package_store.process_manifest_path(cnj)
+            pieces_file = package_store.process_fontes_path(cnj) / "pecas_manifest.json"
+            if manifest_file.is_file() and pieces_file.is_file():
+                manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+                if str(manifest.get("pipeline_status") or "").upper() != "READY":
+                    background_tasks.add_task(_run_process_sync_background, cnj, str(store.root))
+                    plan["sync_retry_queued"] = True
         return plan
     except ValueError as val_err:
         raise HTTPException(status_code=422, detail=str(val_err))

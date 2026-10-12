@@ -26428,15 +26428,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		if (activeSection !== "pdf" || !selectedPid) return;
 		if (pdfProcessIdRef.current === selectedPid && pdfBytesRef.current) return;
 		if (processInFlightRef.current.pdf[selectedPid]) return;
-		const processEntry = processes.find((process) => (process.process_id || process.id) === selectedPid);
-		const processProgress = processEntry?.pipeline_progress || {};
-		const processStatus = String(processEntry?.pipeline_status || processEntry?.status || "").toUpperCase();
-		const processPhase = String(processProgress.phase || processStatus).toUpperCase();
-		if (["CAPTURED", "QUEUED", "PROCESSING", "INGESTING", "VALIDATED", "EXTRACTING", "STRUCTURING"].includes(processPhase)) {
-			setPdfLoading(false);
-			setPdfError(null);
-			return;
-		}
 		const pageNum = pdfView?.processId === selectedPid && pdfView?.pageNumber ? pdfView.pageNumber : 1;
 		loadProcessPdf(selectedPid, pageNum);
 	}, [
@@ -26571,15 +26562,8 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	};
 	const loadProcessPdf = (processId, pageNumber = 1) => {
 		if (!processId) return;
-		const processEntry = processes.find((process) => (process.process_id || process.id) === processId);
-		const processProgress = processEntry?.pipeline_progress || {};
-		const processStatus = String(processEntry?.pipeline_status || processEntry?.status || "").toUpperCase();
-		const processPhase = String(processProgress.phase || processStatus).toUpperCase();
-		if (["CAPTURED", "QUEUED", "PROCESSING", "INGESTING", "VALIDATED", "EXTRACTING", "STRUCTURING"].includes(processPhase)) {
-			setPdfLoading(false);
-			setPdfError(null);
-			return Promise.resolve(null);
-		}
+		// The API decides when source PDFs are available. Pipeline status must not
+		// suppress viewing a validated original while extraction is still running.
 		const targetPage = Number(pageNumber) >= 1 ? Number(pageNumber) : 1;
 		if (pdfProcessIdRef.current === processId && pdfBytesRef.current) {
 			setPdfView((current) => ({
@@ -27547,14 +27531,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												icon: "warning",
 												title: "PDF indisponível",
 												description: pdfError
-											}) : pipelineDocumentBusy ? jsx(PanelEmpty, {
-												icon: "clock",
-												title: "PDF disponível após o processamento",
-												description: pipelineProgress.message || "O Themis está preparando os documentos deste processo."
-											}) : false ? jsx(PanelEmpty, {
-												icon: "warning",
-												title: "PDF indisponível",
-												description: currentProcess?.pipeline_error || pipelineProgress.error || "O processamento do processo falhou."
 											}) : pdfData && pdfProcessIdRef.current === selectedPid ? jsx(PdfJsViewer, {
 												pdfData,
 												runtimePromise: pdfJsRuntimeRef.current.promise,

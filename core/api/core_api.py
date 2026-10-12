@@ -1860,8 +1860,76 @@ def document_path(doc_id, path=None):
         return Path(raw_path).resolve()
     return None
 
+def _source_process_pdf_path(process_id: str, path: Path | None = None) -> Path | None:
+    """Resolve verified original PDFs before the asynchronous indexing finishes."""
+    import os
+    import uuid
+    from core.runtime_paths import validate_process_id
+
+    try:
+        process_id = validate_process_id(process_id)
+    except ValueError:
+        return None
+    root = _data_root_for_db(path)
+    if root is None:
+        return None
+    package = root / "processos" / process_id
+    manifest_file = package / "fontes" / "pecas_manifest.json"
+    if not manifest_file.is_file():
+        return None
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    pieces = manifest.get("pecas") or []
+    if not pieces or (manifest.get("validation") or {}).get("all_valid") is not True:
+        return None
+    paths = []
+    for piece in sorted(pieces, key=lambda item: int(item["order"])):
+        sha = str(piece.get("sha256") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return None
+        original = package / "fontes" / "objetos" / f"{sha}.pdf"
+        if not original.is_file() or original.stat().st_size == 0:
+            return None
+        paths.append(original)
+    if len(paths) == 1:
+        return paths[0]
+
+    source_state = str(manifest.get("source_state_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_state):
+        return None
+    derivados = package / "derivados"
+    cached = derivados / "processo_integral.pdf"
+    state_file = derivados / "processo_integral.source_state"
+    if (cached.is_file() and cached.stat().st_size > 0
+            and state_file.is_file() and state_file.read_text(encoding="ascii").strip() == source_state):
+        return cached
+
+    import pypdfium2 as pdfium
+    derivados.mkdir(parents=True, exist_ok=True)
+    temporary = derivados / f".processo_integral.{uuid.uuid4().hex}.pdf"
+    combined = pdfium.PdfDocument.new()
+    try:
+        for original in paths:
+            source = pdfium.PdfDocument(str(original))
+            try:
+                combined.import_pages(source)
+            finally:
+                source.close()
+        combined.save(str(temporary))
+    finally:
+        combined.close()
+    try:
+        os.replace(temporary, cached)
+        state_file.write_text(source_state + "\n", encoding="ascii")
+    finally:
+        temporary.unlink(missing_ok=True)
+    return cached
+
+
 def process_pdf_path(process_id: str, path: Path | None = None) -> Path | None:
     """Resolve or assemble the complete integral PDF for a given process."""
+    source_pdf = _source_process_pdf_path(process_id, path)
+    if source_pdf is not None:
+        return source_pdf
     db = _process_db(process_id,path)
     try:
         doc_rows = db.execute(

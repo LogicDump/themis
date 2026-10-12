@@ -96,6 +96,12 @@ Todos os dados operacionais residem em `<HERMES_HOME>\plugin-data\themis\`:
 └── processos\
     └── <CNJ>\                             # Pacote isolado e autocontido de cada processo
         ├── process.db                     # Banco SQLite com peças, páginas e movimentações
+        ├── manifest.json                  # Estado de sincronização e processamento
+        ├── fontes\
+        │   ├── pecas_manifest.json        # Inventário documental recebido do e-SAJ
+        │   ├── objetos\                  # PDFs originais nomeados por SHA-256
+        │   └── bulk\                     # ZIPs originais, versionados
+        ├── derivados\                     # Artefatos reconstruíveis, inclusive PDF integral
         └── markdown\                      # Conteúdo textual e tabelas reconstruídas
 ```
 
