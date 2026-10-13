@@ -120,9 +120,53 @@ def _validate_result(db_path: Path, expected: int, cnj: str, *, require_vectors:
         documents = db.execute("SELECT count(*) FROM documents WHERE process_id=?", (cnj,)).fetchone()[0]
         pages = db.execute("SELECT count(*) FROM pages").fetchone()[0]
         vector_tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        vectors = db.execute("SELECT count(*) FROM page_embeddings WHERE process_id=? AND model=?", (cnj, "embeddinggemma:300m")).fetchone()[0] if "page_embeddings" in vector_tables else 0
-        if require_vectors and vectors != pages:
-            raise RuntimeError(f"Embeddings incompletos: {vectors}/{pages}")
+        # A full rebuild emits EmbeddingGemma 2 LiteRT, NOT legacy ONNX vectors.
+        # Validate the complete vector-space signature before a package swap.
+        from core.retrieval.embeddinggemma2_litert import (
+            MODEL as vector_model, VERSION as vector_version,
+            QUANTIZATION as vector_quantization, DIM as vector_dim,
+            BACKEND_CPU, BACKEND_GPU,
+        )
+        vectors = 0
+        if "page_embeddings" in vector_tables:
+            vectors = db.execute(
+                """SELECT count(*) FROM page_embeddings e
+                   JOIN pages p ON p.page_id=e.page_id
+                   JOIN documents d ON d.document_id=p.document_id
+                   WHERE d.process_id=? AND e.process_id=? AND e.model=?
+                     AND e.document_id=p.document_id
+                     AND e.page_number=p.page_number""",
+                (cnj, cnj, vector_model),
+            ).fetchone()[0]
+        if require_vectors:
+            if vectors != pages:
+                raise RuntimeError(
+                    f"Embeddings incompletos ({vector_model}): {vectors}/{pages}"
+                )
+            if "vector_index_metadata" not in vector_tables:
+                raise RuntimeError("Metadados de embeddings LiteRT ausentes")
+            index = db.execute(
+                """SELECT model,backend,model_version,quantization,dim
+                   FROM vector_index_metadata WHERE process_id=? AND model=?""",
+                (cnj, vector_model),
+            ).fetchone()
+            if (
+                index is None or index[0] != vector_model
+                or index[1] not in (BACKEND_CPU, BACKEND_GPU)
+                or index[2:] != (vector_version, vector_quantization, vector_dim)
+            ):
+                raise RuntimeError("Assinatura de índice EmbeddingGemma 2 incompatível")
+            invalid = db.execute(
+                """SELECT count(*) FROM page_embeddings e
+                   WHERE e.process_id=? AND e.model=?
+                     AND (e.backend<>? OR e.model_version<>?
+                          OR e.quantization<>? OR e.dim<>?
+                          OR length(e.vector_blob)<>?)""",
+                (cnj, vector_model, index[1], vector_version, vector_quantization,
+                 vector_dim, vector_dim * 4),
+            ).fetchone()[0]
+            if invalid:
+                raise RuntimeError(f"Embeddings LiteRT inválidos: {invalid}")
         if integrity != "ok" or foreign or documents != expected or pages < expected:
             raise RuntimeError(f"Rebuild inválido: integrity={integrity}, FK={len(foreign)}, docs={documents}/{expected}, pages={pages}")
         movement_count = db.execute("SELECT count(*) FROM movements WHERE process_id=?", (cnj,)).fetchone()[0] if "movements" in vector_tables else None

@@ -20,7 +20,7 @@ LABELS = {
     "QUEUED": "Na fila",
     "EXTRACTING": "Extração",
     "STRUCTURING": "Estruturação",
-    "INDEXING": "Embeddings ONNX",
+    "INDEXING": "Embeddings LiteRT",
     "FINALIZING": "Finalização",
     "VERIFYING": "Verificando resultado",
     "SWAPPING": "Substituindo pacote",

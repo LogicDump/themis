@@ -267,3 +267,36 @@ def test_legal_guard_rejects_changed_existing_event_date(tmp_path):
                         "Intimação", day, None, "DAY"))
     with pytest.raises(RuntimeError, match="eventos existentes alterados"):
         _legal_rebuild_guard(old_path, new_path, PID)
+
+
+def test_vector_validation_accepts_only_complete_litert_signature(tmp_path):
+    import sqlite3
+    from core.rebuild_service import _validate_result
+    from core.retrieval.embeddinggemma2_litert import (
+        MODEL, VERSION, QUANTIZATION, DIM, BACKEND_GPU,
+    )
+    from core.retrieval.vector_store import pack_vector
+    path = tmp_path / "litert.db"
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            CREATE TABLE documents(document_id TEXT,process_id TEXT);
+            CREATE TABLE pages(page_id TEXT,document_id TEXT,page_number INTEGER);
+            CREATE TABLE page_embeddings(page_id TEXT,document_id TEXT,process_id TEXT,
+              page_number INTEGER,model TEXT,backend TEXT,model_version TEXT,
+              quantization TEXT,dim INTEGER,vector_blob BLOB);
+            CREATE TABLE vector_index_metadata(process_id TEXT,model TEXT,
+              backend TEXT,model_version TEXT,quantization TEXT,dim INTEGER);
+        """)
+        db.execute("INSERT INTO documents VALUES('doc',?)", (PID,))
+        db.execute("INSERT INTO pages VALUES('doc:1','doc',1)")
+        db.execute("INSERT INTO page_embeddings VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   ("doc:1", "doc", PID, 1, MODEL, BACKEND_GPU, VERSION,
+                    QUANTIZATION, DIM, pack_vector([1.0] + [0.0] * (DIM-1))))
+        db.execute("INSERT INTO vector_index_metadata VALUES(?,?,?,?,?,?)",
+                   (PID, MODEL, BACKEND_GPU, VERSION, QUANTIZATION, DIM))
+        db.commit()
+        assert _validate_result(path, 1, PID, require_vectors=True)["embeddings"] == 1
+        db.execute("UPDATE page_embeddings SET model_version='v1'")
+        db.commit()
+        with pytest.raises(RuntimeError, match="LiteRT inválidos"):
+            _validate_result(path, 1, PID, require_vectors=True)

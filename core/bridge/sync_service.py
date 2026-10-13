@@ -2626,7 +2626,7 @@ def process_captured_sync(
 
     t_struct_dur = time.perf_counter() - t_struct_start
 
-    # --- ESTÁGIO 4: INDEXING (Embeddings ONNX) ---
+    # --- ESTÁGIO 4: INDEXING (EmbeddingGemma 2 LiteRT) ---
     t_embed_start = time.perf_counter()
     _update_pipeline_progress(store, cnj, "INDEXING", 0, total_physical_pages)
 
