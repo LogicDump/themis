@@ -112,3 +112,14 @@ Todos os dados operacionais residem em `<HERMES_HOME>\plugin-data\themis\`:
 O pacote inclui o **Themis Theme** para o Hermes Desktop, construído com tipografia baseada nas fontes variáveis **Inter** (interface) e **Roboto Mono** (código e monospace).
 
 O tema é registrado automaticamente no Hermes e pode ser selecionado no painel de aparência. Sua ativação é opcional.
+
+
+## Reconstrução offline por processo
+
+O comando `hermes themis rebuild <CNJ>` reconstrói os derivados a partir dos PDFs originais locais, **sem baixar documentos novamente**. Utiliza o mesmo pipeline da importação: extração, Canonical Store, autos, movimentos, busca e embeddings ONNX. O procedimento monta o pacote em área isolada e mantém backup do anterior em `.rebuild-backups/<CNJ>/`.
+
+Execute primeiro `hermes themis rebuild <CNJ> --dry-run` (verificação SHA-256). `hermes themis rebuild --all --dry-run` apenas audita. Se houver resumos ou sínteses de IA, o rebuild real **recusa o descarte silencioso**: use `--discard-ai` somente após verificar e aceitar a perda desses derivados. `--full` ainda não está disponível e nunca gera chamadas pagas automaticamente.
+
+O rebuild pode **alterar a quantidade de movimentos documentais**: peças com o mesmo protocolo e autor podem ser agrupadas, enquanto peças sem identidade processual atestada permanecem nos Autos, mas não viram movimentos fictícios. Inspecione a projeção reconstruída e o relatório antes de aceitar a troca como homologada. A construção é pesada; nenhuma promessa de ganho de velocidade foi comprovada.
+
+Os vetores da versão atual (`embeddinggemma:300m`, 768 dimensões) são gerados novamente. Se faltar algum vetor, a versão reconstruída não substitui o pacote existente. **EmbeddingGemma 2 está em avaliação, não selecionado como modelo oficial**, e requer índice independente e contrato de tokenização/pooling próprio.

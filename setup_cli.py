@@ -453,3 +453,40 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         ),
     )
     migrate_parser.set_defaults(func=run_themis_migrate)
+
+    rebuild_parser = subs.add_parser("rebuild", help="Reconstrução offline de processo")
+    rebuild_parser.add_argument("cnj", nargs="?")
+    rebuild_parser.add_argument("--dry-run", action="store_true")
+    rebuild_parser.add_argument("--all", action="store_true")
+    rebuild_parser.add_argument("--full", action="store_true")
+    rebuild_parser.add_argument("--discard-ai", action="store_true")
+    rebuild_parser.set_defaults(func=run_themis_rebuild)
+
+def run_themis_rebuild(args: argparse.Namespace, *,
+                       data_root_override: Path | str | None = None,
+                       log_fn: Callable[[str], None] = print) -> dict[str, Any]:
+    """Rebuild selected Process Packages offline using the official sync pipeline."""
+    try:
+        from .core.rebuild_service import rebuild_process, audit_rebuild
+    except ImportError:
+        from core.rebuild_service import rebuild_process, audit_rebuild
+    root = Path(data_root_override).resolve() if data_root_override else _resolve_plugin_data_dir()
+    if getattr(args, "full", False):
+        raise ThemisSetupError("--full ainda não suportado: derivados de IA não serão apagados")
+    if not getattr(args, "all", False) and not getattr(args, "cnj", None):
+        raise ThemisSetupError("Informe CNJ ou --all --dry-run")
+    if getattr(args, "all", False):
+        ids = sorted(p.name for p in (root / "processos").iterdir()
+                     if p.is_dir() and __import__("re").fullmatch(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}", p.name))
+    else:
+        ids = [args.cnj]
+    if not ids:
+        raise ThemisSetupError("Nenhum processo encontrado")
+    if not args.dry_run and args.all:
+        raise ThemisSetupError("--all é permitido apenas com --dry-run")
+    results = []
+    for cnj in ids:
+        result = rebuild_process(root, cnj, dry_run=args.dry_run, allow_ai_loss=args.discard_ai)
+        log_fn(json.dumps(result, ensure_ascii=False))
+        results.append(result)
+    return {"processes": results}

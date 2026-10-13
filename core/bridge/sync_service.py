@@ -2472,7 +2472,9 @@ def process_captured_sync(
         db.close()
 
     # Extração e persistência de Provider Artifacts e vínculo a Canonical Pages
-    from core.documentos.provider_marker_pipeline_v1 import persist_esaj_provider_artifacts
+    from core.documentos.provider_marker_pipeline_v1 import (
+        persist_esaj_provider_artifacts, persist_djen_provider_artifacts,
+    )
     db = store.connect()
     try:
         db.execute("BEGIN")
@@ -2482,6 +2484,10 @@ def process_captured_sync(
                 db,
                 document_id=doc_id,
                 process_id=cnj,
+                page_structures=[{"page": int(item["page"]), **(item.get("structure") or {})} for item in doc_pages_map[doc_id] if isinstance(item.get("structure"), dict)],
+            )
+            persist_djen_provider_artifacts(
+                db, document_id=doc_id, process_id=cnj,
                 page_structures=[{"page": int(item["page"]), **(item.get("structure") or {})} for item in doc_pages_map[doc_id] if isinstance(item.get("structure"), dict)],
             )
         db.commit()

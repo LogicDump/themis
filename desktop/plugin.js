@@ -24771,6 +24771,11 @@ function renderMovementItem(mov, idx, openAutosAtMovementPage, isExpanded = true
 				}) : null]
 			}),
 			movementActorNode(mov),
+			mov.available_on || mov.issuing_body ? jsx("div", {
+				className: "text-muted-foreground text-[0.7rem]",
+				children: [mov.available_on ? `Disponibilizado em: ${mov.available_on}` : null,
+					mov.issuing_body ? `Emissor: ${mov.issuing_body}` : null].filter(Boolean).join(" · ")
+			}) : null,
 			isExpanded ? jsxs("div", {
 				className: "space-y-1 pt-1",
 				children: [

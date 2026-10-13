@@ -280,6 +280,44 @@ def persist_esaj_provider_artifacts(
     }
 
 
+def persist_djen_provider_artifacts(
+    db: sqlite3.Connection, *, document_id: str, process_id: str,
+    page_structures: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach verified DJEN certificates without inventing signer or event time."""
+    from core.documentos.djen_provider_marker_v1 import extract_djen_provider_document_markers
+    projection = extract_djen_provider_document_markers(
+        document_id, page_structures, target_process_id=process_id,
+    )
+    count = 0
+    for group in projection["provider_artifact_groups"]:
+        markers = group["markers"]
+        first = markers[0]
+        if process_id not in first.get("provider_identity", {}).get("process_references", []):
+            continue
+        code = first["provider_identity"]["document_or_movement_or_protocol"]["value"]
+        aid = register_provider_artifact(
+            db, process_id=process_id, source_origin="DJEN_COMUNICA",
+            source_artifact_id=f"DJEN:CERTIFICATE:{code}",
+            artifact_fingerprint=group["artifact_fingerprint"],
+            artifact_type="CERTIDÃO DE PUBLICAÇÃO",
+            provenance={
+                "provider_document_marker_version": projection["djen_provider_marker_version"],
+                "marker": first, "markers": markers, "available_on": first.get("available_on"),
+                "issuing_body": first.get("issuing_body"),
+                "event_at": None, "signer": None,
+            },
+        )
+        page_ids = [r[0] for r in db.execute(
+            "SELECT canonical_page_id FROM canonical_page_observations WHERE document_id=? "
+            "AND pdf_page IN (" + ",".join("?" for _ in group["pages"]) + ")",
+            (document_id, *group["pages"]),
+        )]
+        link_provider_artifact_pages(db, aid, page_ids)
+        count += 1
+    return {"artifacts": count, "provider": "DJEN_COMUNICA"}
+
+
 def backfill_confirmed_document_types(db: sqlite3.Connection, *, document_id: str) -> dict[str, int]:
     """Classify existing artifacts from persisted structures, without re-extracting markers.
 

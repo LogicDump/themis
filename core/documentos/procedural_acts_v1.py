@@ -91,17 +91,21 @@ def _page_evidence(rows: list[sqlite3.Row]) -> tuple[dict[str, Any] | None, str 
         occurred_at = _canonical_datetime(marker.get("event_at"))
         
         protocol, wprc_protocol = _extract_protocol(marker, prov)
+        doc_identity = (marker.get("provider_identity") or {}).get("document_or_movement_or_protocol") or {}
+        djen_identity = ("DJEN_CERTIFICATE:" + str(doc_identity["value"]) if doc_identity.get("kind") == "DJEN_CERTIFICATE_CODE" and doc_identity.get("value") else None)
         
         # Piece verification code (e.g. aqgMCLbP) belongs strictly to the piece, not act boundary
         verification_code = marker.get("verification_code") or (marker.get("verification") or {}).get("code")
         
-        act_identity = (actor or None, occurred_at or None, wprc_protocol or protocol or None)
+        act_identity = (actor or None, occurred_at or None, wprc_protocol or protocol or djen_identity)
         if any(act_identity):
             evidence.append({
                 "act_identity": act_identity,
                 "actor": actor or None,
                 "occurred_at": occurred_at or None,
                 "protocol": wprc_protocol or protocol or None,
+                "available_on": (prov.get("available_on") or marker.get("available_on")),
+                "issuing_body": (prov.get("issuing_body") or marker.get("issuing_body")),
                 "verification_code": verification_code or None,
                 "artifact_id": row["provider_artifact_id"],
                 "artifact_type": row["artifact_type"],
@@ -427,6 +431,9 @@ def movement_projection(
             occurred_at = evs[0]["occurred_at"] if evs else None
             protocol = evs[0]["protocol"] if evs else None
             verification_code = evs[0]["verification_code"] if evs else None
+            available_on = evs[0].get("available_on") if evs else None
+            issuing_body = evs[0].get("issuing_body") if evs else None
+            factual_identity = evs[0]["act_identity"] if evs else None
 
             first_pg = piece_pages[0] if piece_pages else {
                 "process_page_number": fi, "pdf_page": 1, "document_id": sha, "process_folio_label": str(fi or 1),
@@ -461,7 +468,9 @@ def movement_projection(
                 "actor": actor,
                 "occurred_at": occurred_at,
                 "protocol": protocol,
-                "identity": (actor, occurred_at, protocol) if (actor or occurred_at or protocol) else None,
+                "identity": factual_identity,
+                "available_on": available_on,
+                "issuing_body": issuing_body,
                 "source_ref": {
                     "document_id": first_pg["document_id"],
                     "pdf_page": first_pg["pdf_page"],
@@ -503,6 +512,8 @@ def movement_projection(
             actor = first_p["actor"]
             occurred_at = first_p["occurred_at"]
             proto = first_p["protocol"]
+            available_on = first_p.get("available_on")
+            issuing_body = first_p.get("issuing_body")
             mov_type = first_p["piece_type"] or "Movimento"
             title = first_p["title"] or mov_type
             description = f"{mov_type} (com {len(pieces) - 1} anexo(s))" if len(pieces) > 1 else title
@@ -520,6 +531,8 @@ def movement_projection(
                 "occurred_at": occurred_at,
                 "source_datetime": occurred_at,
                 "protocol": proto,
+                "available_on": available_on,
+                "issuing_body": issuing_body,
                 "page_start": p_start,
                 "page_end": p_end,
                 "page_count": sum(p["page_count"] for p in pieces if p.get("page_count")),

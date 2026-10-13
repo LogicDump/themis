@@ -17,6 +17,7 @@ _URL = re.compile(r"https?://comunicaapi\.pje\.jus\.br/api/v1/comunicacao/([A-Za
 _CODE = re.compile(r"c\w*digo\s+da\s+certid\w*\s*:\s*([A-Za-z0-9]+)", re.I)
 _CERTIFICATE = re.compile(r"certid\w*\s+de\s+publica\w*\s+(\d+)", re.I)
 _DATE = re.compile(r"disponibilizado\s+em\s*:\s*(\d{2}/\d{2}/\d{4})", re.I)
+_ISSUER = "Tribunal de Justiça do Estado de São Paulo"
 
 
 def _normalized(value: str) -> str:
@@ -41,6 +42,7 @@ def _page_signal(document_id: str, page_structure: dict[str, Any]) -> dict[str, 
     code_match = _CODE.search(normalized)
     certificate_match = _CERTIFICATE.search(normalized)
     date_match = _DATE.search(normalized)
+    issuing_body = _ISSUER if "poder judiciario tribunal de justica do estado de sao paulo" in normalized[:250] else None
     is_certificate = bool(
         certificate_match
         and "teor da comunica" in normalized
@@ -54,7 +56,8 @@ def _page_signal(document_id: str, page_structure: dict[str, Any]) -> dict[str, 
         "certificate_number": certificate_match.group(1) if certificate_match else None,
         "certificate_code": (url_match.group(1) if url_match else None) or (code_match.group(1) if code_match else None),
         "comunica_url": url_match.group(0) if url_match else None,
-        "publication_date": date_match.group(1) if date_match else None,
+        "available_on": date_match.group(1) if date_match else None,
+        "issuing_body": issuing_body,
         "process_references": sorted(set(_CNJ.findall(text))),
         "source_maps": source_maps,
     }
@@ -115,7 +118,8 @@ def extract_djen_provider_document_markers(
                     "document_or_movement_or_protocol": {"kind": "DJEN_CERTIFICATE_CODE", "value": code},
                 },
                 "certificate_number": signal["certificate_number"],
-                "publication_date": signal["publication_date"],
+                "available_on": signal["available_on"],
+                "issuing_body": signal["issuing_body"],
                 "comunica_url": url,
                 "raw_text": member["raw_text"],
                 "source_map": source,
