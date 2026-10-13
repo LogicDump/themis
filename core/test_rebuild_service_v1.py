@@ -113,3 +113,28 @@ def test_ai_derivatives_need_explicit_confirmation(tmp_path):
         rebuild_process(tmp_path, PID)
     assert (package / 'process.db').is_file()
     assert audit_rebuild(tmp_path, PID)['ai_derivatives']['movement_summaries'] == 1
+
+
+def test_swap_denied_restores_original_and_preserves_stage(tmp_path, monkeypatch):
+    from core.rebuild_service import _swap_packages
+    original = tmp_path / "processos" / PID
+    original.mkdir(parents=True)
+    (original / "original.txt").write_text("original", encoding="utf-8")
+    staged = tmp_path / ".rebuild" / "job" / "processos" / PID
+    staged.mkdir(parents=True)
+    (staged / "rebuilt.txt").write_text("new", encoding="utf-8")
+    backup = tmp_path / ".rebuild-backups" / PID / "job"
+    backup.parent.mkdir(parents=True)
+    real_rename = Path.rename
+
+    def fail_final_rename(path, target):
+        if Path(path) == staged and Path(target) == original:
+            raise PermissionError(5, "Windows file is locked")
+        return real_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_final_rename)
+    with pytest.raises(RuntimeError, match="original restaurado"):
+        _swap_packages(original, staged, backup)
+    assert (original / "original.txt").read_text(encoding="utf-8") == "original"
+    assert (staged / "rebuilt.txt").read_text(encoding="utf-8") == "new"
+    assert not backup.exists()

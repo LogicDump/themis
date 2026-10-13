@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import closing
 import os
 import re
 import shutil
@@ -62,7 +63,7 @@ def audit_rebuild(root: Path, cnj: str, *, progress=None) -> dict:
     movements_before = None
     database = package / "process.db"
     if database.is_file():
-        with sqlite3.connect("file:" + database.as_posix() + "?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect("file:" + database.as_posix() + "?mode=ro", uri=True)) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
             if "movements" in tables:
                 movements_before = db.execute("SELECT count(*) FROM movements WHERE process_id=?", (cnj,)).fetchone()[0]
@@ -104,7 +105,7 @@ def _stage_manifest(stage: Path) -> None:
 def _retarget_paths(db_path: Path, staged: Path, target: Path) -> None:
     # The existing pipeline persists absolute file paths: rewrite these
     # BEFORE sealing/checksumming the replacement package.
-    with sqlite3.connect(db_path) as db:
+    with closing(sqlite3.connect(db_path)) as db:
         for rowid, value in db.execute("SELECT rowid,path FROM files"):
             if value.startswith(str(staged) + os.sep):
                 db.execute("UPDATE files SET path=? WHERE rowid=?",
@@ -113,7 +114,7 @@ def _retarget_paths(db_path: Path, staged: Path, target: Path) -> None:
 
 
 def _validate_result(db_path: Path, expected: int, cnj: str, *, require_vectors: bool = False) -> dict:
-    with sqlite3.connect(db_path) as db:
+    with closing(sqlite3.connect(db_path)) as db:
         integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
         foreign = db.execute("PRAGMA foreign_key_check").fetchall()
         documents = db.execute("SELECT count(*) FROM documents WHERE process_id=?", (cnj,)).fetchone()[0]
@@ -126,6 +127,32 @@ def _validate_result(db_path: Path, expected: int, cnj: str, *, require_vectors:
             raise RuntimeError(f"Rebuild inválido: integrity={integrity}, FK={len(foreign)}, docs={documents}/{expected}, pages={pages}")
         movement_count = db.execute("SELECT count(*) FROM movements WHERE process_id=?", (cnj,)).fetchone()[0] if "movements" in vector_tables else None
         return {"documents": documents, "pages": pages, "embeddings": vectors, "movements": movement_count}
+def _swap_packages(source: Path, stage: Path, backup: Path) -> None:
+    """Probe staged-directory movability before taking the live package offline."""
+    probe = stage.with_name(stage.name + ".rename-probe")
+    stage.rename(probe)
+    try:
+        probe.rename(stage)
+    except BaseException as exc:
+        raise RuntimeError(f"Pacote reconstruído preservado em {probe}; falha ao restaurar nome de staging") from exc
+
+    source.rename(backup)
+    try:
+        stage.rename(source)
+    except BaseException as exc:
+        try:
+            backup.rename(source)
+        except BaseException as rollback_error:
+            raise RuntimeError(
+                f"FALHA DE ROLLBACK: original em {backup}, reconstruído em {stage}; "
+                "não executar novos rebuilds até recuperar o processo"
+            ) from rollback_error
+        raise RuntimeError(
+            f"Falha ao instalar o pacote; original restaurado em {source}; "
+            f"reconstruído preservado em {stage}"
+        ) from exc
+
+
 def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
                     allow_ai_loss: bool = False, pipeline=None, progress=None) -> dict:
     """Build in quarantine; atomically exchange package after validation."""
@@ -146,6 +173,7 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
     backup = root / ".rebuild-backups" / cnj / token
     stage.parent.mkdir(parents=True)
     swapped = False
+    swap_attempted = False
     try:
         if progress is not None:
             progress.update("COPYING")
@@ -161,7 +189,7 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
         cpopg_file = stage / "cpopg_snapshot.json"
         cpopg = json.loads(cpopg_file.read_text(encoding="utf-8")) if cpopg_file.is_file() else None
         from core.documentos.canonical_store_v1 import migrate as migrate_canonical
-        with store.connect():
+        with closing(store.connect()):
             pass
         migrate_canonical(store.db_path)
         plan_started = time.perf_counter()
@@ -197,16 +225,16 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
             raise RuntimeError("Destino de backup já existe")
         if progress is not None:
             progress.update("SWAPPING")
-        source.rename(backup)
-        try:
-            stage.rename(source)
-            swapped = True
-        except BaseException:
-            backup.rename(source)
-            raise
+        swap_attempted = True
+        _swap_packages(source, stage, backup)
+        swapped = True
         durations["total"] = round(time.perf_counter() - started, 2)
         return {**audit, **result, "status": "READY", "changed": True,
                 "backup": str(backup), "durations_seconds": durations}
     finally:
-        if stage_root.exists():
-            shutil.rmtree(stage_root)
+        if stage_root.exists() and (swapped or not swap_attempted):
+            try:
+                shutil.rmtree(stage_root)
+            except OSError:
+                import logging
+                logging.getLogger(__name__).exception("Staging preservado por bloqueio de arquivos: %s", stage_root)
