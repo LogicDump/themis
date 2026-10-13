@@ -123,3 +123,8 @@ Execute primeiro `hermes themis rebuild <CNJ> --dry-run` (verificação SHA-256)
 O rebuild pode **alterar a quantidade de movimentos documentais**: peças com o mesmo protocolo e autor podem ser agrupadas, enquanto peças sem identidade processual atestada permanecem nos Autos, mas não viram movimentos fictícios. Inspecione a projeção reconstruída e o relatório antes de aceitar a troca como homologada. A construção é pesada; nenhuma promessa de ganho de velocidade foi comprovada.
 
 Os vetores da versão atual (`embeddinggemma:300m`, 768 dimensões) são gerados novamente. Se faltar algum vetor, a versão reconstruída não substitui o pacote existente. **EmbeddingGemma 2 está em avaliação, não selecionado como modelo oficial**, e requer índice independente e contrato de tokenização/pooling próprio.
+
+
+### Progresso do rebuild no PowerShell
+
+O `hermes themis rebuild <CNJ>` acompanha o mesmo `pipeline_progress` gravado no `manifest.json` pela importação normal, sem gerar percentuais globais fictícios. Mostra contagens de PDFs verificados, páginas extraídas e embeddings ONNX, com tempo decorrido nas etapas sem contador (estruturação, validação e troca). Terminais interativos atualizam a linha; redirecionamentos emitem registros discretos. Ao terminar, exibe documentos, páginas, vetores, movimentos anteriores/atuais, tempo e localização do backup, além do relatório JSON. Essa alteração afeta apenas execuções novas do comando, não rebuilds já em andamento.

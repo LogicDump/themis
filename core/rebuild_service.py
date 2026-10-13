@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 
@@ -23,7 +24,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def audit_rebuild(root: Path, cnj: str) -> dict:
+def audit_rebuild(root: Path, cnj: str, *, progress=None) -> dict:
     """Read-only preflight, including every original's digest."""
     cnj = validate_process_id(cnj)
     root = Path(root).resolve()
@@ -40,6 +41,9 @@ def audit_rebuild(root: Path, cnj: str) -> dict:
         raise ValueError("Inventário sem peças")
     total = 0
     checked = set()
+    total_unique = len({str(piece.get("sha256") or "") for piece in pieces})
+    if progress is not None:
+        progress.update("VALIDATING", 0, total_unique)
     for piece in pieces:
         digest = str(piece.get("sha256") or "")
         if not SHA256.fullmatch(digest):
@@ -52,11 +56,16 @@ def audit_rebuild(root: Path, cnj: str) -> dict:
                 raise ValueError(f"PDF original corrompido: {digest}")
             total += original.stat().st_size
             checked.add(digest)
+            if progress is not None:
+                progress.update("VALIDATING", len(checked), total_unique)
     ai_counts = {"movement_summaries": 0, "case_syntheses": 0}
+    movements_before = None
     database = package / "process.db"
     if database.is_file():
         with sqlite3.connect("file:" + database.as_posix() + "?mode=ro", uri=True) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+            if "movements" in tables:
+                movements_before = db.execute("SELECT count(*) FROM movements WHERE process_id=?", (cnj,)).fetchone()[0]
             for table in ai_counts:
                 if table in tables:
                     ai_counts[table] = db.execute("SELECT count(*) FROM " + table).fetchone()[0]
@@ -68,6 +77,7 @@ def audit_rebuild(root: Path, cnj: str) -> dict:
         "bytes": total, "snapshot_movements": len(snapshot_data.get("movements") or []),
         "snapshot_participants": len(snapshot_data.get("participants") or []),
         "status": "VALIDATED", "ai_derivatives": ai_counts,
+        "movements_before": movements_before,
     }
 
 
@@ -114,12 +124,16 @@ def _validate_result(db_path: Path, expected: int, cnj: str, *, require_vectors:
             raise RuntimeError(f"Embeddings incompletos: {vectors}/{pages}")
         if integrity != "ok" or foreign or documents != expected or pages < expected:
             raise RuntimeError(f"Rebuild inválido: integrity={integrity}, FK={len(foreign)}, docs={documents}/{expected}, pages={pages}")
-        return {"documents": documents, "pages": pages, "embeddings": vectors}
+        movement_count = db.execute("SELECT count(*) FROM movements WHERE process_id=?", (cnj,)).fetchone()[0] if "movements" in vector_tables else None
+        return {"documents": documents, "pages": pages, "embeddings": vectors, "movements": movement_count}
 def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
-                    allow_ai_loss: bool = False, pipeline=None) -> dict:
+                    allow_ai_loss: bool = False, pipeline=None, progress=None) -> dict:
     """Build in quarantine; atomically exchange package after validation."""
     root = Path(root).resolve()
-    audit = audit_rebuild(root, cnj)
+    started = time.perf_counter()
+    durations = {}
+    audit = audit_rebuild(root, cnj, progress=progress)
+    durations["auditoria"] = round(time.perf_counter() - started, 2)
     if dry_run:
         return {**audit, "status": "DRY_RUN", "changed": False}
     if sum(audit["ai_derivatives"].values()) and not allow_ai_loss:
@@ -133,8 +147,12 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
     stage.parent.mkdir(parents=True)
     swapped = False
     try:
+        if progress is not None:
+            progress.update("COPYING")
+        copied_at = time.perf_counter()
         _copy_sources(source, stage)
         _stage_manifest(stage)
+        durations["cópia"] = round(time.perf_counter() - copied_at, 2)
         from core.documentos.themis_documentos import Store
         from core.bridge.sync_service import plan_process_sync, process_captured_sync, _finalize_process_package
         store = Store(stage_root, process_id=cnj)
@@ -146,6 +164,7 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
         with store.connect():
             pass
         migrate_canonical(store.db_path)
+        plan_started = time.perf_counter()
         plan_process_sync(
             store, cnj, metadata=snapshot.get("metadata") or {},
             participants=snapshot.get("participants") or [],
@@ -154,16 +173,30 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
             page_context=snapshot.get("page_context") or {},
             cpopg=cpopg,
         )
-        (pipeline or process_captured_sync)(store, cnj)
+        durations["preparação"] = round(time.perf_counter() - plan_started, 2)
+        if progress is not None:
+            progress.watch(store.process_manifest_path(cnj))
+        pipeline_started = time.perf_counter()
+        try:
+            pipeline_result = (pipeline or process_captured_sync)(store, cnj)
+        finally:
+            if progress is not None:
+                progress.watch(None)
+        durations["pipeline"] = round(time.perf_counter() - pipeline_started, 2)
+        if progress is not None:
+            progress.update("VERIFYING")
         _retarget_paths(stage / "process.db", stage, source)
         for cached in (stage / "derivados" / "documentos").glob("*/manifest.json"):
             text = cached.read_text(encoding="utf-8")
             cached.write_text(text.replace(str(stage) + os.sep, str(source) + os.sep), encoding="utf-8")
         _finalize_process_package(store, cnj)
         result = _validate_result(stage / "process.db", audit["pdfs"], cnj, require_vectors=pipeline is None)
+        durations["validação final"] = round(time.perf_counter() - pipeline_started - durations["pipeline"], 2)
         backup.parent.mkdir(parents=True, exist_ok=True)
         if backup.exists():
             raise RuntimeError("Destino de backup já existe")
+        if progress is not None:
+            progress.update("SWAPPING")
         source.rename(backup)
         try:
             stage.rename(source)
@@ -171,8 +204,9 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
         except BaseException:
             backup.rename(source)
             raise
+        durations["total"] = round(time.perf_counter() - started, 2)
         return {**audit, **result, "status": "READY", "changed": True,
-                "backup": str(backup)}
+                "backup": str(backup), "durations_seconds": durations}
     finally:
         if stage_root.exists():
             shutil.rmtree(stage_root)

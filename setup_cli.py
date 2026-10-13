@@ -486,7 +486,18 @@ def run_themis_rebuild(args: argparse.Namespace, *,
         raise ThemisSetupError("--all é permitido apenas com --dry-run")
     results = []
     for cnj in ids:
-        result = rebuild_process(root, cnj, dry_run=args.dry_run, allow_ai_loss=args.discard_ai)
+        from core.pipeline_progress_console import PipelineProgressConsole
+        progress = PipelineProgressConsole()
+        progress.watch(None)
+        try:
+            result = rebuild_process(root, cnj, dry_run=args.dry_run,
+                                     allow_ai_loss=args.discard_ai, progress=progress)
+        except Exception as exc:
+            progress.finish(error=str(exc))
+            raise
+        progress.finish()
+        from core.pipeline_progress_console import rebuild_report
+        log_fn(rebuild_report(result))
         log_fn(json.dumps(result, ensure_ascii=False))
         results.append(result)
     return {"processes": results}
