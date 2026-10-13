@@ -2739,11 +2739,15 @@ def filter_document_recurring_lines(pages_raw: dict[int, dict[str, Any]]) -> dic
                     other_region = "header" if other_is_top else "footer"
                     if other_region != region:
                         continue
+                    # Geometry is a mandatory condition for a recurrence.
+                    # Reject impossible matches before expensive text similarity;
+                    # this preserves the exact decision/order of the old filter.
+                    if abs(l.y_bottom - other_l.y_bottom) > 30.0 or abs(l.x_left - other_l.x_left) > 60.0:
+                        continue
                     other_norm = _normalize_furniture_text(other_l.text)
                     if norm == other_norm or _furniture_similarity(norm, other_norm) >= 0.85:
-                        if abs(l.y_bottom - other_l.y_bottom) <= 30.0 and abs(l.x_left - other_l.x_left) <= 60.0:
-                            match_count += 1
-                            break
+                        match_count += 1
+                        break
 
             if match_count >= 2:
                 suppressed_line_ids_by_page[p_num].add(l.raw_line_id)
