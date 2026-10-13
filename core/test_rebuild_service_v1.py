@@ -195,7 +195,7 @@ def test_preflight_legal_replay_refuses_before_pipeline(tmp_path):
     with pytest.raises(RuntimeError, match="REBUILD_REPLAY_PENDENTE"):
         rebuild_process(tmp_path, PID, allow_ai_loss=True)
     assert not (tmp_path / ".rebuild").exists()
-    with pytest.raises(RuntimeError, match="publications"):
+    with pytest.raises(RuntimeError, match="REBUILD_REPLAY_PENDENTE"):
         _preflight_legal_replay(package / "process.db", PID)
 
 
@@ -206,3 +206,64 @@ def test_preflight_legal_replay_allows_empty_legal_source(tmp_path):
     with sqlite3.connect(db_path) as db:
         db.execute("CREATE TABLE publications(process_id TEXT)")
     assert _preflight_legal_replay(db_path, PID) == {}
+
+
+def test_reclassified_document_event_requires_preserved_autos_and_no_deadline(tmp_path):
+    import sqlite3
+    from core.rebuild_service import _legal_rebuild_guard
+    original, rebuilt = tmp_path / "old_events.db", tmp_path / "new_events.db"
+
+    def create(path):
+        db = sqlite3.connect(path)
+        db.executescript("""
+            CREATE TABLE process_events(event_id TEXT,process_id TEXT,event_type TEXT,
+                source_entity TEXT,source_id TEXT,title TEXT,event_date TEXT,
+                event_time TEXT,date_precision TEXT);
+            CREATE TABLE movements(movement_id TEXT,process_id TEXT);
+            CREATE TABLE movement_pieces(movement_id TEXT,document_id TEXT);
+            CREATE TABLE documents(document_id TEXT,process_id TEXT);
+            CREATE TABLE chronology_events(owner_type TEXT,owner_id TEXT);
+            CREATE TABLE deadline_instructions(process_id TEXT,movement_id TEXT);
+            CREATE TABLE deadline_obligations(process_id TEXT,origin_movement_id TEXT);
+        """)
+        db.execute("INSERT INTO documents VALUES('sha256_document',?)", (PID,))
+        db.execute("INSERT INTO chronology_events VALUES('PROCESS',?)", (PID,))
+        db.commit()
+        return db
+
+    with create(original) as old, create(rebuilt) as stage:
+        old.execute("INSERT INTO movements VALUES('legacy_movement',?)", (PID,))
+        old.execute("INSERT INTO movement_pieces VALUES('legacy_movement','sha256_document')")
+        old.execute("""INSERT INTO process_events VALUES(
+            'old_event',?,'MOVEMENT','MOVEMENT','legacy_movement',
+            'Documentos diversos',NULL,NULL,'UNKNOWN')""", (PID,))
+        old.commit()
+        result = _legal_rebuild_guard(original, rebuilt, PID)
+        assert result["missing"] == {}
+        assert result["movement_reclassification"]["reclassified"] == 1
+        stage.execute("DELETE FROM documents")
+        stage.commit()
+        with pytest.raises(RuntimeError, match="peça documental"):
+            _legal_rebuild_guard(original, rebuilt, PID)
+        stage.execute("INSERT INTO documents VALUES('sha256_document',?)", (PID,))
+        old.execute("INSERT INTO deadline_instructions VALUES(?,'legacy_movement')", (PID,))
+        old.commit()
+        with pytest.raises(RuntimeError, match="REBUILD_BLOQUEADO"):
+            _legal_rebuild_guard(original, rebuilt, PID)
+
+
+def test_legal_guard_rejects_changed_existing_event_date(tmp_path):
+    import sqlite3
+    from core.rebuild_service import _legal_rebuild_guard
+    old_path, new_path = tmp_path / "events_old.db", tmp_path / "events_new.db"
+    for path, day in ((old_path, "2026-09-03"), (new_path, "2026-09-04")):
+        with sqlite3.connect(path) as db:
+            db.execute("""CREATE TABLE process_events(
+                event_id TEXT,process_id TEXT,event_type TEXT,source_entity TEXT,
+                source_id TEXT,title TEXT,event_date TEXT,event_time TEXT,
+                date_precision TEXT)""")
+            db.execute("INSERT INTO process_events VALUES(?,?,?,?,?,?,?,?,?)",
+                       ("same_event", PID, "PUBLICATION", "PUBLICATION", "pub_x",
+                        "Intimação", day, None, "DAY"))
+    with pytest.raises(RuntimeError, match="eventos existentes alterados"):
+        _legal_rebuild_guard(old_path, new_path, PID)

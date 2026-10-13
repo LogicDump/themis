@@ -177,6 +177,109 @@ def _swap_packages(source: Path, stage: Path, backup: Path) -> None:
 
 
 
+def _verify_reclassified_movement_events(original_db: Path, staged_db: Path,
+                                       process_id: str) -> dict:
+    """Prove dropped legacy MOVEMENT events are fully represented as source documents.
+
+    A document without a verified procedural act is retained in Autos, but does
+    not need a synthetic event in Histórico. Every dropped movement must have
+    its original document hash present in the new package and cannot support
+    an operative deadline instruction/obligation.
+    """
+    import contextlib
+
+    def read_db(path: Path):
+        conn = sqlite3.connect(
+            "file:" + path.resolve().as_posix() + "?mode=ro", uri=True
+        )
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    with contextlib.closing(read_db(original_db)) as old, contextlib.closing(read_db(staged_db)) as new:
+        def events(db):
+            return {
+                row["event_id"]: dict(row)
+                for row in db.execute(
+                    "SELECT event_id,event_type,source_entity,source_id,title,"
+                    "event_date,event_time,date_precision FROM process_events "
+                    "WHERE process_id=?", (process_id,),
+                )
+            }
+
+        previous, current = events(old), events(new)
+        stable = previous.keys() & current.keys()
+        fields = ("event_type", "source_entity", "source_id", "title",
+                  "event_date", "event_time", "date_precision")
+        changed = [eid for eid in stable if any(
+            previous[eid][name] != current[eid][name] for name in fields
+        )]
+        if changed:
+            raise RuntimeError(
+                "REBUILD_BLOQUEADO: eventos existentes alterados sem reconciliação: "
+                + ", ".join(sorted(changed)[:5])
+            )
+        removed = [previous[eid] for eid in previous.keys() - current.keys()]
+        if not removed:
+            return {"reclassified": 0, "document_ids_verified": 0}
+        if any(row["event_type"] != "MOVEMENT" or row["source_entity"] != "MOVEMENT"
+               for row in removed):
+            raise RuntimeError("REBUILD_BLOQUEADO: desaparecimento de evento não documental")
+        movement_ids = [row["source_id"] for row in removed]
+        old_movements = {
+            row[0] for row in old.execute(
+                "SELECT movement_id FROM movements WHERE process_id=?", (process_id,)
+            )
+        }
+        if set(movement_ids) - old_movements:
+            raise RuntimeError("REBUILD_BLOQUEADO: evento perdido sem movimento-fonte")
+        for table, column in (
+            ("deadline_instructions", "movement_id"),
+            ("deadline_obligations", "origin_movement_id"),
+        ):
+            existing = {r[0] for r in old.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            if table in existing:
+                referenced = {r[0] for r in old.execute(
+                    "SELECT " + column + " FROM " + table + " WHERE process_id=?",
+                    (process_id,),
+                ) if r[0]}
+                if referenced.intersection(movement_ids):
+                    raise RuntimeError(
+                        "REBUILD_BLOQUEADO: movimento com obrigação/prazo não pode desaparecer"
+                    )
+        new_docs = {
+            r[0] for r in new.execute(
+                "SELECT document_id FROM documents WHERE process_id=?", (process_id,)
+            )
+        }
+        doc_ids = set()
+        for mid in movement_ids:
+            docs = [row[0] for row in old.execute(
+                "SELECT document_id FROM movement_pieces WHERE movement_id=?", (mid,)
+            )]
+            if not docs or any(doc not in new_docs for doc in docs):
+                raise RuntimeError(
+                    "REBUILD_BLOQUEADO: peça documental não preservada no novo pacote"
+                )
+            doc_ids.update(docs)
+        old_join = old.execute(
+            "SELECT count(*) FROM chronology_events WHERE owner_type='PROCESS' AND owner_id=?",
+            (process_id,),
+        ).fetchone()[0]
+        new_join = new.execute(
+            "SELECT count(*) FROM chronology_events WHERE owner_type='PROCESS' AND owner_id=?",
+            (process_id,),
+        ).fetchone()[0]
+        if new_join < old_join:
+            raise RuntimeError("REBUILD_BLOQUEADO: cronologia documental reduzida")
+        return {
+            "reclassified": len(removed),
+            "document_ids_verified": len(doc_ids),
+            "old_event_ids": sorted(row["event_id"] for row in removed),
+        }
+
+
 def _legal_rebuild_guard(original_db: Path, staged_db: Path, process_id: str) -> dict:
     """Fail closed until source replay is available for procedural domains.
 
@@ -218,12 +321,19 @@ def _legal_rebuild_guard(original_db: Path, staged_db: Path, process_id: str) ->
     after = capture(staged_db)
     missing = {key: {"before": amount, "after": after[key]}
                for key, amount in before.items() if after[key] < amount}
+    projection = None
+    if not (set(missing) - {"process_events"}) and before["process_events"]:
+        projection = _verify_reclassified_movement_events(
+            original_db, staged_db, process_id
+        )
+        missing.pop("process_events", None)
     if missing:
         raise RuntimeError(
             "REBUILD_BLOQUEADO: camadas jurídicas não reconstruídas; "
             + json.dumps(missing, ensure_ascii=False, sort_keys=True)
         )
-    return {"legal_before": before, "legal_after": after, "missing": missing}
+    return {"legal_before": before, "legal_after": after, "missing": missing,
+            "movement_reclassification": projection}
 
 
 def _preflight_legal_replay(source_db: Path, process_id: str) -> dict[str, int]:
@@ -256,12 +366,25 @@ def _preflight_legal_replay(source_db: Path, process_id: str) -> dict[str, int]:
             if count:
                 counts[table] = count
     if counts:
-        raise RuntimeError(
-            "REBUILD_REPLAY_PENDENTE: este processo possui fontes e resultados "
-            "jurídicos que o rebuild ainda não reproduz. Operação bloqueada "
-            "ANTES de extrair PDFs e gerar embeddings: "
-            + json.dumps(counts, ensure_ascii=False, sort_keys=True)
-        )
+        from core.documentos.legal_replay_v1 import _source_publications, _calendar_source
+        try:
+            with closing(sqlite3.connect(
+                "file:" + source_db.resolve().as_posix() + "?mode=ro", uri=True
+            )) as db:
+                db.row_factory = sqlite3.Row
+                publications = _source_publications(db, process_id)
+                snapshots = _calendar_source(db)
+            if counts.get("publications", 0) != len(publications):
+                raise ValueError("cobertura incompleta de publicações DJEN")
+            if counts.get("court_calendar_events", 0) and not snapshots:
+                raise ValueError("calendário sem snapshots TJSP reproduzíveis")
+            if counts.get("deadline_calculations", 0) and not (publications and snapshots):
+                raise ValueError("cálculos anteriores sem fontes DJEN e TJSP completas")
+        except (ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+            raise RuntimeError(
+                "REBUILD_REPLAY_PENDENTE: fontes jurídicas insuficientes; "
+                "bloqueado antes de processar PDFs: " + str(exc)
+            ) from exc
     return counts
 
 
@@ -330,12 +453,18 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
         for cached in (stage / "derivados" / "documentos").glob("*/manifest.json"):
             text = cached.read_text(encoding="utf-8")
             cached.write_text(text.replace(str(stage) + os.sep, str(source) + os.sep), encoding="utf-8")
-        _finalize_process_package(store, cnj)
         result = _validate_result(stage / "process.db", audit["pdfs"], cnj, require_vectors=pipeline is None)
+        if pipeline is None and (source / "process.db").is_file():
+            from core.documentos.legal_replay_v1 import replay_legal_sources
+            result["legal_replay"] = replay_legal_sources(
+                source / "process.db", stage / "process.db", cnj
+            )
         if pipeline is None and (source / "process.db").is_file():
             result["legal_reconciliation"] = _legal_rebuild_guard(
                 source / "process.db", stage / "process.db", cnj
             )
+        _finalize_process_package(store, cnj)
+        _validate_result(stage / "process.db", audit["pdfs"], cnj, require_vectors=pipeline is None)
         durations["validação final"] = round(time.perf_counter() - pipeline_started - durations["pipeline"], 2)
         backup.parent.mkdir(parents=True, exist_ok=True)
         if backup.exists():
