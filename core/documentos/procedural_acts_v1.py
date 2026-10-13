@@ -87,6 +87,16 @@ def _page_evidence(rows: list[sqlite3.Row]) -> tuple[dict[str, Any] | None, str 
             continue
         prov = _json(row["provenance_json"])
         marker = _marker(prov)
+        # A copied document can carry a valid e-SAJ mark for a different
+        # proceeding. Only the outer attestation of this process defines an act.
+        identity = marker.get("provider_identity") or {}
+        references = identity.get("process_references") or []
+        if (marker.get("provider") == "ESAJ" and (
+            marker.get("target_process_match") is not True
+            or row["process_id"] not in references
+            or marker.get("provenance_relationship") not in ("outer_submission", "outer_release")
+        )):
+            continue
         actor = marker.get("signatory_literal") or row["signer"]
         occurred_at = _canonical_datetime(marker.get("event_at"))
         
@@ -97,7 +107,11 @@ def _page_evidence(rows: list[sqlite3.Row]) -> tuple[dict[str, Any] | None, str 
         # Piece verification code (e.g. aqgMCLbP) belongs strictly to the piece, not act boundary
         verification_code = marker.get("verification_code") or (marker.get("verification") or {}).get("code")
         
-        act_identity = (actor or None, occurred_at or None, wprc_protocol or protocol or djen_identity)
+        # Signatory and filename describe the piece, not the act boundary.
+        # Use the attested timestamp and submission identity instead.
+        act_identity = (occurred_at or None, wprc_protocol or protocol or djen_identity)
+        if not occurred_at and not (wprc_protocol or protocol or djen_identity):
+            continue
         if any(act_identity):
             evidence.append({
                 "act_identity": act_identity,
@@ -313,7 +327,8 @@ def _bridge_internal_piece_identity_gaps(piece_records: list[dict[str, Any]]) ->
         following_identity = following.get("identity") if following else None
 
         if previous_identity is not None and previous_identity == following_identity:
-            actor, occurred_at, protocol = previous_identity
+            occurred_at, protocol = previous_identity[-2:]
+            actor = previous.get("actor")
             for gap_piece in piece_records[start:end + 1]:
                 gap_piece["identity"] = previous_identity
                 gap_piece["actor"] = actor
