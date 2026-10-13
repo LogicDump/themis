@@ -460,6 +460,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     rebuild_parser.add_argument("--all", action="store_true")
     rebuild_parser.add_argument("--full", action="store_true")
     rebuild_parser.add_argument("--discard-ai", action="store_true")
+    rebuild_parser.add_argument("--inspect-staging", metavar="TOKEN", help="Audita staging anterior sem modificar dados")
     rebuild_parser.set_defaults(func=run_themis_rebuild)
 
 def run_themis_rebuild(args: argparse.Namespace, *,
@@ -471,6 +472,13 @@ def run_themis_rebuild(args: argparse.Namespace, *,
     except ImportError:
         from core.rebuild_service import rebuild_process, audit_rebuild
     root = Path(data_root_override).resolve() if data_root_override else _resolve_plugin_data_dir()
+    if getattr(args, "inspect_staging", None):
+        from core.rebuild_service import inspect_staged_package
+        if not args.cnj or args.all:
+            raise ThemisSetupError("--inspect-staging exige CNJ exato")
+        result = inspect_staged_package(root, args.cnj, args.inspect_staging)
+        log_fn(json.dumps(result, ensure_ascii=False))
+        return result
     if getattr(args, "full", False):
         raise ThemisSetupError("--full ainda não suportado: derivados de IA não serão apagados")
     if not getattr(args, "all", False) and not getattr(args, "cnj", None):

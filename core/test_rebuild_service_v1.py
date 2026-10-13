@@ -138,3 +138,16 @@ def test_swap_denied_restores_original_and_preserves_stage(tmp_path, monkeypatch
     assert (original / "original.txt").read_text(encoding="utf-8") == "original"
     assert (staged / "rebuilt.txt").read_text(encoding="utf-8") == "new"
     assert not backup.exists()
+
+
+def test_partial_staging_cannot_be_installed(tmp_path):
+    from core.rebuild_service import inspect_staged_package
+    token = "a" * 32
+    stage = tmp_path / ".rebuild" / token / "processos" / PID
+    stage.mkdir(parents=True)
+    (stage / "process.db").write_bytes(b"not enough")
+    result = inspect_staged_package(tmp_path, PID, token)
+    assert result["eligible"] is False
+    assert "fontes/objetos" in result["missing"]
+    assert "manifest.json" in result["missing"]
+    assert stage.exists()

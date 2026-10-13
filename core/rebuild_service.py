@@ -127,6 +127,29 @@ def _validate_result(db_path: Path, expected: int, cnj: str, *, require_vectors:
             raise RuntimeError(f"Rebuild inválido: integrity={integrity}, FK={len(foreign)}, docs={documents}/{expected}, pages={pages}")
         movement_count = db.execute("SELECT count(*) FROM movements WHERE process_id=?", (cnj,)).fetchone()[0] if "movements" in vector_tables else None
         return {"documents": documents, "pages": pages, "embeddings": vectors, "movements": movement_count}
+def inspect_staged_package(root: Path, cnj: str, token: str) -> dict:
+    """Read-only recovery eligibility check, never a partial-package swap."""
+    cnj = validate_process_id(cnj)
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise ValueError("Identificador de staging inválido")
+    root = Path(root).resolve()
+    stage = root / ".rebuild" / token / "processos" / cnj
+    required = (
+        "process.db", "manifest.json", "source_snapshot.json",
+        "fontes/pecas_manifest.json", "fontes/objetos", "derivados", "markdown",
+    )
+    missing = [name for name in required if not (stage / name).exists()]
+    reason = None
+    if missing:
+        reason = "Pacote incompleto: " + ", ".join(missing)
+    if not stage.is_dir() or stage.is_symlink():
+        reason = "Staging ausente ou inválido"
+    return {
+        "cnj": cnj, "token": token, "stage": str(stage),
+        "eligible": reason is None, "reason": reason, "missing": missing,
+    }
+
+
 def _swap_packages(source: Path, stage: Path, backup: Path) -> None:
     """Probe staged-directory movability before taking the live package offline."""
     probe = stage.with_name(stage.name + ".rename-probe")
