@@ -226,6 +226,45 @@ def _legal_rebuild_guard(original_db: Path, staged_db: Path, process_id: str) ->
     return {"legal_before": before, "legal_after": after, "missing": missing}
 
 
+def _preflight_legal_replay(source_db: Path, process_id: str) -> dict[str, int]:
+    """Stop before costly PDF/embedding work if legal replay is unsupported.
+
+    This is a temporary conservative barrier. The documentary pipeline cannot
+    reconstruct DJEN publications, court calendar snapshots or legal deadlines.
+    """
+    if not source_db.is_file():
+        return {}
+    watched = ("publications", "court_calendar_snapshots", "court_calendar_events",
+               "court_calendar_event_snapshots", "deadline_instructions",
+               "deadline_obligations", "deadline_calculations", "deadlines")
+    with closing(sqlite3.connect("file:" + source_db.resolve().as_posix() + "?mode=ro", uri=True)) as db:
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        counts = {}
+        for table in watched:
+            if table not in tables:
+                continue
+            if table == "deadlines":
+                count = db.execute(
+                    "SELECT count(*) FROM deadlines WHERE owner_type='PROCESS' AND owner_id=?",
+                    (process_id,),
+                ).fetchone()[0]
+            elif table.startswith("court_calendar_"):
+                count = db.execute("SELECT count(*) FROM " + table).fetchone()[0]
+            else:
+                count = db.execute("SELECT count(*) FROM " + table + " WHERE process_id=?",
+                                   (process_id,)).fetchone()[0]
+            if count:
+                counts[table] = count
+    if counts:
+        raise RuntimeError(
+            "REBUILD_REPLAY_PENDENTE: este processo possui fontes e resultados "
+            "jurídicos que o rebuild ainda não reproduz. Operação bloqueada "
+            "ANTES de extrair PDFs e gerar embeddings: "
+            + json.dumps(counts, ensure_ascii=False, sort_keys=True)
+        )
+    return counts
+
+
 def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
                     allow_ai_loss: bool = False, pipeline=None, progress=None) -> dict:
     """Build in quarantine; atomically exchange package after validation."""
@@ -236,6 +275,7 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
     durations["auditoria"] = round(time.perf_counter() - started, 2)
     if dry_run:
         return {**audit, "status": "DRY_RUN", "changed": False}
+    _preflight_legal_replay(root / "processos" / audit["cnj"] / "process.db", audit["cnj"])
     if sum(audit["ai_derivatives"].values()) and not allow_ai_loss:
         raise ValueError("O processo contém derivados de IA; use --discard-ai para confirmar seu descarte")
     cnj = audit["cnj"]

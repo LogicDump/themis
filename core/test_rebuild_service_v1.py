@@ -183,3 +183,26 @@ def test_legal_guard_preserves_complete_reconstruction(tmp_path):
     report = _legal_rebuild_guard(original, rebuilt, PID)
     assert report["missing"] == {}
     assert report["legal_before"]["publications"] == 1
+
+
+def test_preflight_legal_replay_refuses_before_pipeline(tmp_path):
+    import sqlite3
+    from core.rebuild_service import _preflight_legal_replay
+    package, _ = _package(tmp_path)
+    with sqlite3.connect(package / "process.db") as db:
+        db.execute("CREATE TABLE publications(process_id TEXT)")
+        db.execute("INSERT INTO publications VALUES(?)", (PID,))
+    with pytest.raises(RuntimeError, match="REBUILD_REPLAY_PENDENTE"):
+        rebuild_process(tmp_path, PID, allow_ai_loss=True)
+    assert not (tmp_path / ".rebuild").exists()
+    with pytest.raises(RuntimeError, match="publications"):
+        _preflight_legal_replay(package / "process.db", PID)
+
+
+def test_preflight_legal_replay_allows_empty_legal_source(tmp_path):
+    import sqlite3
+    from core.rebuild_service import _preflight_legal_replay
+    db_path = tmp_path / "empty.db"
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE publications(process_id TEXT)")
+    assert _preflight_legal_replay(db_path, PID) == {}
