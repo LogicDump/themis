@@ -176,6 +176,56 @@ def _swap_packages(source: Path, stage: Path, backup: Path) -> None:
         ) from exc
 
 
+
+def _legal_rebuild_guard(original_db: Path, staged_db: Path, process_id: str) -> dict:
+    """Fail closed until source replay is available for procedural domains.
+
+    Row-count equality does not prove legal equivalence; this function ONLY
+    prevents demonstrably incomplete replacement of installed legal data.
+    """
+    from contextlib import closing
+
+    legal_tables = (
+        "publications", "court_calendar_snapshots", "court_calendar_events",
+        "court_calendar_event_snapshots", "deadline_instructions",
+        "deadline_obligations", "deadline_calculations", "deadlines",
+        "process_events",
+    )
+
+    def capture(path: Path) -> dict:
+        with closing(sqlite3.connect("file:" + path.resolve().as_posix() + "?mode=ro", uri=True)) as db:
+            existing = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            result = {}
+            for name in legal_tables:
+                if name not in existing:
+                    result[name] = 0
+                elif name == "deadlines":
+                    result[name] = db.execute(
+                        "SELECT count(*) FROM deadlines WHERE owner_type='PROCESS' AND owner_id=?",
+                        (process_id,),
+                    ).fetchone()[0]
+                elif name in ("court_calendar_snapshots", "court_calendar_events",
+                              "court_calendar_event_snapshots"):
+                    result[name] = db.execute("SELECT count(*) FROM " + name).fetchone()[0]
+                else:
+                    result[name] = db.execute(
+                        "SELECT count(*) FROM " + name + " WHERE process_id=?",
+                        (process_id,),
+                    ).fetchone()[0]
+            return result
+
+    before = capture(original_db)
+    after = capture(staged_db)
+    missing = {key: {"before": amount, "after": after[key]}
+               for key, amount in before.items() if after[key] < amount}
+    if missing:
+        raise RuntimeError(
+            "REBUILD_BLOQUEADO: camadas jurídicas não reconstruídas; "
+            + json.dumps(missing, ensure_ascii=False, sort_keys=True)
+        )
+    return {"legal_before": before, "legal_after": after, "missing": missing}
+
+
 def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
                     allow_ai_loss: bool = False, pipeline=None, progress=None) -> dict:
     """Build in quarantine; atomically exchange package after validation."""
@@ -242,6 +292,10 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
             cached.write_text(text.replace(str(stage) + os.sep, str(source) + os.sep), encoding="utf-8")
         _finalize_process_package(store, cnj)
         result = _validate_result(stage / "process.db", audit["pdfs"], cnj, require_vectors=pipeline is None)
+        if pipeline is None and (source / "process.db").is_file():
+            result["legal_reconciliation"] = _legal_rebuild_guard(
+                source / "process.db", stage / "process.db", cnj
+            )
         durations["validação final"] = round(time.perf_counter() - pipeline_started - durations["pipeline"], 2)
         backup.parent.mkdir(parents=True, exist_ok=True)
         if backup.exists():

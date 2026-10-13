@@ -151,3 +151,35 @@ def test_partial_staging_cannot_be_installed(tmp_path):
     assert "fontes/objetos" in result["missing"]
     assert "manifest.json" in result["missing"]
     assert stage.exists()
+
+
+def test_legal_guard_blocks_missing_djen_and_deadlines(tmp_path):
+    import sqlite3
+    from core.rebuild_service import _legal_rebuild_guard
+    original, rebuilt = tmp_path / "original.db", tmp_path / "rebuilt.db"
+    for path, count in ((original, 2), (rebuilt, 0)):
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE publications(process_id TEXT)")
+            db.execute("CREATE TABLE deadline_calculations(process_id TEXT)")
+            db.execute("CREATE TABLE deadlines(owner_type TEXT,owner_id TEXT)")
+            db.execute("CREATE TABLE process_events(process_id TEXT)")
+            for _ in range(count):
+                db.execute("INSERT INTO publications VALUES(?)", (PID,))
+                db.execute("INSERT INTO deadline_calculations VALUES(?)", (PID,))
+                db.execute("INSERT INTO deadlines VALUES('PROCESS',?)", (PID,))
+                db.execute("INSERT INTO process_events VALUES(?)", (PID,))
+    with pytest.raises(RuntimeError, match="REBUILD_BLOQUEADO"):
+        _legal_rebuild_guard(original, rebuilt, PID)
+
+
+def test_legal_guard_preserves_complete_reconstruction(tmp_path):
+    import sqlite3
+    from core.rebuild_service import _legal_rebuild_guard
+    original, rebuilt = tmp_path / "old.db", tmp_path / "new.db"
+    for path in (original, rebuilt):
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE publications(process_id TEXT)")
+            db.execute("INSERT INTO publications VALUES(?)", (PID,))
+    report = _legal_rebuild_guard(original, rebuilt, PID)
+    assert report["missing"] == {}
+    assert report["legal_before"]["publications"] == 1
