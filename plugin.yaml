@@ -9,6 +9,8 @@ capabilities:
 python_dependencies:
   - "numpy>=2,<3"
   - "onnxruntime>=1.20,<2"
+  - "litert-lm==0.18.0"
+  - "huggingface-hub>=0.35,<3"
   - "tokenizers>=0.21,<1"
   - "pypdf>=5,<7"
   - "pypdfium2>=4.30,<5"

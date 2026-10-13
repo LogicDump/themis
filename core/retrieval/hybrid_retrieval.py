@@ -174,18 +174,25 @@ def search_hybrid(
     lex_ranks = {p["page_id"]: rank for rank, p in enumerate(sorted_lex, start=1)}
 
     # 2. Semantic Scoring (EmbeddingGemma)
-    ensure_process_embeddings(process_id, pages, vector_store, ollama_url=ollama_url)
-    stored_vectors = {v["page_id"]: v["vector"] for v in vector_store.get_process_vectors(process_id, EMBEDDING_MODEL_NAME)}
-
-    query_vec, query_meta = generate_embedding_with_meta(clean_query, is_query=True, model=EMBEDDING_MODEL_NAME, ollama_url=ollama_url)
+    from core.retrieval.embeddinggemma2_litert import MODEL as V2_MODEL, embed_query
+    idx_meta = vector_store.get_index_metadata(process_id, V2_MODEL)
+    index_model = V2_MODEL if idx_meta else EMBEDDING_MODEL_NAME
+    if idx_meta:
+        query_vec, query_meta = embed_query(clean_query, required_backend=idx_meta["backend"])
+    else:
+        ensure_process_embeddings(process_id, pages, vector_store, ollama_url=ollama_url)
+        query_vec, query_meta = generate_embedding_with_meta(
+            clean_query, is_query=True, model=EMBEDDING_MODEL_NAME, ollama_url=ollama_url
+        )
+        idx_meta = vector_store.get_index_metadata(process_id, EMBEDDING_MODEL_NAME)
+    stored_vectors = {v["page_id"]: v["vector"] for v in vector_store.get_process_vectors(process_id, index_model)}
 
     # Validar correspondência exata de espaço vetorial entre a query e o índice gravado
-    idx_meta = vector_store.get_index_metadata(process_id, EMBEDDING_MODEL_NAME)
     is_compatible = True
     if query_vec and idx_meta:
         from core.retrieval.vector_store import is_exact_space_match
         query_sig = {
-            "model": query_meta.get("model", EMBEDDING_MODEL_NAME),
+            "model": query_meta.get("model", index_model),
             "model_version": query_meta.get("model_version", "v1"),
             "backend": query_meta.get("backend", "onnx"),
             "quantization": query_meta.get("quantization", "int8"),

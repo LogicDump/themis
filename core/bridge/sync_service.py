@@ -2340,6 +2340,7 @@ def process_captured_sync(
     from core.documentos import canonical_store_v1, autos_reconciler_v1
     from core.retrieval.vector_store import VectorStore, pack_vector, _now as vector_now
     from core.retrieval.onnx_embed import generate_embeddings_batch_onnx
+    from core.retrieval.embeddinggemma2_litert import embed_many, active_signature
 
     t_total_start = time.perf_counter()
     proc_dir = store.process_path(cnj)
@@ -2640,9 +2641,24 @@ def process_captured_sync(
             content = page.get("content_markdown", page.get("text", "")).strip()
             all_pages_to_embed.append((p_id, doc_id, p_num, content))
 
+    # Fresh rebuild defaults to the new isolated LiteRT model; legacy indices
+    # retain their own signature for processes not yet rebuilt.
+    signature = active_signature()
+    model_name = str(signature["model"])
+    indexed_signature = vconn.execute(
+        "SELECT model,backend,model_version,quantization,dim FROM vector_index_metadata "
+        "WHERE process_id=? AND model=?",
+        (cnj, model_name),
+    ).fetchone()
+    if indexed_signature is not None:
+        current_signature = tuple(signature[k] for k in (
+            "model", "backend", "model_version", "quantization", "dim",
+        ))
+        if tuple(indexed_signature) != current_signature:
+            raise RuntimeError("EmbeddingGemma 2: assinatura do índice incompatível; requer reconstrução")
     existing_rows = vconn.execute(
         "SELECT page_id, content_hash FROM page_embeddings WHERE process_id=? AND model=?",
-        (cnj, "embeddinggemma:300m")
+        (cnj, model_name)
     ).fetchall()
     existing_hashes = {r[0]: r[1] for r in existing_rows}
 
@@ -2660,18 +2676,20 @@ def process_captured_sync(
     for b_idx in range(0, len(pending), BATCH_SIZE):
         batch = pending[b_idx:b_idx + BATCH_SIZE]
         texts = [item[3] if item[3] else "Página sem texto reconhecido." for item in batch]
-        embs = generate_embeddings_batch_onnx(texts)
+        embs, batch_signature = embed_many(texts, required_backend=str(signature["backend"]))
         now_v = vector_now()
 
         vconn.execute("BEGIN")
+        if len(embs) != len(batch) or any(emb is None for emb in embs):
+            raise RuntimeError("EmbeddingGemma 2: lote incompleto; rebuild interrompido antes do swap")
         for (p_id, doc_id, p_num, _, c_hash), emb in zip(batch, embs):
             if emb is not None:
                 blob = pack_vector(emb)
                 vconn.execute("""
                     INSERT OR REPLACE INTO page_embeddings(
                         page_id, document_id, process_id, page_number, model, backend, model_version, quantization, dim, vector_blob, content_hash, updated_at
-                    ) VALUES(?, ?, ?, ?, 'embeddinggemma:300m', 'onnx', 'v1', 'int8', 768, ?, ?, ?)
-                """, (p_id, doc_id, cnj, p_num, blob, c_hash, now_v))
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (p_id, doc_id, cnj, p_num, signature['model'], signature['backend'], signature['model_version'], signature['quantization'], signature['dim'], blob, c_hash, now_v))
                 embedded_count += 1
         vconn.commit()
 
@@ -2682,8 +2700,8 @@ def process_captured_sync(
     vconn.execute("""
         INSERT OR REPLACE INTO vector_index_metadata(
             process_id, model, backend, model_version, quantization, dim, created_at, updated_at
-        ) VALUES(?, 'embeddinggemma:300m', 'onnx', 'v1', 'int8', 768, ?, ?)
-    """, (cnj, now_meta, now_meta))
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+    """, (cnj, signature['model'], signature['backend'], signature['model_version'], signature['quantization'], signature['dim'], now_meta, now_meta))
     vconn.commit()
     vconn.close()
 

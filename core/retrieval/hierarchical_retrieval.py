@@ -197,6 +197,8 @@ def _local_query_embedding(query: str) -> list[float] | None:
 
 def _page_vector_compatibility(
     db: sqlite3.Connection, process_id: str, query_vector: list[float] | None,
+    *, model: str = EMBEDDING_MODEL_NAME, backend: str = "onnx",
+    version: str = "v1", quantization: str = "int8",
 ) -> bool:
     if not query_vector or not db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vector_index_metadata'"
@@ -204,15 +206,15 @@ def _page_vector_compatibility(
         return False
     row = db.execute(
         "SELECT model,backend,model_version,quantization,dim FROM vector_index_metadata WHERE process_id=? AND model=?",
-        (process_id, EMBEDDING_MODEL_NAME),
+        (process_id, model),
     ).fetchone()
     if not row:
         return False
     return is_exact_space_match(dict(row), {
-        "model": EMBEDDING_MODEL_NAME,
-        "backend": "onnx",
-        "model_version": "v1",
-        "quantization": "int8",
+        "model": model,
+        "backend": backend,
+        "model_version": version,
+        "quantization": quantization,
         "dim": len(query_vector),
     })
 
@@ -369,7 +371,7 @@ def _candidate_pages(db: sqlite3.Connection, process_id: str, movement_ids: list
     return [dict(row) for row in rows]
 
 
-def _page_vectors(db: sqlite3.Connection, process_id: str, page_ids: list[str], compatible: bool) -> dict[str, list[float]]:
+def _page_vectors(db: sqlite3.Connection, process_id: str, page_ids: list[str], compatible: bool, *, model: str = EMBEDDING_MODEL_NAME) -> dict[str, list[float]]:
     if not compatible or not page_ids:
         return {}
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='page_embeddings'").fetchone():
@@ -380,7 +382,7 @@ def _page_vectors(db: sqlite3.Connection, process_id: str, page_ids: list[str], 
         marks = ",".join("?" for _ in batch)
         rows = db.execute(
             f"SELECT page_id,dim,vector_blob FROM page_embeddings WHERE process_id=? AND model=? AND page_id IN ({marks})",
-            [process_id, EMBEDDING_MODEL_NAME, *batch],
+            [process_id, model, *batch],
         ).fetchall()
         for row in rows:
             try:
@@ -550,7 +552,24 @@ def search_hierarchical_evidence(
             )
         if query_vector is None:
             query_vector = _local_query_embedding(query)
-        compatible = _page_vector_compatibility(db, process_id, query_vector)
+        from core.retrieval.embeddinggemma2_litert import MODEL as V2_MODEL, embed_query
+        idx_v2 = db.execute(
+            "SELECT model,backend,model_version,quantization,dim FROM vector_index_metadata WHERE process_id=? AND model=?",
+            (process_id, V2_MODEL),
+        ).fetchone() if db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vector_index_metadata'"
+        ).fetchone() else None
+        page_model = V2_MODEL if idx_v2 else EMBEDDING_MODEL_NAME
+        if idx_v2:
+            page_query_vector, page_sig = embed_query(query, required_backend=idx_v2["backend"])
+            compatible = _page_vector_compatibility(
+                db, process_id, page_query_vector, model=V2_MODEL,
+                backend=page_sig["backend"], version=page_sig["model_version"],
+                quantization=page_sig["quantization"],
+            )
+        else:
+            page_query_vector = query_vector
+            compatible = _page_vector_compatibility(db, process_id, page_query_vector)
         summary_ids = [row["movement_id"] for row in summary_candidates]
         if temporal_scope == "initial":
             first = db.execute(
@@ -579,11 +598,11 @@ def search_hierarchical_evidence(
                 vector_db_path=vector_db_path or db_path,
             )
         page_ids = list(dict.fromkeys(row["page_id"] for row in pages))
-        vectors = _page_vectors(db, process_id, page_ids, compatible)
+        vectors = _page_vectors(db, process_id, page_ids, compatible, model=page_model)
         source_scores: dict[str, float] = {}
         passages = _passages(
             query, query_tokens, interpretation["terms"], interpretation["intent"],
-            pages, query_vector, vectors, source_scores,
+            pages, page_query_vector, vectors, source_scores,
         )
         if not passages:
             db.close()
