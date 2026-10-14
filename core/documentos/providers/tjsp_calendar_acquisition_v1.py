@@ -19,7 +19,7 @@ from core.documentos.court_calendar_store_v1 import get_snapshot, store_calendar
 from core.documentos.deadline_policies_v1 import CourtCalendar
 
 PROVIDER_ID = "TJSP_JSON_CALENDAR_ACQUISITION_V1"
-PARSER_VERSION = "tjsp-json-calendar-v1.0.0"
+PARSER_VERSION = "tjsp-json-calendar-v1.1.0"
 HOLIDAYS_ENDPOINT = "https://www.tjsp.jus.br/CanaisComunicacao/Feriados/PesquisarFeriados"
 SUSPENSIONS_ENDPOINT = "https://www.tjsp.jus.br/CanaisComunicacao/Feriados/PesquisarSuspensoes"
 INSTITUTIONAL_SOURCE = "https://www.tjsp.jus.br/CanaisComunicacao/SuspensaoPrazos"
@@ -137,6 +137,21 @@ def parse_holidays(snapshot: RawSourceSnapshot,
     return tuple(output)
 
 
+def _is_unit_limited_suspension(description: str) -> bool:
+    """Recognize officially described, enumerated-unit notices without broadening scope."""
+    normalized = unicodedata.normalize("NFKD", description)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"\s+", " ", normalized).upper()
+    return (
+        normalized.startswith("COMUNICADO CONJUNTO N")
+        and "SUSPENSOS OS PRAZOS PROCESSUAIS" in normalized
+        and ("ELENCADAS NA TABELA ABAIXO" in normalized
+             or "ELENCADOS NA TABELA ABAIXO" in normalized)
+        and ("UNIDADES QUE PROCESSAM A COMPETENCIA" in normalized
+             or "DOS CEJUSCS" in normalized)
+    )
+
+
 def _classify_suspension(description: str) -> str:
     normalized = unicodedata.normalize("NFKD", description)
     normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
@@ -146,6 +161,8 @@ def _classify_suspension(description: str) -> str:
         "SUSPENSAO DOS PRAZOS PROCESSUAIS": "SUSPENDED",
     }
     if label not in known:
+        if _is_unit_limited_suspension(description):
+            return "SUSPENDED"
         raise UnclassifiedCalendarDescription(f"descrição TJSP sem mapeamento seguro: {description!r}")
     return known[label]
 
@@ -159,6 +176,7 @@ def parse_suspensions(snapshot: RawSourceSnapshot,
         if not isinstance(description, str) or not description.strip():
             raise UnclassifiedCalendarDescription("suspensão TJSP sem Descricao")
         status = _classify_suspension(description)
+        limited_to_unknown_units = _is_unit_limited_suspension(description)
         original_range = row.get("Data")
         match = _RANGE.fullmatch(original_range if isinstance(original_range, str) else "")
         if match:
@@ -173,8 +191,19 @@ def parse_suspensions(snapshot: RawSourceSnapshot,
         # dates are expanded exclusively from the official human-readable Data.
         for ordinal in range((last_in_year - first_in_year).days + 1):
             day = date.fromordinal(first_in_year.toordinal() + ordinal)
-            output.append(_base_event(snapshot=snapshot, request=request, raw_row=row, day=day,
-                status=status, endpoint=SUSPENSIONS_ENDPOINT, source_type="TJSP_JSON_SUSPENSION"))
+            event = _base_event(snapshot=snapshot, request=request, raw_row=row, day=day,
+                status=status, endpoint=SUSPENSIONS_ENDPOINT, source_type="TJSP_JSON_SUSPENSION")
+            if limited_to_unknown_units:
+                # The official JSON names selected units but does not identify
+                # them. Preserve the official act without treating it as a
+                # blanket COMARCA suspension or inventing an affected unit.
+                from dataclasses import replace
+                event = replace(event, scope="UNIT", unit=None, provenance={
+                    **(event.provenance or {}),
+                    "scope_resolution": "UNRESOLVED_LISTED_UNITS",
+                    "unit_list_available": False,
+                })
+            output.append(event)
     return tuple(output)
 
 
