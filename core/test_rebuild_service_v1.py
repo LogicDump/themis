@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+from contextlib import closing
 import pytest
 
 from core.rebuild_service import audit_rebuild, rebuild_process
@@ -71,7 +72,7 @@ def test_rebuild_swap_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_service, "_finalize_process_package", lambda *a, **k: None)
 
     def simulate_pipeline(store, cnj):
-        with store.connect() as db:
+        with closing(store.connect()) as db:
             db.execute("INSERT OR IGNORE INTO processes VALUES(?,?,?)", (cnj, "ACTIVE", "now"))
             db.execute("INSERT INTO files VALUES(?,?,?,?,?)",
                        ("f", str(store.source_path(digest)), digest, 17, "now"))
@@ -185,27 +186,16 @@ def test_legal_guard_preserves_complete_reconstruction(tmp_path):
     assert report["legal_before"]["publications"] == 1
 
 
-def test_preflight_legal_replay_refuses_before_pipeline(tmp_path):
+def test_malformed_legal_source_is_incomplete_before_pipeline(tmp_path):
     import sqlite3
-    from core.rebuild_service import _preflight_legal_replay
     package, _ = _package(tmp_path)
     with sqlite3.connect(package / "process.db") as db:
         db.execute("CREATE TABLE publications(process_id TEXT)")
         db.execute("INSERT INTO publications VALUES(?)", (PID,))
-    with pytest.raises(RuntimeError, match="REBUILD_REPLAY_PENDENTE"):
-        rebuild_process(tmp_path, PID, allow_ai_loss=True)
-    assert not (tmp_path / ".rebuild").exists()
-    with pytest.raises(RuntimeError, match="REBUILD_REPLAY_PENDENTE"):
-        _preflight_legal_replay(package / "process.db", PID)
-
-
-def test_preflight_legal_replay_allows_empty_legal_source(tmp_path):
-    import sqlite3
-    from core.rebuild_service import _preflight_legal_replay
-    db_path = tmp_path / "empty.db"
-    with sqlite3.connect(db_path) as db:
-        db.execute("CREATE TABLE publications(process_id TEXT)")
-    assert _preflight_legal_replay(db_path, PID) == {}
+    result = rebuild_process(tmp_path, PID, allow_ai_loss=True)
+    assert result["status"] == "INCOMPLETE" and not result["changed"]
+    assert (package / "process.db").is_file()
+    assert Path(result["staging"]).is_dir()
 
 
 def test_reclassified_document_event_requires_preserved_autos_and_no_deadline(tmp_path):
@@ -300,3 +290,23 @@ def test_vector_validation_accepts_only_complete_litert_signature(tmp_path):
         db.commit()
         with pytest.raises(RuntimeError, match="LiteRT inválidos"):
             _validate_result(path, 1, PID, require_vectors=True)
+
+
+def test_rebuild_refuses_swap_when_original_changes(tmp_path, monkeypatch):
+    from core.bridge import sync_service
+    from core import rebuild_service
+    package, digest = _package(tmp_path)
+    marker = package / "manifest.json"
+    marker.write_text('{"state":"ORIGINAL"}', encoding="utf-8")
+    monkeypatch.setattr(sync_service, "plan_process_sync", lambda *a, **k: None)
+    monkeypatch.setattr(sync_service, "_finalize_process_package", lambda *a, **k: None)
+    monkeypatch.setattr(rebuild_service, "_validate_result", lambda *a, **k: {"documents": 1, "pages": 1})
+    monkeypatch.setattr(rebuild_service, "_swap_packages", lambda *a: pytest.fail("source changed; swap forbidden"))
+    def pipeline(store, cnj):
+        marker.write_text('{"state":"CONCURRENT_UPDATE"}', encoding="utf-8")
+        return {"status": "READY"}
+    with pytest.raises(RuntimeError, match="alterado durante staging"):
+        rebuild_process(tmp_path, PID, pipeline=pipeline)
+    assert marker.read_text(encoding="utf-8") == '{"state":"CONCURRENT_UPDATE"}'
+    assert list((tmp_path / ".rebuild").glob("*/processos/" + PID))
+    assert not list((tmp_path / ".rebuild-backups").glob("*/*/process.db"))

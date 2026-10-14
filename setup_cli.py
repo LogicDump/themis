@@ -454,7 +454,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     )
     migrate_parser.set_defaults(func=run_themis_migrate)
 
-    rebuild_parser = subs.add_parser("rebuild", help="Reconstrução offline de processo")
+    rebuild_parser = subs.add_parser("rebuild", help="Reconstrução com PDFs locais e evidências oficiais")
     rebuild_parser.add_argument("cnj", nargs="?")
     rebuild_parser.add_argument("--dry-run", action="store_true")
     rebuild_parser.add_argument("--all", action="store_true")
@@ -466,7 +466,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def run_themis_rebuild(args: argparse.Namespace, *,
                        data_root_override: Path | str | None = None,
                        log_fn: Callable[[str], None] = print) -> dict[str, Any]:
-    """Rebuild selected Process Packages offline using the official sync pipeline."""
+    """Rebuild local PDFs through Core, acquiring missing official evidence."""
     try:
         from .core.rebuild_service import rebuild_process, audit_rebuild
     except ImportError:
@@ -503,7 +503,7 @@ def run_themis_rebuild(args: argparse.Namespace, *,
         except Exception as exc:
             progress.finish(error=str(exc))
             raise
-        progress.finish()
+        progress.finish(error="Evidências oficiais insuficientes; sem swap" if result.get("status") == "INCOMPLETE" else None)
         from core.pipeline_progress_console import rebuild_report
         log_fn(rebuild_report(result))
         log_fn(json.dumps(result, ensure_ascii=False))

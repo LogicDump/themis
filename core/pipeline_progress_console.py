@@ -157,6 +157,9 @@ def rebuild_report(result: dict) -> str:
     if result.get("status") == "DRY_RUN":
         return (f"[Themis] Auditoria: {result.get('pieces', 0)} peças, "
                 f"{result.get('pdfs', 0)} PDFs íntegros. Nenhum dado alterado.")
+    if result.get("status") == "INCOMPLETE":
+        return (f"[Themis] INCOMPLETE: evidência jurídica insuficiente; sem swap.\n"
+                f"[Themis] Staging: {result.get('staging', 'não informado')}")
     before = result.get("movements_before")
     after = result.get("movements")
     movement = f"{before} → {after}" if before is not None and after is not None else "não aferido"

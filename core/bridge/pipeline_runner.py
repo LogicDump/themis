@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from core.bridge.sync_service import process_captured_sync
+from core.process_cycle import process_after_acquisition
 from core.documentos.themis_documentos import Store
 from core.runtime_paths import pdfium_helper_path, themis_data_root
 
@@ -16,7 +16,7 @@ def run_captured_pipeline(cnj: str, *, data_root: Path | None = None) -> dict[st
     This is deliberately host-independent: Hermes' HTTP route and the local
     CLI are adapters over this same capability.  It does not start a server or
     mutate any path other than the selected Themis data root through the
-    canonical ``process_captured_sync`` service.
+    canonical ``process_after_acquisition`` service.
     """
     if not isinstance(cnj, str) or not cnj.strip():
         raise ValueError("cnj é obrigatório")
@@ -27,4 +27,4 @@ def run_captured_pipeline(cnj: str, *, data_root: Path | None = None) -> dict[st
         raise RuntimeError(f"Helper PDFium não encontrado: {helper}")
     os.environ["PDFIUM_HELPER_PATH"] = str(helper)
 
-    return process_captured_sync(store=Store(root), cnj=cnj.strip())
+    return process_after_acquisition(store=Store(root), cnj=cnj.strip())

@@ -1,4 +1,4 @@
-"""Isolated, offline reconstruction of one Themis Process Package."""
+"""Isolated reconstruction using local originals and official evidence acquisition."""
 from __future__ import annotations
 
 import hashlib
@@ -87,13 +87,20 @@ def _copy_sources(source: Path, target: Path) -> None:
     for name in ("fontes", "snapshots"):
         original = source / name
         if original.exists():
-            if original.is_symlink():
+            if original.is_symlink() or any(path.is_symlink() for path in original.rglob("*")):
                 raise ValueError("Fonte contém link simbólico")
             shutil.copytree(original, target / name, symlinks=False)
-    for name in ("manifest.json", "source_snapshot.json", "cpopg_snapshot.json"):
+    for name in ("source_snapshot.json", "cpopg_snapshot.json"):
         original = source / name
         if original.is_file():
             shutil.copy2(original, target / name)
+
+
+def _source_generation(package: Path) -> dict[str, str]:
+    """Detect writes to the installed source generation while staging is built."""
+    names = ("process.db", "process.db-wal", "manifest.json", "source_snapshot.json",
+             "cpopg_snapshot.json", "fontes/pecas_manifest.json")
+    return {name: _sha256(package / name) for name in names if (package / name).is_file()}
 
 
 def _stage_manifest(stage: Path) -> None:
@@ -380,58 +387,6 @@ def _legal_rebuild_guard(original_db: Path, staged_db: Path, process_id: str) ->
             "movement_reclassification": projection}
 
 
-def _preflight_legal_replay(source_db: Path, process_id: str) -> dict[str, int]:
-    """Stop before costly PDF/embedding work if legal replay is unsupported.
-
-    This is a temporary conservative barrier. The documentary pipeline cannot
-    reconstruct DJEN publications, court calendar snapshots or legal deadlines.
-    """
-    if not source_db.is_file():
-        return {}
-    watched = ("publications", "court_calendar_snapshots", "court_calendar_events",
-               "court_calendar_event_snapshots", "deadline_instructions",
-               "deadline_obligations", "deadline_calculations", "deadlines")
-    with closing(sqlite3.connect("file:" + source_db.resolve().as_posix() + "?mode=ro", uri=True)) as db:
-        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        counts = {}
-        for table in watched:
-            if table not in tables:
-                continue
-            if table == "deadlines":
-                count = db.execute(
-                    "SELECT count(*) FROM deadlines WHERE owner_type='PROCESS' AND owner_id=?",
-                    (process_id,),
-                ).fetchone()[0]
-            elif table.startswith("court_calendar_"):
-                count = db.execute("SELECT count(*) FROM " + table).fetchone()[0]
-            else:
-                count = db.execute("SELECT count(*) FROM " + table + " WHERE process_id=?",
-                                   (process_id,)).fetchone()[0]
-            if count:
-                counts[table] = count
-    if counts:
-        from core.documentos.legal_replay_v1 import _source_publications, _calendar_source
-        try:
-            with closing(sqlite3.connect(
-                "file:" + source_db.resolve().as_posix() + "?mode=ro", uri=True
-            )) as db:
-                db.row_factory = sqlite3.Row
-                publications = _source_publications(db, process_id)
-                snapshots = _calendar_source(db)
-            if counts.get("publications", 0) != len(publications):
-                raise ValueError("cobertura incompleta de publicações DJEN")
-            if counts.get("court_calendar_events", 0) and not snapshots:
-                raise ValueError("calendário sem snapshots TJSP reproduzíveis")
-            if counts.get("deadline_calculations", 0) and not (publications and snapshots):
-                raise ValueError("cálculos anteriores sem fontes DJEN e TJSP completas")
-        except (ValueError, KeyError, TypeError, sqlite3.Error) as exc:
-            raise RuntimeError(
-                "REBUILD_REPLAY_PENDENTE: fontes jurídicas insuficientes; "
-                "bloqueado antes de processar PDFs: " + str(exc)
-            ) from exc
-    return counts
-
-
 def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
                     allow_ai_loss: bool = False, pipeline=None, progress=None) -> dict:
     """Build in quarantine; atomically exchange package after validation."""
@@ -442,11 +397,11 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
     durations["auditoria"] = round(time.perf_counter() - started, 2)
     if dry_run:
         return {**audit, "status": "DRY_RUN", "changed": False}
-    _preflight_legal_replay(root / "processos" / audit["cnj"] / "process.db", audit["cnj"])
     if sum(audit["ai_derivatives"].values()) and not allow_ai_loss:
         raise ValueError("O processo contém derivados de IA; use --discard-ai para confirmar seu descarte")
     cnj = audit["cnj"]
     source = root / "processos" / cnj
+    source_generation = _source_generation(source)
     token = uuid.uuid4().hex
     stage_root = root / ".rebuild" / token
     stage = stage_root / "processos" / cnj
@@ -454,15 +409,18 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
     stage.parent.mkdir(parents=True)
     swapped = False
     swap_attempted = False
+    retain_stage = False
     try:
         if progress is not None:
             progress.update("COPYING")
         copied_at = time.perf_counter()
         _copy_sources(source, stage)
+        audit_rebuild(stage_root, cnj)
         _stage_manifest(stage)
         durations["cópia"] = round(time.perf_counter() - copied_at, 2)
         from core.documentos.themis_documentos import Store
-        from core.bridge.sync_service import plan_process_sync, process_captured_sync, _finalize_process_package
+        from core.bridge.sync_service import plan_process_sync, _finalize_process_package
+        from core.process_cycle import process_after_acquisition
         store = Store(stage_root, process_id=cnj)
 
         snapshot = json.loads((stage / "source_snapshot.json").read_text(encoding="utf-8"))
@@ -486,11 +444,17 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
             progress.watch(store.process_manifest_path(cnj))
         pipeline_started = time.perf_counter()
         try:
-            pipeline_result = (pipeline or process_captured_sync)(store, cnj)
+            pipeline_result = (pipeline(store, cnj) if pipeline else
+                               process_after_acquisition(store, cnj, source_db=source / "process.db"))
         finally:
             if progress is not None:
                 progress.watch(None)
         durations["pipeline"] = round(time.perf_counter() - pipeline_started, 2)
+        if pipeline_result and pipeline_result.get("status") == "INCOMPLETE":
+            retain_stage = True
+            durations["total"] = round(time.perf_counter() - started, 2)
+            return {**audit, **pipeline_result, "changed": False, "staging": str(stage),
+                    "durations_seconds": durations}
         if progress is not None:
             progress.update("VERIFYING")
         _retarget_paths(stage / "process.db", stage, source)
@@ -498,15 +462,9 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
             text = cached.read_text(encoding="utf-8")
             cached.write_text(text.replace(str(stage) + os.sep, str(source) + os.sep), encoding="utf-8")
         result = _validate_result(stage / "process.db", audit["pdfs"], cnj, require_vectors=pipeline is None)
-        if pipeline is None and (source / "process.db").is_file():
-            from core.documentos.legal_replay_v1 import replay_legal_sources
-            result["legal_replay"] = replay_legal_sources(
-                source / "process.db", stage / "process.db", cnj
-            )
-        if pipeline is None and (source / "process.db").is_file():
-            result["legal_reconciliation"] = _legal_rebuild_guard(
-                source / "process.db", stage / "process.db", cnj
-            )
+        # Previous legal projections are never a baseline for the new result.
+        # The Core cycle has verified primary evidence and rebuilt every domain.
+        result["legal"] = (pipeline_result or {}).get("legal", {})
         _finalize_process_package(store, cnj)
         _validate_result(stage / "process.db", audit["pdfs"], cnj, require_vectors=pipeline is None)
         durations["validação final"] = round(time.perf_counter() - pipeline_started - durations["pipeline"], 2)
@@ -515,14 +473,21 @@ def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
             raise RuntimeError("Destino de backup já existe")
         if progress is not None:
             progress.update("SWAPPING")
+        if _source_generation(source) != source_generation:
+            raise RuntimeError("REBUILD_BLOQUEADO: pacote original alterado durante staging")
         swap_attempted = True
         _swap_packages(source, stage, backup)
         swapped = True
         durations["total"] = round(time.perf_counter() - started, 2)
         return {**audit, **result, "status": "READY", "changed": True,
                 "backup": str(backup), "durations_seconds": durations}
+    except BaseException as exc:
+        retain_stage = True
+        if hasattr(exc, "add_note"):
+            exc.add_note(f"Staging preservado para diagnóstico/recuperação: {stage}")
+        raise
     finally:
-        if stage_root.exists() and (swapped or not swap_attempted):
+        if stage_root.exists() and not retain_stage and (swapped or not swap_attempted):
             try:
                 shutil.rmtree(stage_root)
             except OSError:

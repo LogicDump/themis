@@ -29,3 +29,8 @@ def test_progress_keeps_indeterminate_phases_and_report():
                              "movements": 81, "backup": "backup"})
     assert "96 → 81" in report
     assert "354" in report
+
+
+def test_incomplete_rebuild_report_does_not_claim_swap_or_backup():
+    report = rebuild_report({"status": "INCOMPLETE", "changed": False, "staging": "isolated-stage"})
+    assert "INCOMPLETE" in report and "sem swap" in report and "isolated-stage" in report

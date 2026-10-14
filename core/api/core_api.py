@@ -2223,20 +2223,11 @@ def sync_publications(
     available_from: str,
     available_to: str,
 ) -> dict[str, Any]:
-    from core.documentos.process_event_store_v1 import materialize_process_events
-    from core.documentos.publications_v1 import sync_djen
+    from core.process_cycle import sync_process_legal
     from core.process_storage import connect_process
-
     db = connect_process(process_id)
     try:
-        result = sync_djen(
-            db,
-            process_id=process_id,
-            available_from=available_from,
-            available_to=available_to,
-        )
-        result["process_events"] = materialize_process_events(db, process_id)
-        return result
+        return sync_process_legal(db, process_id, available_from=available_from, available_to=available_to)
     finally:
         db.close()
 

@@ -175,3 +175,51 @@ def test_effective_calendar_rejects_snapshot_from_wrong_registry():
             holidays, holidays, REQUEST,
             start_date="2026-06-11", end_date="2026-06-17",
         )
+
+
+def test_acquisition_fetches_only_missing_official_endpoint():
+    from contextlib import closing
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.row_factory = sqlite3.Row
+        migrate_connection(db)
+        fetched = []
+        def fetch(endpoint, **kwargs):
+            fetched.append(endpoint)
+            return snapshot_for(endpoint)
+        cached = {HOLIDAYS_ENDPOINT: snapshot_for(HOLIDAYS_ENDPOINT)}
+        result = acquire_tjsp_calendar(db, REQUEST, fetcher=fetch, cached_snapshots=cached)
+        assert fetched == [SUSPENSIONS_ENDPOINT]
+        assert len(result["snapshots"]) == 2
+        assert db.execute("SELECT count(*) FROM court_calendar_snapshots").fetchone()[0] == 2
+        raw = db.execute("SELECT content,content_hash FROM court_calendar_snapshots").fetchall()
+        assert all(hashlib.sha256(row[0]).hexdigest() == row[1] for row in raw)
+
+
+def test_unknown_unit_notice_acquires_official_complement_without_inventing_scope():
+    from contextlib import closing
+    raw = snapshot_for(SUSPENSIONS_ENDPOINT)
+    payload = json.loads(raw.content)
+    payload["data"][0]["Descricao"] = "Comunicado Conjunto 138/2025 - unidades elencadas em tabela"
+    payload["data"][0]["DJE"] = "http://www.tjsp.jus.br/Download/pdf/fixture-official-act.pdf"
+    # Only the unknown record carries a referenced act in this synthetic input.
+    for row in payload["data"][1:]:
+        row.pop("DJE", None)
+    notice = RawSourceSnapshot(raw.source_url, json.dumps(payload).encode(), raw.fetched_at,
+                              raw.parser_version, request_params=raw.request_params)
+    fetched = []
+    def fetch(url, **kwargs):
+        fetched.append(url)
+        assert url == "https://www.tjsp.jus.br/Download/pdf/fixture-official-act.pdf"
+        return RawSourceSnapshot(url, b"%PDF-official-table-fixture", "2026-10-01T00:00:00Z",
+                                 kwargs["parser_version"])
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.row_factory = sqlite3.Row
+        migrate_connection(db)
+        cached = {HOLIDAYS_ENDPOINT: snapshot_for(HOLIDAYS_ENDPOINT), SUSPENSIONS_ENDPOINT: notice}
+        for _ in range(2):
+            with pytest.raises(UnclassifiedCalendarDescription):
+                acquire_tjsp_calendar(db, REQUEST, fetcher=fetch, cached_snapshots=cached)
+        assert len(fetched) == 1
+        assert db.execute("SELECT count(*) FROM court_calendar_snapshots").fetchone()[0] == 3
+        assert db.execute("SELECT content FROM court_calendar_snapshots WHERE source_url=?", (fetched[0],)).fetchone()[0] == b"%PDF-official-table-fixture"
+        assert db.execute("SELECT count(*) FROM court_calendar_events WHERE status='SUSPENDED'").fetchone()[0] == 0

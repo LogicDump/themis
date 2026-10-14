@@ -8,6 +8,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 import core.documentos.djen_sync_v1 as djen
+from core import process_cycle
 
 PROCESS_ID = "1234567-89.2026.8.26.0001"
 
@@ -67,11 +68,10 @@ def test_daily_state_uses_distribution_date_and_marks_success():
             patch.object(djen, "known_process_ids", return_value=[PROCESS_ID]),
             patch.object(djen, "process_db_path", return_value=process_db),
             patch.object(djen, "sync_djen", side_effect=fake_sync),
-            patch.object(
-                djen,
-                "materialize_process_events",
-                return_value={"materialized": 0},
-            ),
+            patch.object(process_cycle, "project_legal_state", return_value={
+                "status": "READY", "events": {}, "movement_instructions": {},
+                "publication_instructions": {}, "obligations": {}, "resolution": {}, "calculated": {"status": "OK"},
+            }),
         ):
             assert djen.status(as_of="2026-09-29")["needs_sync"] is True
             result = djen.sync_now(available_to="2026-09-29")
@@ -157,7 +157,7 @@ def test_no_djen_delta_skips_full_rebuild():
             patch.object(djen, "known_process_ids", return_value=[PROCESS_ID]),
             patch.object(djen, "process_db_path", return_value=process_db),
             patch.object(djen, "sync_djen", return_value={"count": 1, "changed_count": 0}),
-            patch.object(djen, "materialize_process_events", side_effect=AssertionError("full rebuild called")),
+            patch.object(process_cycle, "project_legal_state", side_effect=AssertionError("full rebuild called")),
         ):
             result = djen.sync_now(process_id=PROCESS_ID, available_to="2026-10-05")
 
@@ -187,7 +187,7 @@ def test_global_djen_skips_reference_only_processes():
 
 
 
-def test_calendar_failure_is_isolated_to_its_year():
+def test_calendar_failure_abstains_from_all_deadline_dates():
     from core.documentos.providers import tjsp_calendar_acquisition_v1 as acquisition
     from core.documentos import court_calendar_store_v1 as calendar_store
     from core.documentos import deadline_calculation_store_v1 as calculation_store
@@ -218,7 +218,7 @@ def test_calendar_failure_is_isolated_to_its_year():
 
     calls = []
 
-    def fake_acquire(_db, request):
+    def fake_acquire(_db, request, **kwargs):
         calls.append(request.ano)
         if request.ano == 2025:
             raise ValueError("uncertain 2025 calendar record")
@@ -245,6 +245,9 @@ def test_calendar_failure_is_isolated_to_its_year():
         patch.object(calendar_store, "migrate_connection", return_value={}),
         patch.object(calendar_store, "get_snapshot", side_effect=lambda _db, sid: sid),
         patch.object(acquisition, "acquire_tjsp_calendar", side_effect=fake_acquire),
+        patch.object(acquisition, "parse_holidays", return_value=()),
+        patch.object(acquisition, "parse_suspensions", return_value=()),
+        patch.object(calendar_store, "store_calendar_events", return_value=()),
         patch.object(acquisition, "compose_effective_tjsp_calendar", side_effect=fake_compose),
         patch.object(calculation_store, "calculate_process", side_effect=fake_calculate),
     ):

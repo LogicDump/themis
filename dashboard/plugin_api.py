@@ -1201,7 +1201,8 @@ def _process_sync_file_lock(cnj: str, data_root: str):
 
 
 def _run_process_sync_background(cnj: str, data_root: str) -> None:
-    from core.bridge.sync_service import _update_pipeline_progress, process_captured_sync
+    from core.bridge.sync_service import _update_pipeline_progress
+    from core.process_cycle import process_after_acquisition
     from core.documentos.themis_documentos import Store
 
     with _process_sync_file_lock(cnj, data_root) as acquired:
@@ -1210,7 +1211,7 @@ def _run_process_sync_background(cnj: str, data_root: str) -> None:
             return
         store = Store(Path(data_root)).for_process(cnj)
         try:
-            process_captured_sync(store=store, cnj=cnj)
+            process_after_acquisition(store=store, cnj=cnj)
         except Exception as exc:
             total_pages = 0
             manifest_path = store.process_manifest_path(cnj)

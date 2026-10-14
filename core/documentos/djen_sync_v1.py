@@ -8,10 +8,9 @@ from typing import Any
 
 from core.process_storage import connect_process, connect_workspace, known_process_ids
 from core.runtime_paths import process_db_path, workspace_db_path
-from core.documentos.process_event_store_v1 import materialize_process_events
 from core.documentos.publications_v1 import sync_djen
 
-DEADLINE_PIPELINE_REVISION = "deadline-pipeline-v4"
+DEADLINE_PIPELINE_REVISION = "deadline-pipeline-v5"
 
 SYNC_STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS djen_sync_state(
@@ -49,41 +48,6 @@ def _parse_distribution_date(raw: object) -> str | None:
         return datetime.strptime(text[:10], "%d/%m/%Y").date().isoformat()
     except ValueError:
         return None
-def _initial_available_from(process_id: str) -> str:
-    db = connect_process(process_id)
-    try:
-        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_metadata'").fetchone():
-            row = db.execute(
-                "SELECT provenance_json FROM process_metadata WHERE process_id=?",
-                (process_id,),
-            ).fetchone()
-            if row and row[0]:
-                provenance = json.loads(str(row[0]))
-                basic = provenance.get("basic_data") if isinstance(provenance, dict) else None
-                value = _parse_distribution_date(
-                    basic.get("distribuicao") if isinstance(basic, dict) else None
-                )
-                if value:
-                    return value
-
-        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='publications'").fetchone():
-            row = db.execute(
-                "SELECT min(available_on) FROM publications WHERE process_id=? AND available_on IS NOT NULL",
-                (process_id,),
-            ).fetchone()
-            if row and row[0]:
-                return str(row[0])
-
-        row = db.execute("SELECT created_at FROM processes WHERE process_id=?", (process_id,)).fetchone()
-        if row and row[0]:
-            try:
-                return datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).date().isoformat()
-            except ValueError:
-                pass
-    finally:
-        db.close()
-    return date.today().replace(month=1, day=1).isoformat()
-
 def _read_state(process_id: str) -> dict[str, Any] | None:
     target = workspace_db_path()
     if not target.is_file():
@@ -162,22 +126,18 @@ def status(*, as_of: str | None = None) -> dict[str, Any]:
     }
 
 
-def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target_date: str) -> dict[str, Any]:
-    """Acquire the official TJSP calendar and calculate all current obligations.
-
-    Calendar failure is reported to the caller and must not invalidate a
-    successful DJEN synchronization.
-    """
+def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target_date: str, prepare_only: bool = False) -> dict[str, Any]:
+    """Reuse verified official evidence, acquire gaps and abstain on any gap."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_metadata'").fetchone():
-        return {"process_id": process_id, "status": "SKIPPED", "reason": "PROCESS_METADATA_MISSING"}
+        return {"process_id": process_id, "status": "INCOMPLETE", "reason": "PROCESS_METADATA_MISSING"}
     columns = {str(row[1]) for row in db.execute("PRAGMA table_info(process_metadata)").fetchall()}
     if not {"tribunal", "comarca"} <= columns:
-        return {"process_id": process_id, "status": "SKIPPED", "reason": "COURT_METADATA_MISSING"}
+        return {"process_id": process_id, "status": "INCOMPLETE", "reason": "COURT_METADATA_MISSING"}
     metadata = db.execute(
         "SELECT tribunal,comarca FROM process_metadata WHERE process_id=?", (process_id,)
     ).fetchone()
     if not metadata or str(metadata["tribunal"] or "").upper().strip() != "TJSP":
-        return {"process_id": process_id, "status": "SKIPPED", "reason": "UNSUPPORTED_COURT"}
+        return {"process_id": process_id, "status": "INCOMPLETE", "reason": "UNSUPPORTED_COURT"}
 
     locality = str(metadata["comarca"] or "").strip()
     for prefix in ("Foro de ", "Comarca de "):
@@ -185,7 +145,7 @@ def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target
             locality = locality[len(prefix):].strip()
             break
     if not locality:
-        return {"process_id": process_id, "status": "SKIPPED", "reason": "LOCALITY_MISSING"}
+        return {"process_id": process_id, "status": "INCOMPLETE", "reason": "LOCALITY_MISSING"}
 
     from core.documentos.court_calendar_store_v1 import get_snapshot, migrate_connection as migrate_calendar
     from core.documentos.deadline_calculation_store_v1 import calculate_process
@@ -197,15 +157,19 @@ def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target
     migrate_calendar(db)
     years: set[int] = {int(target_date[:4])}
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='publications'").fetchone():
-        rows = db.execute(
-            """SELECT DISTINCT coalesce(p.published_on,p.available_on) AS communication_date
-                 FROM deadline_instructions i
-                 JOIN publications p ON p.publication_id=i.source_id
-                WHERE i.process_id=? AND i.source_entity='PUBLICATION'
-                  AND coalesce(p.active,1)<>0
-                  AND coalesce(p.published_on,p.available_on) IS NOT NULL""",
-            (process_id,),
-        ).fetchall()
+        columns = {row[1] for row in db.execute("PRAGMA table_info(publications)")}
+        if "process_id" in columns:
+            rows = db.execute(
+                "SELECT DISTINCT coalesce(published_on,available_on) AS communication_date "
+                "FROM publications WHERE process_id=? AND coalesce(active,1)<>0", (process_id,),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT DISTINCT coalesce(p.published_on,p.available_on) AS communication_date "
+                "FROM deadline_instructions i JOIN publications p ON p.publication_id=i.source_id "
+                "WHERE i.process_id=? AND i.source_entity='PUBLICATION' AND coalesce(p.active,1)<>0",
+                (process_id,),
+            ).fetchall()
         for row in rows:
             value = str(row["communication_date"] or "")
             if len(value) >= 4 and value[:4].isdigit():
@@ -223,7 +187,16 @@ def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target
     for year in sorted(years):
         request = TjspAcquisitionRequest(locality, "", year)
         try:
-            acquired = acquire_tjsp_calendar(db, request)
+            from core.documentos.legal_replay_v1 import _calendar_source
+            cached = {}
+            for sid, snapshot in _calendar_source(db):
+                if dict(snapshot.request_params) == request.query_params:
+                    previous = cached.get(snapshot.source_endpoint)
+                    if previous is None or snapshot.fetched_at >= previous[1].fetched_at:
+                        cached[snapshot.source_endpoint] = (sid, snapshot)
+            acquired = acquire_tjsp_calendar(db, request, cached_snapshots={
+                endpoint: value[1] for endpoint, value in cached.items()
+            })
             snapshots = {item["endpoint"]: get_snapshot(db, item["snapshot_id"]) for item in acquired["snapshots"]}
             composition = compose_effective_tjsp_calendar(
                 snapshots[HOLIDAYS_ENDPOINT], snapshots[SUSPENSIONS_ENDPOINT], request,
@@ -231,11 +204,10 @@ def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target
                 proceeding_medium="ELECTRONIC",
             )
         except Exception as exc:
-            # Calendar evidence is year-scoped. A malformed/uncertain registry
-            # for one year must fail closed for obligations depending on that
-            # year, but it must not suppress independently calculable deadlines
-            # from another year in the same process.
             calendar_errors.append({"year": year, "error": str(exc)[:2000]})
+            continue
+        if not composition.coverage_complete:
+            calendar_errors.append({"year": year, "error": "INCOMPLETE_CALENDAR_COVERAGE"})
             continue
         entries.extend(composition.entries)
         calendars.append({
@@ -245,10 +217,14 @@ def _calculate_tjsp_deadlines(db: sqlite3.Connection, process_id: str, *, target
             "snapshots": acquired["snapshots"],
         })
 
-    result = calculate_process(db, process_id=process_id, calendar_entries=entries)
+    # Keep verified years available to the canonical deadline engine: it
+    # already abstains, per obligation, when any date it needs is uncovered.
+    # An unrelated historical gap must not invalidate a proven calculation.
+    result = ({"calendar_entries": entries} if prepare_only else
+              calculate_process(db, process_id=process_id, calendar_entries=entries))
     return {
         "process_id": process_id,
-        "status": "PARTIAL" if calendar_errors else "OK",
+        "status": ("PARTIAL" if entries else "INCOMPLETE") if calendar_errors else "OK",
         "locality": locality,
         "calendars": calendars,
         "calendar_errors": calendar_errors,
@@ -264,21 +240,16 @@ def sync_now(
     results: list[dict[str, Any]] = []
     for pid in targets:
         state = _read_state(pid)
-        available_from = (
-            str(state["last_successful_sync_date"])
-            if state and state.get("last_successful_sync_date")
-            else _initial_available_from(pid)
-        )
-        if available_from > target_date:
-            available_from = target_date
+        available_from = None
         db = connect_process(pid)
         try:
-            result = sync_djen(
-                db,
-                process_id=pid,
-                available_from=available_from,
-                available_to=target_date,
-            )
+            from core.process_cycle import sync_process_legal, _initial_date
+            available_from = (str(state["last_successful_sync_date"])
+                              if state and state.get("last_successful_sync_date") else _initial_date(db, pid))
+            if available_from > target_date:
+                available_from = target_date
+            result = sync_process_legal(db, pid, available_from=available_from, available_to=target_date,
+                                        project=False)
             changed_count = int(result.get("changed_count", result.get("count") or 0))
             pipeline_stale = not state or state.get("deadline_pipeline_revision") != DEADLINE_PIPELINE_REVISION
             should_rebuild = changed_count > 0 or pipeline_stale
@@ -290,38 +261,15 @@ def sync_now(
                 resolution_result = {"process_id": pid, "resolved": 0, "review_required": 0, "nonoperative": 0, "skipped": "NO_DJEN_DELTA"}
                 calculation_result = {"process_id": pid, "status": "SKIPPED", "reason": "NO_DJEN_DELTA"}
             else:
-                from core.documentos.participant_context_store_v1 import materialize_all as materialize_participant_context
-                materialize_participant_context(db)
-                event_result = materialize_process_events(db, pid)
-            if should_rebuild:
-                from core.documentos.deadline_instruction_store_v1 import (
-                    materialize_process as materialize_movement_instructions,
-                    materialize_publication_instructions,
-                )
-                from core.documentos.deadline_obligation_store_v1 import materialize_process as materialize_deadline_obligations
-                from core.documentos.deadline_resolution_pipeline_v1 import enrich_process_obligations
-                has_movements = db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='movements'"
-                ).fetchone()
-                if has_movements:
-                    movement_instruction_result = materialize_movement_instructions(db, pid)
-                else:
-                    movement_instruction_result = {"process_id": pid, "materialized": 0, "deleted": 0}
-                instruction_result = materialize_publication_instructions(db, pid)
-                if has_movements:
-                    obligation_result = materialize_deadline_obligations(db, pid)
-                    resolution_result = enrich_process_obligations(db, pid)
-                    try:
-                        calculation_result = _calculate_tjsp_deadlines(db, pid, target_date=target_date)
-                    except Exception as calculation_exc:
-                        calculation_result = {
-                            "process_id": pid, "status": "ERROR",
-                            "error": str(calculation_exc)[:2000],
-                        }
-                else:
-                    obligation_result = {"process_id": pid, "instructions": 0, "obligations": 0}
-                    resolution_result = {"process_id": pid, "obligations": 0, "resolved": 0, "review_required": 0, "nonoperative": 0, "legal_context": None}
-                    calculation_result = {"process_id": pid, "status": "SKIPPED", "reason": "MOVEMENTS_MISSING"}
+                projection = sync_process_legal(db, pid, available_to=target_date, acquire=False)
+                event_result = projection["events"]
+                movement_instruction_result = projection["movement_instructions"]
+                instruction_result = projection["publication_instructions"]
+                obligation_result = projection["obligations"]
+                resolution_result = projection["resolution"]
+                calculation_result = projection["calculated"]
+                if projection["status"] != "READY":
+                    raise RuntimeError("Evidência jurídica incompleta: " + json.dumps(calculation_result, ensure_ascii=False))
         except Exception as exc:
             _write_error(pid, str(exc))
             results.append({

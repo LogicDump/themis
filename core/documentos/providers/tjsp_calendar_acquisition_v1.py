@@ -8,6 +8,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 from core.documentos.court_calendar_composer_v1 import (
     CalendarComposition, CalendarCompositionRequest, compose_calendar,
@@ -255,8 +256,9 @@ def compose_effective_tjsp_calendar(
 
 def acquire_tjsp_calendar(db: Any, request: TjspAcquisitionRequest, *,
                           fetcher: Callable[..., RawSourceSnapshot] = fetch_official_snapshot,
+                          cached_snapshots: Mapping[str, RawSourceSnapshot] | None = None,
                           commit: bool = True) -> dict[str, Any]:
-    """Fetch, snapshot, parse and persist each endpoint independently.
+    """Reuse verified primary snapshots; fetch only absent official endpoints.
 
     Each raw JSON snapshot is committed before parsing so malformed or newly
     introduced classifications remain available for review and reprocessing.
@@ -264,8 +266,10 @@ def acquire_tjsp_calendar(db: Any, request: TjspAcquisitionRequest, *,
     outputs: dict[str, Any] = {"calendar_events": [], "snapshots": [], "event_version_ids": []}
     for endpoint, parser in ((HOLIDAYS_ENDPOINT, parse_holidays),
                              (SUSPENSIONS_ENDPOINT, parse_suspensions)):
-        snapshot = fetcher(endpoint, allowed_hosts=OFFICIAL_HOSTS,
-                           parser_version=PARSER_VERSION, query_params=request.query_params)
+        snapshot = (cached_snapshots or {}).get(endpoint)
+        if snapshot is None:
+            snapshot = fetcher(endpoint, allowed_hosts=OFFICIAL_HOSTS,
+                               parser_version=PARSER_VERSION, query_params=request.query_params)
         if snapshot.source_endpoint != endpoint or dict(snapshot.request_params) != request.query_params:
             raise ValueError("fetcher retornou snapshot incompatível com endpoint/params solicitados")
         snapshot_id = store_snapshot(db, snapshot, commit=commit)
@@ -273,7 +277,17 @@ def acquire_tjsp_calendar(db: Any, request: TjspAcquisitionRequest, *,
         # canonical metadata so an unchanged refetch does not create a new
         # calendar event version only because fetched_at advanced.
         snapshot = get_snapshot(db, snapshot_id)
-        events = parser(snapshot, request)
+        try:
+            events = parser(snapshot, request)
+        except UnclassifiedCalendarDescription as exc:
+            # The JSON may refer to the official act containing a missing unit
+            # table. Acquire its bytes for evidence, never infer its contents.
+            try:
+                acquire_calendar_complements(db, snapshot, fetcher=fetcher, commit=commit)
+            except Exception as acquisition_error:
+                if hasattr(exc, "add_note"):
+                    exc.add_note(f"Complemento oficial não adquirido: {acquisition_error}")
+            raise
         event_ids = store_calendar_events(db, events, snapshot_id=snapshot_id, commit=commit)
         outputs["snapshots"].append({"snapshot_id": snapshot_id, "endpoint": endpoint,
             "query_params": request.query_params, "fetched_at": snapshot.fetched_at,
@@ -281,3 +295,39 @@ def acquire_tjsp_calendar(db: Any, request: TjspAcquisitionRequest, *,
         outputs["calendar_events"].extend(events)
         outputs["event_version_ids"].extend(event_ids)
     return outputs
+
+
+def acquire_calendar_complements(db: Any, snapshot: RawSourceSnapshot, *,
+                                 fetcher: Callable[..., RawSourceSnapshot] = fetch_official_snapshot,
+                                 commit: bool = True) -> tuple[str, ...]:
+    """Preserve official referenced acts; interpretation remains fail-closed."""
+    rows = json.loads(snapshot.content.decode("utf-8-sig")).get("data", [])
+    urls = set()
+    for row in rows:
+        url = row.get("DJE") if isinstance(row, dict) else None
+        if not isinstance(url, str):
+            continue
+        parsed = urlsplit(url)
+        if (parsed.scheme not in ("http", "https") or parsed.hostname not in OFFICIAL_HOSTS
+                or parsed.username or parsed.password or parsed.port not in (None, 80, 443)):
+            continue
+        # Historical TJSP links use HTTP; acquisition always requires HTTPS.
+        urls.add(urlunsplit(("https", parsed.hostname, parsed.path, parsed.query, "")))
+    ids = []
+    for url in sorted(urls):
+        prior = db.execute(
+            "SELECT snapshot_id FROM court_calendar_snapshots WHERE source_url=? ORDER BY fetched_at DESC LIMIT 1",
+            (url,),
+        ).fetchone()
+        if prior:
+            cached = get_snapshot(db, prior[0])
+            if hashlib.sha256(cached.content).hexdigest() != cached.content_hash:
+                raise ValueError("Complemento oficial com hash inválido")
+            ids.append(str(prior[0]))
+            continue
+        complement = fetcher(url, allowed_hosts=OFFICIAL_HOSTS,
+                             parser_version="tjsp-official-complement-v1")
+        if complement.source_url != url:
+            raise ValueError("Complemento retornado não corresponde à fonte oficial solicitada")
+        ids.append(store_snapshot(db, complement, commit=commit))
+    return tuple(ids)

@@ -70,3 +70,47 @@ def test_tjsp_snapshot_detects_payload_tampering(tmp_path):
                     "2026-09-30T00:00:00Z", "not_the_hash", "v1", b"{}"))
         with pytest.raises(LegalReplayIncomplete, match="hash inválido"):
             _calendar_source(db)
+
+
+def test_replay_does_not_transplant_projected_publication_date(tmp_path):
+    from contextlib import closing
+    path = tmp_path / "primary.db"
+    with closing(sqlite3.connect(path)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("CREATE TABLE processes(process_id TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO processes VALUES(?)", (PID,))
+        migrate_connection(db)
+        record = publication_from_item(_djen_item(), process_id=PID,
+            request_url="https://comunicaapi.pje.jus.br/api/v1/comunicacao")
+        upsert_publication(db, record)
+        db.execute("UPDATE publications SET published_on='2026-09-07'")
+        db.commit()
+        assert _source_publications(db, PID)[0]["published_on"] is None
+        db.execute("UPDATE publications SET provenance_json='{}'")
+        with pytest.raises(LegalReplayIncomplete, match="raw_item"):
+            _source_publications(db, PID)
+        assert _source_publications(db, PID, allow_missing=True) == []
+
+
+def test_unrelated_historical_gap_does_not_block_valid_2026_deadline(monkeypatch):
+    from core.documentos import legal_replay_v1 as legal
+    from core.documentos import participant_context_store_v1 as participants
+    monkeypatch.setattr(participants, "materialize_all", lambda *_: None)
+    monkeypatch.setattr(legal, "_has", lambda *_: False)
+    monkeypatch.setattr(legal, "materialize_process_events", lambda *_: {})
+    monkeypatch.setattr(legal, "materialize_publication_instructions", lambda *_: {})
+    rows = [{"status": "CALCULATED", "due_date": "2026-07-07", "reason": None},
+            {"status": "UNRESOLVED", "due_date": None,
+             "reason": {"code": "CALENDAR_COVERAGE_MISSING", "date": "2025-03-10"}}]
+    monkeypatch.setattr(legal, "calculate_process", lambda *a, **k: {"results": rows})
+    with sqlite3.connect(":memory:") as db:
+        report = {"status": "PARTIAL", "calendar_errors": [{"year": 2025}]}
+        result = legal.project_legal_state(db, PID, calendar_entries=["verified-2026"],
+                                           calendar_report=report)
+        assert result["status"] == "READY"
+        assert result["legal_status"] == result["calculated"]["status"] == "PARTIAL"
+        assert result["calculated"]["results"][0]["due_date"] == "2026-07-07"
+        assert len(result["calculated"]["coverage_failures"]) == 1
+        blocked = legal.project_legal_state(db, PID, calendar_entries=[],
+                                            calendar_report={"status": "INCOMPLETE"})
+        assert blocked["status"] == "INCOMPLETE"

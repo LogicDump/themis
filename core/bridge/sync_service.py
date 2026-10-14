@@ -2159,7 +2159,8 @@ def ingest_bulk_zip(
     # extraction/indexing phase as a tracked background task.
     pipeline_result = None
     if run_pipeline:
-        pipeline_result = process_captured_sync(store=store, cnj=cnj)
+        from core.process_cycle import process_after_acquisition
+        pipeline_result = process_after_acquisition(store=store, cnj=cnj)
     else:
         _update_pipeline_progress(store, cnj, "QUEUED", 0, complete_physical_pages)
 
@@ -2320,7 +2321,7 @@ def _finalize_process_package(store: Store, cnj: str) -> dict[str, Any]:
     return {"counts": counts, "markdown_files": len(markdown_files), "artifacts": len(artifacts)}
 
 
-def process_captured_sync(
+def _process_captured_documents(
     store: Store,
     cnj: str,
 ) -> dict[str, Any]:
@@ -2709,12 +2710,12 @@ def process_captured_sync(
 
     # --- ESTÁGIO 5: READY (Atualização Final do Processo) ---
     _update_pipeline_progress(store, cnj, "FINALIZING", total_physical_pages, total_physical_pages)
-    package_result = _finalize_process_package(store, cnj)
+    package_result = {"deferred": "LEGAL_PROJECTION"}
 
     t_total_dur = time.perf_counter() - t_total_start
 
     return {
-        "status": "READY",
+        "status": "DOCUMENTS_READY",
         "cnj": cnj,
         "reused_entries": len(reused_pecas),
         "new_entries": len(new_pecas),
@@ -2723,7 +2724,13 @@ def process_captured_sync(
             "EXTRACTING": {"status": "OK", "new_extracted": extracted_count, "reused": len(reused_pecas), "total_pages": total_physical_pages, "duration_sec": round(t_extract_dur, 2)},
             "STRUCTURING": {"status": "OK", "documents_indexed": len(new_pecas), "canonical_pages": structured_pages_count, "autos_pages": len(autos_result.get("pages", [])), "autos_context": autos_context_result, "chronology_events": chronology_count, "movements": movement_materialization, "process_movement_links": process_movement_links, "participant_context": participant_context_materialization, "duration_sec": round(t_struct_dur, 2)},
             "INDEXING": {"status": "OK", "new_embeddings": embedded_count, "total_embeddings": len(all_pages_to_embed), "duration_sec": round(t_embed_dur, 2)},
-            "PACKAGE": {"status": "OK", **package_result},
-            "READY": {"status": "OK", "total_duration_sec": round(t_total_dur, 2)},
+            "PACKAGE": {"status": "PENDING", **package_result},
+            "DOCUMENTS_READY": {"status": "OK", "total_duration_sec": round(t_total_dur, 2)},
         },
     }
+
+
+def process_captured_sync(store: Store, cnj: str) -> dict[str, Any]:
+    """Compatibility entrypoint; all captured-process work enters the Core cycle."""
+    from core.process_cycle import process_after_acquisition
+    return process_after_acquisition(store, cnj)
