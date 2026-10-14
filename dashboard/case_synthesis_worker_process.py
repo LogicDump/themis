@@ -18,6 +18,7 @@ from dashboard.summary_worker_process import (
     _process_start_time,
     worker_environment,
     worker_is_alive,
+    spawn_background_worker,
 )
 
 
@@ -59,23 +60,7 @@ def launch_case_synthesis_worker(job: dict, *, command: Sequence[str] | None = N
                 "--job-id", str(job["job_id"]),
                 "--worker-token", worker_token,
             ]
-        kwargs = {
-            "cwd": str(PLUGIN_ROOT),
-            "env": worker_environment(),
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "close_fds": True,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-                | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
-            )
-        else:
-            kwargs["start_new_session"] = True
-        child = subprocess.Popen(argv, **kwargs)
+        child = spawn_background_worker(argv)
         started_at = _process_start_time(int(child.pid))
         updated_at = datetime.now(timezone.utc).isoformat()
         db.execute(

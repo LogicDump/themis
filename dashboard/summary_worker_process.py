@@ -44,6 +44,34 @@ def worker_environment() -> dict[str, str]:
     return env
 
 
+def spawn_background_worker(argv: Sequence[str]) -> subprocess.Popen:
+    """Run a persistent worker with one hidden, inheritable Windows console.
+
+    Hermes uses the same CREATE_NO_WINDOW policy: DETACHED_PROCESS leaves
+    descendants without a console and makes their PowerShell windows flash.
+    """
+    kwargs = {
+        "cwd": str(PLUGIN_ROOT),
+        "env": worker_environment(),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name != "nt":
+        return subprocess.Popen(argv, start_new_session=True, **kwargs)
+    flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+             | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+             | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000))
+    try:
+        return subprocess.Popen(argv, creationflags=flags, **kwargs)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 5:
+            raise
+        # Some Windows jobs prohibit breakaway; retain the hidden console.
+        return subprocess.Popen(argv, creationflags=flags & ~0x01000000, **kwargs)
+
+
 def _process_start_time(pid: int) -> str | None:
     """Return the OS process creation time to detect a recycled Windows PID."""
     if os.name != "nt":
@@ -164,23 +192,7 @@ def launch_summary_worker(
                 "--job-id", str(job["job_id"]),
                 "--worker-token", worker_token,
             ]
-        kwargs = {
-            "cwd": str(PLUGIN_ROOT),
-            "env": worker_environment(),
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "close_fds": True,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-                | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
-            )
-        else:
-            kwargs["start_new_session"] = True
-        child = subprocess.Popen(argv, **kwargs)
+        child = spawn_background_worker(argv)
         started_at = _process_start_time(int(child.pid))
         updated_at = datetime.now(timezone.utc).isoformat()
         db.execute(
