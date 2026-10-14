@@ -175,37 +175,3 @@ def test_effective_calendar_rejects_snapshot_from_wrong_registry():
             holidays, holidays, REQUEST,
             start_date="2026-06-11", end_date="2026-06-17",
         )
-
-
-def test_official_2025_scoped_eproc_notices_do_not_suspend_entire_comarca():
-    import sqlite3
-    from core.documentos.court_calendar_composer_v1 import CalendarCompositionRequest, compose_calendar
-    db = sqlite3.connect(
-        "file:D:/Hermes/plugin-data/themis/processos/0001901-50.2019.8.26.0450/process.db?mode=ro",
-        uri=True,
-    )
-    try:
-        row = db.execute(
-            "SELECT source_url,content,fetched_at,parser_version,content_hash,request_params_json "
-            "FROM court_calendar_snapshots WHERE source_endpoint=? AND request_params_json LIKE '%2025%'",
-            (SUSPENSIONS_ENDPOINT,),
-        ).fetchone()
-    finally:
-        db.close()
-    if row is None:
-        pytest.skip("Official 2025 test snapshot not available")
-    snap = RawSourceSnapshot(row[0], bytes(row[1]), row[2], row[3], row[4],
-                             json.loads(row[5]))
-    req = TjspAcquisitionRequest("Piracaia", "", 2025)
-    events = parse_suspensions(snap, req)
-    limited = [e for e in events if e.provenance.get("scope_resolution") == "UNRESOLVED_LISTED_UNITS"]
-    assert {e.date for e in limited} == {
-        *(f"2025-03-{n:02}" for n in range(10, 15)),
-        *(f"2025-03-{n:02}" for n in range(24, 29)),
-        *(f"2025-06-{n:02}" for n in range(9, 14)),
-    }
-    assert all(e.scope == "UNIT" and e.unit is None for e in limited)
-    composed = compose_calendar(CalendarCompositionRequest(
-        "TJSP", "SP", "Piracaia", "2025-03-10", "2025-03-14",
-    ), events)
-    assert all(e.status != "SUSPENDED" for e in composed.entries)

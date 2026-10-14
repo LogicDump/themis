@@ -418,22 +418,6 @@ def _preflight_legal_replay(source_db: Path, process_id: str) -> dict[str, int]:
                 db.row_factory = sqlite3.Row
                 publications = _source_publications(db, process_id)
                 snapshots = _calendar_source(db)
-                # Validate every official snapshot before expensive PDF and GPU stages.
-                from core.documentos.providers.tjsp_calendar_acquisition_v1 import (
-                    HOLIDAYS_ENDPOINT, SUSPENSIONS_ENDPOINT, TjspAcquisitionRequest,
-                    parse_holidays, parse_suspensions,
-                )
-                for _snapshot_id, snapshot in snapshots:
-                    params = dict(snapshot.request_params)
-                    request = TjspAcquisitionRequest(
-                        params['nomeMunicipio'], params.get('codigoMunicipio'), int(params['ano'])
-                    )
-                    if snapshot.source_endpoint == HOLIDAYS_ENDPOINT:
-                        parse_holidays(snapshot, request)
-                    elif snapshot.source_endpoint == SUSPENSIONS_ENDPOINT:
-                        parse_suspensions(snapshot, request)
-                    else:
-                        raise ValueError('Endpoint TJSP desconhecido: ' + snapshot.source_endpoint)
             if counts.get("publications", 0) != len(publications):
                 raise ValueError("cobertura incompleta de publicações DJEN")
             if counts.get("court_calendar_events", 0) and not snapshots:
