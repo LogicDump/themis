@@ -229,6 +229,33 @@ def _movement_document_ids(row: sqlite3.Row) -> set[str]:
                 result.add(str(item["document_id"]))
     return result
 
+
+
+def read_unlinked_documentary_movements(db: sqlite3.Connection, process_id: str) -> list[dict[str, Any]]:
+    """Read unmatched documentary movements without changing the official timeline."""
+    db.row_factory = sqlite3.Row
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "process_movements" not in tables or "movements" not in tables:
+        return []
+    official = db.execute("SELECT 1 FROM process_movements WHERE process_id=? LIMIT 1", (process_id,)).fetchone()
+    if not official:
+        return []
+    linked = set()
+    if "process_movement_links" in tables:
+        linked = {row[0] for row in db.execute(
+            "SELECT derived_movement_id FROM process_movement_links WHERE process_id=?", (process_id,)
+        )}
+    rows = db.execute(
+        "SELECT movement_id,payload_json FROM movements WHERE process_id=? ORDER BY sequence",
+        (process_id,),
+    ).fetchall()
+    return [
+        {**json.loads(row["payload_json"]), "movement_id": row["movement_id"],
+         "documentary_unlinked": True}
+        for row in rows if row["movement_id"] not in linked
+    ]
+
+
 def read_provider_timeline(db: sqlite3.Connection, process_id: str) -> list[dict[str, Any]]:
     """Return provider chronology enriched with linked documentary material."""
     db.row_factory = sqlite3.Row
