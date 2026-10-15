@@ -27060,7 +27060,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 					subtitle: `Acervo: ${processes.length} processo(s)`
 				}), jsxs("div", {
 					className: "flex items-center gap-2 shrink-0",
-					children: [jsxs(DropdownMenu, {
+					children: [activeSection !== "pesquisa" ? jsxs(DropdownMenu, {
 						open: modelMenuOpen,
 						onOpenChange: setModelMenuOpen,
 						children: [jsx(DropdownMenuTrigger, {
@@ -27086,7 +27086,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 								children: jsx(ModelCatalogMenu, { controller: modelMenuController })
 							})
 						})]
-					})]
+					}) : null]
 				})]
 			}),
 			jsxs("div", {
@@ -27781,12 +27781,12 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 		className: "flex min-h-0 flex-1 flex-col overflow-hidden p-4 sm:p-5 gap-3.5",
 		children: [
 			jsx(PanelHeader, {
-				title: "Pesquisa Processual & RAG",
-				subtitle: "Consultas fundamentadas nos Autos com extração de evidências e citações verificáveis",
+				title: "Pesquisa nos Autos",
+				subtitle: "Trechos classificados por relevância, vinculados aos documentos originais (EG2 + busca textual).",
 				actions: jsx(SegmentedControl, {
 					options: [{
 						id: "rag",
-						label: "Resposta com Citações"
+						label: "Busca Combinada"
 					}, {
 						id: "search",
 						label: "Evidências Diretas"
@@ -27900,11 +27900,11 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 						}),
 						jsx("div", {
 							className: "text-sm font-semibold text-foreground",
-							children: "Consultando Autos e sintetizando resposta fundamentada..."
+							children: "Localizando evidências nos Autos..."
 						}),
 						jsx("div", {
 							className: "text-xs text-muted-foreground max-w-md",
-							children: "Realizando busca vetorial ONNX + FTS BM25, extraindo evidências de layout e validando citações processuais."
+							children: "Combinando similaridade semântica EG2 e busca textual FTS5. A ordem indica relevância relativa, não probabilidade."
 						})
 					]
 				}) : error ? jsxs("div", {
@@ -27931,7 +27931,7 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 				}) : result ? jsxs("div", {
 					className: "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pr-1 space-y-4",
 					"data-themis-page-scroll": "true",
-					children: [result.answer ? jsxs("div", {
+					children: [(!result.sources || result.sources.length === 0) && result.answer ? jsxs("div", {
 						className: "rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-3 shadow-2xs",
 						children: [
 							jsxs("div", {
@@ -27940,7 +27940,7 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 									className: "flex items-center gap-2",
 									children: [jsx(PanelPill, {
 										tone: result.all_citations_verified !== false ? "good" : "warn",
-										children: result.all_citations_verified !== false ? "Citações 100% Verificadas" : "Citações Parciais"
+										children: result.all_citations_verified !== false ? "Referências localizadas" : "Referências parciais"
 									}), jsx("span", {
 										className: "text-xs font-mono font-medium text-muted-foreground",
 										children: result.process_id || selectedPid
@@ -27965,10 +27965,11 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 						]
 					}) : null, result.sources && result.sources.length > 0 ? jsxs("div", {
 						className: "space-y-2.5",
-						children: [jsx(PanelSectionLabel, { children: `Fontes e Trechos Citados (${result.sources.length})` }), jsx("div", {
+						children: [jsx(PanelSectionLabel, { children: `Resultados ordenados por relevância (${result.sources.length})` }), jsx("div", {
 							className: "grid grid-cols-1 gap-2.5",
 							children: result.sources.map((src, idx) => {
 								const citeNum = idx + 1;
+								const score = Number(src.composition_score ?? src.score);
 								const sref = src.source_ref || {};
 								const folio = sref.process_folio;
 								const pdfPage = sref.pdf_page || src.page_number || "?";
@@ -27986,13 +27987,13 @@ function PesquisaView({ ctx, processId, onNavigateAutos, onNavigatePdf }) {
 													type: "button",
 													onClick: () => handleCitationClick(citeNum),
 													className: "inline-flex items-center justify-center font-mono text-[0.72rem] font-bold text-primary bg-primary/10 hover:bg-primary/20 rounded px-1.5 py-0.5 cursor-pointer border border-primary/30 transition-colors",
-													title: `Navegar para citação [${citeNum}] nos Autos`,
-													children: `[${citeNum}]`
+													title: `Abrir resultado ${citeNum} nos Autos`,
+													children: `${citeNum}º`
 												}),
 												jsx("span", {
 													className: "font-semibold text-foreground",
 													children: folioStr
-												}),
+												}), Number.isFinite(score) ? jsx("span", { className: "text-[0.65rem] text-muted-foreground", title: "Score relativo do ranking composto; não representa probabilidade", children: `Score ${score.toFixed(4)}` }) : null,
 												jsx("span", {
 													className: "text-muted-foreground text-[0.68rem] font-mono",
 													children: `(Pág. ${pdfPage}${docStr ? " · " + docStr : ""})`
