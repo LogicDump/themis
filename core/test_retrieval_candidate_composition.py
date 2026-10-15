@@ -175,3 +175,36 @@ def test_other_questions_keep_literal_evidence_and_citations(query, text):
     answer = synthesize_answer_with_citations("case", query, hits)
     assert text in answer["answer"]
     assert answer["citations"][0]["document_id"] == "a"
+
+
+def test_hierarchical_relevance_order_is_not_replaced_by_movement_chronology(tmp_path, monkeypatch):
+    """A later, better-supported fact must keep its retrieval rank before fusion."""
+    fixture = {
+        "process_id": "synthetic-chronology",
+        "pages": [
+            {"page_id": "early:1", "document_id": "early", "page_number": 1,
+             "process_folio": 100, "content": "O processo foi distribuído e houve uma certidão.",
+             "movement_id": "m1", "sequence": 1, "title": "Distribuição"},
+            {"page_id": "late:1", "document_id": "late", "page_number": 1,
+             "process_folio": 300,
+             "content": "O fundamento da extinção do processo foi a quitação integral da dívida.",
+             "movement_id": "m3", "sequence": 3, "title": "Sentença de extinção"}
+        ],
+        "summaries": [
+            {"movement_id": "m1", "summary_text": "Distribuição do processo."},
+            {"movement_id": "m3", "summary_text": "Sentença de extinção por quitação integral da dívida."}
+        ],
+    }
+    path = tmp_path / "chronology.db"
+    database_from_fixture(path, fixture)
+    monkeypatch.setattr(retrieval, "_summary_fts_routes", lambda _db, summaries, _terms, _k: summaries)
+    monkeypatch.setattr(retrieval, "search_hybrid", lambda *_args, **_kwargs: [])
+    before = path.read_bytes()
+    results = retrieval.search_hierarchical_evidence(
+        fixture["process_id"], "Qual o fundamento da extinção do processo?",
+        top_k=2, db_path=path, vector_db_path=path,
+    )
+    assert [r["source_ref"]["document_id"] for r in results] == ["late", "early"]
+    assert [r["source_id"] for r in results] == [1, 2]
+    assert results[0]["autos_navigation"]["folio"] == 300
+    assert before == path.read_bytes()

@@ -710,13 +710,8 @@ def search_hierarchical_evidence(
                 if len(chosen) >= top_k:
                     break
 
-        # The retrieved passages remain ranked by relevance, but the answer
-        # context is presented in the actual Movement sequence.
-        if temporal_scope != "posterior" and interpretation["intent"] != "DATE_LOOKUP":
-            chosen.sort(key=lambda row: (
-                row["movement_sequence"], row["pdf_page"], row["document_id"], -row["score"]
-            ))
-
+        # Preserve passage relevance order for downstream rank fusion.
+        # Chronological presentation must not be mistaken for relevance ranking.
         results = []
         for index, passage in enumerate(chosen, start=1):
             excerpt = passage["excerpt"]
