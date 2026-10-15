@@ -15,14 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from core.retrieval.hybrid_retrieval import search_hybrid, tokenize_query
+from core.retrieval.embeddinggemma2_litert import MODEL as EG2_MODEL, embed_query
 from core.retrieval.vector_store import (
-    EMBEDDING_MODEL_NAME,
     cosine_similarity,
     is_exact_space_match,
     unpack_vector,
 )
 
-_SUMMARY_QUERY_CACHE: OrderedDict[str, list[float]] = OrderedDict()
+_SUMMARY_QUERY_CACHE: OrderedDict[str, tuple[list[float], dict[str, Any]]] = OrderedDict()
 _SUMMARY_EMBED_CACHE_LOCK = threading.Lock()
 _SUMMARY_QUERY_CACHE_LIMIT = 128
 _SUMMARY_ROUTE_SHORTLIST = 20
@@ -176,29 +176,47 @@ def _current_summary_rows(db: sqlite3.Connection, process_id: str) -> list[dict[
     return [dict(row) for row in rows]
 
 
-def _local_query_embedding(query: str) -> list[float] | None:
-    key = hashlib.sha256(query.strip().encode("utf-8")).hexdigest()
+def _summary_signature(db: sqlite3.Connection) -> dict[str, Any] | None:
+    """Pin the complete EG2 space of indexed summaries; ignore all EG1 rows."""
+    if not db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_summary_embeddings'"
+    ).fetchone():
+        return None
+    rows = db.execute(
+        """SELECT DISTINCT model,backend,model_version,quantization,dim
+           FROM movement_summary_embeddings WHERE model=?""", (EG2_MODEL,)
+    ).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        # Inconsistent EG2 index must never supply evidence from a mixed space.
+        return None
+    return dict(rows[0])
+
+
+def _local_query_embedding(query: str, signature: dict[str, Any]) -> list[float] | None:
+    """EG2 only; cache by the full immutable vector-space signature."""
+    key = hashlib.sha256((repr(sorted(signature.items())) + query.strip()).encode("utf-8")).hexdigest()
     with _SUMMARY_EMBED_CACHE_LOCK:
         cached = _SUMMARY_QUERY_CACHE.get(key)
         if cached is not None:
             _SUMMARY_QUERY_CACHE.move_to_end(key)
-            return cached
-    from core.retrieval.onnx_embed import generate_embedding_onnx
-
-    vector = generate_embedding_onnx(query, is_query=True)
-    if vector:
-        with _SUMMARY_EMBED_CACHE_LOCK:
-            _SUMMARY_QUERY_CACHE[key] = vector
-            _SUMMARY_QUERY_CACHE.move_to_end(key)
-            while len(_SUMMARY_QUERY_CACHE) > _SUMMARY_QUERY_CACHE_LIMIT:
-                _SUMMARY_QUERY_CACHE.popitem(last=False)
+            return cached[0]
+    vector, query_signature = embed_query(query, required_backend=signature["backend"])
+    if not vector or not is_exact_space_match(signature, query_signature):
+        return None
+    with _SUMMARY_EMBED_CACHE_LOCK:
+        _SUMMARY_QUERY_CACHE[key] = (vector, query_signature)
+        _SUMMARY_QUERY_CACHE.move_to_end(key)
+        while len(_SUMMARY_QUERY_CACHE) > _SUMMARY_QUERY_CACHE_LIMIT:
+            _SUMMARY_QUERY_CACHE.popitem(last=False)
     return vector
 
 
 def _page_vector_compatibility(
     db: sqlite3.Connection, process_id: str, query_vector: list[float] | None,
-    *, model: str = EMBEDDING_MODEL_NAME, backend: str = "onnx",
-    version: str = "v1", quantization: str = "int8",
+    *, model: str = EG2_MODEL, backend: str = "",
+    version: str = "", quantization: str = "",
 ) -> bool:
     if not query_vector or not db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vector_index_metadata'"
@@ -280,11 +298,12 @@ def _summary_subject_coverage(summaries: list[dict[str, Any]], subject: str) -> 
 
 def _semantic_summary_neighbours(
     db: sqlite3.Connection, summaries: list[dict[str, Any]], query_vector: list[float] | None,
+    query_signature: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not query_vector:
         return []
     from core.retrieval.summary_embedding_store import current_vectors
-    vectors = current_vectors(db, summaries, len(query_vector))
+    vectors = current_vectors(db, summaries, query_signature) if query_signature else [None] * len(summaries)
     ranked = []
     for row, vector in zip(summaries, vectors):
         if vector:
@@ -351,6 +370,41 @@ def _movement_ids_for_sources(
     return list(dict.fromkeys(row[0] for row in rows))
 
 
+def _direct_page_ownership(
+    db: sqlite3.Connection, process_id: str, page_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Find unambiguous documentary movement ownership without guessing."""
+    if not page_ids:
+        return {}
+    existing = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {"movements", "movement_pieces", "pages"}.issubset(existing):
+        return {}
+    owners: dict[str, list[dict[str, Any]]] = {}
+    for offset in range(0, len(page_ids), 300):
+        batch = page_ids[offset:offset + 300]
+        marks = ",".join("?" for _ in batch)
+        rows = db.execute(
+            f"""SELECT p.page_id,m.movement_id,m.sequence,m.title
+                FROM pages p
+                JOIN movement_pieces mp ON mp.document_id=p.document_id
+                  AND (mp.page_start IS NULL OR p.process_folio>=mp.page_start)
+                  AND (mp.page_end IS NULL OR p.process_folio<=mp.page_end)
+                JOIN movements m ON m.movement_id=mp.movement_id
+                WHERE m.process_id=? AND p.page_id IN ({marks})
+                  AND (m.sequence<>1 OR mp.piece_order=1)""",
+            [process_id,*batch],
+        ).fetchall()
+        for row in rows:
+            owners.setdefault(row["page_id"], []).append(dict(row))
+    return {
+        page_id: {"movement_id": rows[0]["movement_id"],
+                  "movement_sequence": rows[0]["sequence"],
+                  "movement_title": rows[0]["title"]}
+        for page_id, rows in owners.items()
+        if len({row["movement_id"] for row in rows}) == 1
+    }
+
+
 def _candidate_pages(db: sqlite3.Connection, process_id: str, movement_ids: list[str]) -> list[dict[str, Any]]:
     if not movement_ids:
         return []
@@ -371,7 +425,7 @@ def _candidate_pages(db: sqlite3.Connection, process_id: str, movement_ids: list
     return [dict(row) for row in rows]
 
 
-def _page_vectors(db: sqlite3.Connection, process_id: str, page_ids: list[str], compatible: bool, *, model: str = EMBEDDING_MODEL_NAME) -> dict[str, list[float]]:
+def _page_vectors(db: sqlite3.Connection, process_id: str, page_ids: list[str], compatible: bool, *, model: str = EG2_MODEL, signature: dict[str, Any] | None = None) -> dict[str, list[float]]:
     if not compatible or not page_ids:
         return {}
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='page_embeddings'").fetchone():
@@ -381,10 +435,12 @@ def _page_vectors(db: sqlite3.Connection, process_id: str, page_ids: list[str], 
         batch = page_ids[offset:offset + 400]
         marks = ",".join("?" for _ in batch)
         rows = db.execute(
-            f"SELECT page_id,dim,vector_blob FROM page_embeddings WHERE process_id=? AND model=? AND page_id IN ({marks})",
+            f"SELECT page_id,model,backend,model_version,quantization,dim,vector_blob FROM page_embeddings WHERE process_id=? AND model=? AND page_id IN ({marks})",
             [process_id, model, *batch],
         ).fetchall()
         for row in rows:
+            if signature and not is_exact_space_match(dict(row), signature):
+                continue
             try:
                 vectors[row["page_id"]] = unpack_vector(row["vector_blob"], row["dim"])
             except (ValueError, TypeError):
@@ -486,6 +542,21 @@ def _passages(
     return ranked
 
 
+def _direct_autos_evidence(
+    process_id: str, query: str, top_k: int, db_path: Path | str,
+    vector_db_path: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    hits = search_hybrid(process_id, query, top_k, db_path=db_path,
+                         vector_db_path=vector_db_path or db_path)
+    if not hits:
+        return []
+    target = Path(db_path).resolve()
+    with sqlite3.connect(f"file:{target.as_posix()}?mode=ro", uri=True) as db:
+        db.row_factory = sqlite3.Row
+        owners = _direct_page_ownership(db, process_id, [hit["page_id"] for hit in hits])
+    return [dict(hit, **owners.get(hit["page_id"], {})) for hit in hits]
+
+
 def search_hierarchical_evidence(
     process_id: str,
     query: str,
@@ -502,7 +573,7 @@ def search_hierarchical_evidence(
         summaries = _current_summary_rows(db, process_id)
         if not summaries:
             db.close()
-            return search_hybrid(
+            return _direct_autos_evidence(
                 process_id, query, top_k, db_path=db_path,
                 vector_db_path=vector_db_path or db_path,
             )
@@ -522,8 +593,9 @@ def search_hierarchical_evidence(
             or _summary_subject_coverage(summaries, interpretation["subject"]) < 0.80
         )
         if needs_semantic_route:
-            query_vector = _local_query_embedding(query)
-            neighbours = _semantic_summary_neighbours(db, summaries, query_vector)
+            summary_sig = _summary_signature(db)
+            query_vector = _local_query_embedding(query, summary_sig) if summary_sig else None
+            neighbours = _semantic_summary_neighbours(db, summaries, query_vector, summary_sig)
             interpretation["terms"] = _semantic_terms_from_summaries(
                 neighbours, interpretation["subject"],
             )
@@ -546,30 +618,29 @@ def search_hierarchical_evidence(
             )[:max(top_k * 2, _SUMMARY_SEMANTIC_SHORTLIST)]
         if not summary_candidates:
             db.close()
-            return search_hybrid(
+            return _direct_autos_evidence(
                 process_id, query, top_k, db_path=db_path,
                 vector_db_path=vector_db_path or db_path,
             )
         if query_vector is None:
-            query_vector = _local_query_embedding(query)
-        from core.retrieval.embeddinggemma2_litert import MODEL as V2_MODEL, embed_query
+            summary_sig = _summary_signature(db)
+            query_vector = _local_query_embedding(query, summary_sig) if summary_sig else None
         idx_v2 = db.execute(
             "SELECT model,backend,model_version,quantization,dim FROM vector_index_metadata WHERE process_id=? AND model=?",
-            (process_id, V2_MODEL),
+            (process_id, EG2_MODEL),
         ).fetchone() if db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vector_index_metadata'"
         ).fetchone() else None
-        page_model = V2_MODEL if idx_v2 else EMBEDDING_MODEL_NAME
+        page_model = EG2_MODEL
         if idx_v2:
             page_query_vector, page_sig = embed_query(query, required_backend=idx_v2["backend"])
             compatible = _page_vector_compatibility(
-                db, process_id, page_query_vector, model=V2_MODEL,
+                db, process_id, page_query_vector, model=EG2_MODEL,
                 backend=page_sig["backend"], version=page_sig["model_version"],
                 quantization=page_sig["quantization"],
             )
         else:
-            page_query_vector = query_vector
-            compatible = _page_vector_compatibility(db, process_id, page_query_vector)
+            page_query_vector, compatible = None, False
         summary_ids = [row["movement_id"] for row in summary_candidates]
         if temporal_scope == "initial":
             first = db.execute(
@@ -593,12 +664,12 @@ def search_hierarchical_evidence(
         pages = _candidate_pages(db, process_id, movement_ids)
         if not pages:
             db.close()
-            return search_hybrid(
+            return _direct_autos_evidence(
                 process_id, query, top_k, db_path=db_path,
                 vector_db_path=vector_db_path or db_path,
             )
         page_ids = list(dict.fromkeys(row["page_id"] for row in pages))
-        vectors = _page_vectors(db, process_id, page_ids, compatible, model=page_model)
+        vectors = _page_vectors(db, process_id, page_ids, compatible, model=page_model, signature=page_sig if idx_v2 else None)
         source_scores: dict[str, float] = {}
         passages = _passages(
             query, query_tokens, interpretation["terms"], interpretation["intent"],
@@ -606,7 +677,7 @@ def search_hierarchical_evidence(
         )
         if not passages:
             db.close()
-            return search_hybrid(
+            return _direct_autos_evidence(
                 process_id, query, top_k, db_path=db_path,
                 vector_db_path=vector_db_path or db_path,
             )
@@ -674,10 +745,37 @@ def search_hierarchical_evidence(
                     "autos_path": f"/processes/{process_id}/autos",
                 },
             })
-        if results:
-            return results
+        # The source of evidence is always pages.content. Direct page retrieval
+        # gets the primary slots, regardless of summary coverage. Reuse a more
+        # precise, cited passage for the same page when available.
+        direct = search_hybrid(
+            process_id, query, max(top_k, 1),
+            db_path=db_path, vector_db_path=vector_db_path or db_path,
+        )
+        passage_by_page = {hit["page_id"]: hit for hit in results}
+        ownership = _direct_page_ownership(db, process_id, [hit["page_id"] for hit in direct])
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in direct:
+            page_id = hit["page_id"]
+            preferred = passage_by_page.get(page_id)
+            item = dict(preferred or hit)
+            # Map an unambiguous page owner for the drafting caller.
+            owner = ownership.get(page_id)
+            if owner and not item.get("movement_id"):
+                item.update(owner)
+            merged.append(item)
+            seen.add(page_id)
+        for hit in results:
+            if len(merged) >= top_k:
+                break
+            if hit["page_id"] not in seen:
+                merged.append(hit)
+                seen.add(hit["page_id"])
+        if merged:
+            return [dict(hit, source_id=i) for i, hit in enumerate(merged[:top_k], 1)]
         db.close()
-        return search_hybrid(
+        return _direct_autos_evidence(
             process_id, query, top_k, db_path=db_path,
             vector_db_path=vector_db_path or db_path,
         )

@@ -687,6 +687,9 @@ def _materialize_movements_with_projection_policy(
     return result
 
 
+from core.process_operation_lock import guarded_process_mutation
+
+@guarded_process_mutation
 def plan_process_sync(
     store: Store,
     cnj: str,
@@ -1282,6 +1285,7 @@ def plan_process_sync(
             db.close()
 
 
+@guarded_process_mutation
 def ingest_bridge_document(
     store: Store,
     cnj: str,
@@ -1469,6 +1473,7 @@ def ingest_bridge_document(
         raise
 
 
+@guarded_process_mutation
 def consolidate_process_docket(store: Store, cnj: str) -> None:
     store = store.for_process(cnj)
     """Consolida documentos, ordem canônica e snapshot global dos Autos do processo."""
@@ -1545,6 +1550,7 @@ def consolidate_process_docket(store: Store, cnj: str) -> None:
         db.close()
 
 
+@guarded_process_mutation
 def finish_process_sync(
     store: Store,
     cnj: str,
@@ -1723,6 +1729,7 @@ def generate_integrated_autos(store: Store, cnj: str) -> dict[str, Any]:
     }
 
 
+@guarded_process_mutation
 def reconstruct_process_from_package(store: Store, cnj: str) -> dict[str, Any]:
     store = store.for_process(cnj)
     """Reconstrói todo o processo no SQLite, Autos, Timeline e FTS5 a partir de processos/<CNJ>/."""
@@ -1902,6 +1909,7 @@ def sanitize_pdf_filename(orig_name: str, index: int) -> str:
     return safe
 
 
+@guarded_process_mutation
 def ingest_bulk_zip(
     store: Store,
     cnj: str,
@@ -2332,7 +2340,7 @@ def _process_captured_documents(
     1. VALIDATED: Confirma integridade dos PDFs e manifesto.
     2. EXTRACTING: Extração estrutural Heron + PDFium Spans (idempotente/retomável).
     3. STRUCTURING: Materialização no Themis, Canonical Store, Autos Reconciler e Cronologia Documental.
-    4. INDEXING: Geração de embeddings ONNX (embeddinggemma:300m) e indexação FTS.
+    4. INDEXING: Geração de embeddings EG2/LiteRT e indexação FTS.
     5. READY: Atualização de estado final do processo.
     """
     import time
@@ -2340,7 +2348,6 @@ def _process_captured_documents(
     from core.pdf.themis_pdf import hybrid_pages
     from core.documentos import canonical_store_v1, autos_reconciler_v1
     from core.retrieval.vector_store import VectorStore, pack_vector, _now as vector_now
-    from core.retrieval.onnx_embed import generate_embeddings_batch_onnx
     from core.retrieval.embeddinggemma2_litert import embed_many, active_signature
 
     t_total_start = time.perf_counter()

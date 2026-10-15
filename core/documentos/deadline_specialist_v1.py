@@ -9,10 +9,7 @@ import json
 import re
 import sqlite3
 import unicodedata
-from pathlib import Path
 from typing import Any, Iterable, Mapping
-
-import numpy as np
 
 from core.documentos.deadline_specialist_contract_v1 import (
     ContextRequest,
@@ -21,10 +18,8 @@ from core.documentos.deadline_specialist_contract_v1 import (
 from core.documentos.deadline_rule_resolver_v1 import resolve_deadline_rule
 from core.documentos.legal_context_v1 import LegalContext
 from core.documentos.legal_deadline_rules_v1 import get_catalog
-from core.retrieval.onnx_embed import generate_embedding_onnx
 
-MODEL_VERSION = "deadline-specialist-encoder-heads-v1"
-HEADS_PATH = Path(__file__).resolve().parents[1] / "models" / "deadline_specialist_heads_v1.npz"
+MODEL_VERSION = "deadline-specialist-evidence-rules-v2"
 
 TASK_LABELS = {
     "operative_instruction": (False, True),
@@ -80,25 +75,12 @@ def _norm(value: Any) -> str:
     return " ".join("".join(ch for ch in text if not unicodedata.combining(ch)).split()).casefold()
 
 def _model_predictions(text: str) -> tuple[dict[str, Any], dict[str, float]]:
-    if not HEADS_PATH.is_file():
-        return {}, {}
-    vector = generate_embedding_onnx(text)
-    if not vector:
-        return {}, {}
-    x = np.asarray(vector, dtype=np.float32)
-    data = np.load(HEADS_PATH, allow_pickle=False)
-    predictions: dict[str, Any] = {}
-    confidence: dict[str, float] = {}
-    for task, labels in TASK_LABELS.items():
-        w = data[f"{task}_weight"]
-        b = data[f"{task}_bias"]
-        logits = w @ x + b
-        shifted = logits - np.max(logits)
-        probs = np.exp(shifted) / np.sum(np.exp(shifted))
-        index = int(np.argmax(probs))
-        predictions[task] = labels[index]
-        confidence[task] = float(probs[index])
-    return predictions, confidence
+    """No EG1 head: authoritative facts come from rules, sources and context.
+
+    Preserve the internal test seam; do not fabricate confidence from embeddings.
+    EG2 is used by the antecedent retriever, never to infer an unsupported role.
+    """
+    return {}, {}
 def _explicit_term(text: str) -> tuple[int | None, str, str | None]:
     match = _TERM.search(text)
     if match:
@@ -212,6 +194,8 @@ def analyze_deadline_text(
     if act_type == "FILE_DEFENSE" and _direct_role(excerpt) is None:
         recipient_role = "DEFENDANT"
     sufficiency = str(predictions.get("context_sufficiency") or "SUFFICIENT")
+    if recipient_role == "UNRESOLVED" and not _OPPOSING.search(excerpt) and not _INDIRECT_PARTICIPANT.search(excerpt):
+        sufficiency = "AMBIGUOUS_REVIEW"
     antecedent_id: str | None = None
     candidate_antecedents: tuple[str, ...] = ()
     requests: list[ContextRequest] = []

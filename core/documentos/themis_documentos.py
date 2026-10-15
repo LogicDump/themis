@@ -656,32 +656,35 @@ def reprocess_page(
         embedding_updated = False
         if update_embedding and content_markdown.strip():
             try:
-                from core.retrieval.ollama_embed import generate_embedding_with_meta
-                from core.retrieval.vector_store import VectorStore, EMBEDDING_MODEL_NAME
+                from core.retrieval.embeddinggemma2_litert import MODEL, embed_many
+                from core.retrieval.vector_store import VectorStore, is_exact_space_match
                 from core.runtime_paths import process_db_path
 
                 v_db = Path(vector_db_path) if vector_db_path else process_db_path(process_id, store.root)
                 if v_db.parent.exists():
                     v_store = VectorStore(v_db)
-                    vec, meta = generate_embedding_with_meta(
-                        content_markdown,
-                        is_query=False,
-                        model=EMBEDDING_MODEL_NAME,
-                        backend=backend,
+                    existing = v_store.get_index_metadata(process_id, MODEL)
+                    pinned_backend = existing["backend"] if existing else backend
+                    vectors, signature = embed_many(
+                        [content_markdown], required_backend=pinned_backend,
                     )
-                    if vec:
-                        v_store.save_embedding(
-                            page_id=page_id,
-                            document_id=document_id,
-                            process_id=process_id,
-                            page_number=page_number,
-                            vector=vec,
-                            model=meta.get("model", EMBEDDING_MODEL_NAME),
-                            backend=meta.get("backend", "onnx"),
-                            model_version=meta.get("model_version", "v1"),
-                            quantization=meta.get("quantization", "int8"),
-                        )
-                        embedding_updated = True
+                    if existing and not is_exact_space_match(existing, signature):
+                        raise RuntimeError("Índice EG2 incompatível no reprocessamento")
+                    vec = vectors[0]
+                    if not vec:
+                        raise RuntimeError("Embedding EG2 não gerado no reprocessamento")
+                    v_store.save_embedding(
+                        page_id=page_id,
+                        document_id=document_id,
+                        process_id=process_id,
+                        page_number=page_number,
+                        vector=vec,
+                        model=signature["model"],
+                        backend=signature["backend"],
+                        model_version=signature["model_version"],
+                        quantization=signature["quantization"],
+                    )
+                    embedding_updated = True
             except Exception:
                 embedding_updated = False
 

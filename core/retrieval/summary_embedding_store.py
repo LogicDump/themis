@@ -7,14 +7,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.retrieval.vector_store import (
-    EMBEDDING_MODEL_NAME,
-    EMBEDDING_MODEL_VERSION,
-    pack_vector,
-    unpack_vector,
-)
+from core.retrieval.embeddinggemma2_litert import MODEL, VERSION, active_signature, embed_many
+from core.retrieval.vector_store import is_exact_space_match, pack_vector, unpack_vector
 
 MIGRATION_VERSION = "movement-summary-embeddings-v1"
+
+def _summary_backend(db: sqlite3.Connection) -> str | None:
+    """Keep previously chosen EG2 backend pinned; never reuse EG1 signatures."""
+    if not db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_summary_embeddings'"
+    ).fetchone():
+        return None
+    backends = [row[0] for row in db.execute(
+        "SELECT DISTINCT backend FROM movement_summary_embeddings WHERE model=? AND model_version=?",
+        (MODEL, VERSION),
+    )]
+    if len(backends) > 1:
+        raise RuntimeError("Índice de resumos EG2 contém backends incompatíveis")
+    return backends[0] if backends else None
+
 
 
 def embedding_input(title: str | None, summary_text: str) -> str:
@@ -110,25 +121,29 @@ def sync_current_embeddings(db: sqlite3.Connection, movement_ids: list[str] | se
     if stale_ids:
         db.executemany("DELETE FROM movement_summary_embeddings WHERE movement_id=?", [(item,) for item in stale_ids])
         db.commit()
+    signature = active_signature(_summary_backend(db))
     existing = {
-        row[0]: (row[1], row[2], row[3], row[4], row[5])
+        row[0]: (row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8])
         for row in db.execute(
-            f"SELECT movement_id,summary_id,source_hash,input_hash,model,model_version FROM movement_summary_embeddings WHERE movement_id IN ({','.join('?' for _ in by_id)})",
+            f"SELECT movement_id,summary_id,source_hash,input_hash,model,model_version,backend,quantization,dim FROM movement_summary_embeddings WHERE movement_id IN ({','.join('?' for _ in by_id)})",
             tuple(by_id),
         ).fetchall()
     } if by_id else {}
     pending = [row for row in rows if existing.get(row["movement_id"]) != (
         row["summary_id"], row["source_hash"], embedding_input_hash(row.get("title"), row["summary_text"]),
-        EMBEDDING_MODEL_NAME, EMBEDDING_MODEL_VERSION,
+        MODEL, VERSION, signature["backend"], signature["quantization"], signature["dim"],
     )]
     if not pending:
         return {"updated": 0, "removed": len(stale_ids)}
-    from core.retrieval.onnx_embed import generate_embeddings_batch_onnx
-
     texts = [embedding_input(row.get("title"), row["summary_text"]) for row in pending]
     vectors: list[list[float] | None] = []
     for offset in range(0, len(texts), 24):
-        vectors.extend(generate_embeddings_batch_onnx(texts[offset:offset + 24]))
+        batch, batch_signature = embed_many(
+            texts[offset:offset + 24], required_backend=signature["backend"],
+        )
+        if not is_exact_space_match(signature, batch_signature):
+            raise RuntimeError("Assinatura EG2 dos resumos incompatível")
+        vectors.extend(batch)
     updated = 0
     try:
         db.execute("BEGIN")
@@ -139,14 +154,14 @@ def sync_current_embeddings(db: sqlite3.Connection, movement_ids: list[str] | se
                 continue
             db.execute("""INSERT INTO movement_summary_embeddings(
                 movement_id,summary_id,source_hash,input_hash,model,backend,model_version,quantization,dim,vector_blob,updated_at
-              ) VALUES(?,?,?,?,?,'onnx',?,'int8',?,?,?)
+              ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
               ON CONFLICT(movement_id) DO UPDATE SET summary_id=excluded.summary_id,
                 source_hash=excluded.source_hash,input_hash=excluded.input_hash,model=excluded.model,
                 backend=excluded.backend,model_version=excluded.model_version,quantization=excluded.quantization,
                 dim=excluded.dim,vector_blob=excluded.vector_blob,updated_at=excluded.updated_at""",
                 (row["movement_id"], row["summary_id"], row["source_hash"],
-                 embedding_input_hash(row.get("title"), row["summary_text"]), EMBEDDING_MODEL_NAME,
-                 EMBEDDING_MODEL_VERSION, len(vector), pack_vector(vector), _now()))
+                 embedding_input_hash(row.get("title"), row["summary_text"]), MODEL,
+                 signature["backend"], VERSION, signature["quantization"], len(vector), pack_vector(vector), _now()))
             updated += 1
         db.commit()
     except Exception:
@@ -165,13 +180,22 @@ def rebuild_index(db_path: Path | str, *, batch_size: int = 24) -> dict[str, Any
         rows = _current_rows(db)
     finally:
         db.close()
-    from core.retrieval.onnx_embed import generate_embeddings_batch_onnx
-
+    db = sqlite3.connect(str(target))
+    db.row_factory = sqlite3.Row
+    try:
+        signature = active_signature(_summary_backend(db)) if rows else None
+    finally:
+        db.close()
     vectors: list[list[float] | None] = []
     texts = [embedding_input(row.get("title"), row["summary_text"]) for row in rows]
     size = max(1, int(batch_size))
     for offset in range(0, len(texts), size):
-        vectors.extend(generate_embeddings_batch_onnx(texts[offset:offset + size]))
+        batch, batch_signature = embed_many(
+            texts[offset:offset + size], required_backend=signature["backend"],
+        )
+        if not is_exact_space_match(signature, batch_signature):
+            raise RuntimeError("Assinatura EG2 dos resumos incompatível")
+        vectors.extend(batch)
     db = sqlite3.connect(str(target))
     db.row_factory = sqlite3.Row
     try:
@@ -184,14 +208,14 @@ def rebuild_index(db_path: Path | str, *, batch_size: int = 24) -> dict[str, Any
                 continue
             db.execute("""INSERT INTO movement_summary_embeddings(
                 movement_id,summary_id,source_hash,input_hash,model,backend,model_version,quantization,dim,vector_blob,updated_at
-              ) VALUES(?,?,?,?,?,'onnx',?,'int8',?,?,?)
+              ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
               ON CONFLICT(movement_id) DO UPDATE SET summary_id=excluded.summary_id,
                 source_hash=excluded.source_hash,input_hash=excluded.input_hash,model=excluded.model,
                 backend=excluded.backend,model_version=excluded.model_version,quantization=excluded.quantization,
                 dim=excluded.dim,vector_blob=excluded.vector_blob,updated_at=excluded.updated_at""",
                 (row["movement_id"], row["summary_id"], row["source_hash"],
-                 embedding_input_hash(row.get("title"), row["summary_text"]), EMBEDDING_MODEL_NAME,
-                 EMBEDDING_MODEL_VERSION, len(vector), pack_vector(vector), _now()))
+                 embedding_input_hash(row.get("title"), row["summary_text"]), MODEL,
+                 signature["backend"], VERSION, signature["quantization"], len(vector), pack_vector(vector), _now()))
             written += 1
         # Anything no longer eligible/current is obsolete derived state.
         db.execute("""DELETE FROM movement_summary_embeddings WHERE NOT EXISTS(
@@ -212,7 +236,7 @@ def rebuild_index(db_path: Path | str, *, batch_size: int = 24) -> dict[str, Any
         db.close()
 
 
-def current_vectors(db: sqlite3.Connection, summaries: list[dict[str, Any]], query_dim: int) -> list[list[float] | None]:
+def current_vectors(db: sqlite3.Connection, summaries: list[dict[str, Any]], query_signature: dict[str, Any]) -> list[list[float] | None]:
     """Read vectors only when their summary/source/input identity still matches."""
     if not summaries or not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_summary_embeddings'").fetchone():
         return [None] * len(summaries)
@@ -226,9 +250,8 @@ def current_vectors(db: sqlite3.Connection, summaries: list[dict[str, Any]], que
         item = stored.get(summary["movement_id"])
         expected_hash = embedding_input_hash(summary.get("title"), summary["summary_text"])
         if (not item or item["summary_id"] != summary.get("summary_id") or item["source_hash"] != summary.get("source_hash")
-            or item["input_hash"] != expected_hash or item["model"] != EMBEDDING_MODEL_NAME
-            or item["backend"] != "onnx" or item["model_version"] != EMBEDDING_MODEL_VERSION
-            or item["quantization"] != "int8" or item["dim"] != query_dim):
+            or item["input_hash"] != expected_hash
+            or not is_exact_space_match(dict(item), query_signature)):
             vectors.append(None)
             continue
         try:

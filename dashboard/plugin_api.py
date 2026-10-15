@@ -69,10 +69,27 @@ if register_token_route is not None:
     register_token_route("/api/plugins/themis/experimental/case-synthesis")
 
 
+def _upgrade_eg2_at_startup() -> None:
+    """Background bootstrap of derived EG2 indexes; never regenerates legal content."""
+    from core.retrieval.eg2_upgrade_v1 import upgrade_installed_processes
+    try:
+        report = upgrade_installed_processes()
+        _LOGGER.info("EG2 background upgrade: %s", report)
+    except Exception:
+        _LOGGER.exception("EG2 upgrade postponed until next startup")
+
+
 @contextlib.asynccontextmanager
 async def _plugin_lifespan(app):
     await _resume_interrupted_process_syncs()
-    yield
+    upgrade_task = asyncio.create_task(asyncio.to_thread(_upgrade_eg2_at_startup))
+    try:
+        yield
+    finally:
+        # Keep the resumable worker independent from HTTP requests.
+        if upgrade_task.done():
+            with contextlib.suppress(Exception):
+                upgrade_task.result()
 
 
 router = APIRouter(lifespan=_plugin_lifespan)
@@ -125,9 +142,9 @@ def health():
 
 @router.post("/embedding/warmup")
 def warmup_embedding_model():
-    """Start local EmbeddingGemma loading without waiting for ONNX startup."""
+    """Load EG2/LiteRT and report actual readiness."""
     try:
-        from core.retrieval.onnx_embed import request_embedding_warmup
+        from core.retrieval.embeddinggemma2_litert import request_embedding_warmup
         return {"state": request_embedding_warmup()}
     except Exception as exc:
         _LOGGER.warning("EmbeddingGemma warm-up request failed: %s", exc)
@@ -138,7 +155,7 @@ def warmup_embedding_model():
 def cancel_idle_embedding_model():
     """Cancel pending idle unload timer when re-entering Pesquisa."""
     try:
-        from core.retrieval.onnx_embed import cancel_embedding_unload
+        from core.retrieval.embeddinggemma2_litert import cancel_embedding_unload
         return {"cancelled": cancel_embedding_unload()}
     except Exception as exc:
         _LOGGER.warning("EmbeddingGemma cancel idle request failed: %s", exc)
@@ -149,7 +166,7 @@ def cancel_idle_embedding_model():
 def idle_embedding_model():
     """Start the fixed 90-second idle window after leaving Pesquisa."""
     try:
-        from core.retrieval.onnx_embed import schedule_embedding_unload, EMBEDDING_IDLE_TTL_SECONDS
+        from core.retrieval.embeddinggemma2_litert import schedule_embedding_unload, EMBEDDING_IDLE_TTL_SECONDS
         schedule_embedding_unload()
         return {"state": "IDLE", "ttl_seconds": EMBEDDING_IDLE_TTL_SECONDS}
     except Exception as exc:
@@ -307,6 +324,58 @@ def delete_process(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erro ao excluir processo: {exc}")
 
+
+
+@router.get("/processes/archived/list")
+def list_archived_processes_api():
+    from core.process_management_v1 import list_archived_processes
+    return {"process_ids": list_archived_processes()}
+
+
+@router.post("/processes/{process_id}/archive")
+def archive_process_api(process_id: str):
+    from core.process_management_v1 import archive_process
+    try:
+        return archive_process(process_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        from core.process_operation_lock import ProcessBusyError
+        if isinstance(exc, ProcessBusyError):
+            raise HTTPException(status_code=409, detail=str(exc))
+        raise
+
+
+@router.post("/processes/{process_id}/restore")
+def restore_process_api(process_id: str):
+    from core.process_management_v1 import restore_process
+    try:
+        return restore_process(process_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        from core.process_operation_lock import ProcessBusyError
+        if isinstance(exc, ProcessBusyError):
+            raise HTTPException(status_code=409, detail=str(exc))
+        raise
+
+
+@router.post("/processes/{process_id}/permanent-delete")
+def permanent_delete_process_api(process_id: str, payload: dict[str, Any]):
+    from core.process_management_v1 import delete_process_permanently
+    from core.process_operation_lock import ProcessBusyError
+    try:
+        return delete_process_permanently(process_id, str(payload.get("confirm_cnj") or ""))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ProcessBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.get("/processes/{process_id}/overview")
@@ -1158,54 +1227,13 @@ async def bridge_sync_zip(
         raise HTTPException(status_code=500, detail=f"Erro ao processar pacote ZIP de bulk download: {exc}")
 
 
-@contextlib.contextmanager
-def _process_sync_file_lock(cnj: str, data_root: str):
-    """Avoid two API workers processing the same captured package concurrently.
-
-    The OS releases this lock if the Gateway/API process exits. Its stable path
-    lets a newly started worker safely claim the interrupted job.
-    """
-    root_key = str(Path(data_root).resolve()).casefold()
-    lock_name = hashlib.sha256(f"{root_key}|{cnj}".encode("utf-8")).hexdigest() + ".lock"
-    lock_dir = Path(tempfile.gettempdir()) / "themis-process-sync-locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    handle = (lock_dir / lock_name).open("a+b")
-    if handle.seek(0, os.SEEK_END) == 0:
-        handle.write(b"\0")
-        handle.flush()
-    handle.seek(0)
-    try:
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
-        yield False
-        return
-    try:
-        yield True
-    finally:
-        try:
-            if os.name == "nt":
-                import msvcrt
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
-
-
 def _run_process_sync_background(cnj: str, data_root: str) -> None:
     from core.bridge.sync_service import _update_pipeline_progress
     from core.process_cycle import process_after_acquisition
     from core.documentos.themis_documentos import Store
 
-    with _process_sync_file_lock(cnj, data_root) as acquired:
+    from core.process_operation_lock import process_operation_lock
+    with process_operation_lock(cnj, data_root) as acquired:
         if not acquired:
             _LOGGER.info("Pipeline do processo %s já está ativo em outro worker; execução duplicada ignorada", cnj)
             return

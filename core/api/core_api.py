@@ -2256,16 +2256,20 @@ def reprocess_page(
     if store_root is None:
         raise RuntimeError("Não foi possível determinar o data root do Process Package")
     store = Store(store_root, process_id=process_id)
-    return _reprocess_page(
-        document_id_or_process_id=document_id_or_process_id,
-        page_number=page_number,
-        store=store,
-        pdf_path=pdf_path,
-        enable_heron_fallback=enable_heron_fallback,
-        update_embedding=update_embedding,
-        backend=backend,
-        vector_db_path=vector_db_path,
-    )
+    from core.process_operation_lock import process_operation_lock, ProcessBusyError
+    with process_operation_lock(process_id, store_root) as acquired:
+        if not acquired:
+            raise ProcessBusyError(f"Processo {process_id} ocupado por outra operação")
+        return _reprocess_page(
+            document_id_or_process_id=document_id_or_process_id,
+            page_number=page_number,
+            store=store,
+            pdf_path=pdf_path,
+            enable_heron_fallback=enable_heron_fallback,
+            update_embedding=update_embedding,
+            backend=backend,
+            vector_db_path=vector_db_path,
+        )
 
 
 def delete_process(

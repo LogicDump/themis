@@ -54,6 +54,24 @@ def process_after_acquisition(store, cnj: str, *, source_db: Path | None = None,
                               db=None, documents: bool = True, available_to: str | None = None,
                               available_from: str | None = None, acquire: bool = True,
                               project: bool = True) -> dict:
+    """Canonical entry with exclusive Process Package mutation ownership."""
+    if not documents:
+        return _process_after_acquisition_unlocked(store, cnj, source_db=source_db,
+            db=db, documents=documents, available_to=available_to,
+            available_from=available_from, acquire=acquire, project=project)
+    from core.process_operation_lock import process_operation_lock, ProcessBusyError
+    with process_operation_lock(cnj, store.root) as locked:
+        if not locked:
+            raise ProcessBusyError(f"Processo {cnj} ocupado por outra operação")
+        return _process_after_acquisition_unlocked(store, cnj, source_db=source_db,
+            db=db, documents=documents, available_to=available_to,
+            available_from=available_from, acquire=acquire, project=project)
+
+
+def _process_after_acquisition_unlocked(store, cnj: str, *, source_db: Path | None = None,
+                              db=None, documents: bool = True, available_to: str | None = None,
+                              available_from: str | None = None, acquire: bool = True,
+                              project: bool = True) -> dict:
     """Single Core facade: source acquisition, requested domains and projection."""
     from core.runtime_paths import validate_process_id
     cnj = validate_process_id(cnj)

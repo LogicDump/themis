@@ -389,6 +389,17 @@ def _legal_rebuild_guard(original_db: Path, staged_db: Path, process_id: str) ->
 
 def rebuild_process(root: Path, cnj: str, *, dry_run: bool = False,
                     allow_ai_loss: bool = False, pipeline=None, progress=None) -> dict:
+    """Exclusive mutation gate for the entire staging/swap lifecycle."""
+    from core.process_operation_lock import process_operation_lock, ProcessBusyError
+    with process_operation_lock(cnj, root) as locked:
+        if not locked:
+            raise ProcessBusyError(f"Processo {cnj} ocupado por outra operação")
+        return _rebuild_process_locked(root, cnj, dry_run=dry_run,
+            allow_ai_loss=allow_ai_loss, pipeline=pipeline, progress=progress)
+
+
+def _rebuild_process_locked(root: Path, cnj: str, *, dry_run: bool = False,
+                    allow_ai_loss: bool = False, pipeline=None, progress=None) -> dict:
     """Build in quarantine; atomically exchange package after validation."""
     root = Path(root).resolve()
     started = time.perf_counter()

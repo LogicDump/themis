@@ -16,9 +16,9 @@ from core.documentos.deadline_specialist_v1 import (
     derive_legal_context,
     resolve_specialist_rule,
 )
-from core.retrieval.onnx_embed import generate_embeddings_batch_onnx, generate_embedding_onnx
+from core.retrieval.embeddinggemma2_litert import embed_many, embed_query
 
-PIPELINE_VERSION = "deadline-resolution-pipeline-v1"
+PIPELINE_VERSION = "deadline-resolution-pipeline-v2-eg2"
 
 def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
@@ -251,8 +251,14 @@ def _antecedent_context(
         ]
         if len(contestations) == 1:
             return [dict(contestations[0], retrieval_method="EXPLICIT_ACT_REFERENCE")]
-    qvec = generate_embedding_onnx(query, is_query=True)
-    vectors = generate_embeddings_batch_onnx([item["text"] for item in candidates[:max_candidates * 3]])
+    qvec, query_signature = embed_query(query)
+    vectors, document_signature = embed_many(
+        [item["text"] for item in candidates[:max_candidates * 3]],
+        required_backend=query_signature["backend"],
+    )
+    from core.retrieval.vector_store import is_exact_space_match
+    if not is_exact_space_match(query_signature, document_signature):
+        raise RuntimeError("Espaços EG2 incompatíveis na resolução de antecedentes")
     scored = []
     if qvec and vectors:
         import numpy as np
@@ -346,7 +352,7 @@ def enrich_process_obligations(db: sqlite3.Connection, process_id: str) -> dict[
         provenance = {
             "deadline_resolution_pipeline": {
                 "version": PIPELINE_VERSION,
-                "specialist_model_version": "deadline-specialist-encoder-heads-v1",
+                "specialist_model_version": "deadline-specialist-evidence-rules-v2",
                 "specialist": output.as_dict(),
                 "antecedent_candidates": context,
                 "legal_context": legal_context.as_dict() if legal_context else None,

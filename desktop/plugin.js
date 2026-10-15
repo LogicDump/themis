@@ -25862,6 +25862,41 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	const [selectedPid, setSelectedPid] = useState(() => navTarget?.process_id || ctx.storage.get("workspace.process.selectedId", ""));
 	const [selectedReferencePid, setSelectedReferencePid] = useState("");
 	const [search, setSearch] = useState("");
+	const [archivedIds, setArchivedIds] = useState([]);
+	const [showArchived, setShowArchived] = useState(false);
+	const [processAction, setProcessAction] = useState(null);
+	const [processActionError, setProcessActionError] = useState(null);
+	useEffect(() => {
+		let live = true;
+		ctx.rest("/processes/archived/list").then((result) => {
+			if (live) setArchivedIds(Array.isArray(result?.process_ids) ? result.process_ids : []);
+		}).catch((err) => { if (live) setProcessActionError(err.message || String(err)); });
+		return () => { live = false; };
+	}, [ctx]);
+	const runProcessAction = async (action, pid) => {
+		setProcessActionError(null);
+		try {
+			const endpoint = action === "delete" ? "permanent-delete" : action;
+			const result = await ctx.rest(`/processes/${encodeURIComponent(pid)}/${endpoint}`, {
+				method: "POST",
+				...(action === "delete" ? { body: { confirm_cnj: pid } } : {})
+			});
+			setArchivedIds((previous) => action === "archive" ? [...new Set([...previous, pid])] : previous.filter((id) => id !== pid));
+			if (action === "delete") {
+				setProcesses((previous) => previous.filter((item) => (item.process_id || item.id) !== pid));
+				setProcessStructure((previous) => previous.filter((item) => item.process_id !== pid));
+			}
+			if (selectedPidRef.current === pid && (action === "delete" || (action === "archive" && !showArchived) || (action === "restore" && showArchived))) {
+				setSelectedPid("");
+				ctx.storage.remove("workspace.process.selectedId");
+			}
+			setProcessAction(null);
+			return result;
+		} catch (err) {
+			setProcessActionError(err.message || String(err));
+			throw err;
+		}
+	};
 	const [activeSection, setActiveSection] = useState(() => navTarget?.section || ctx.storage.get("workspace.process.view", "dossie"));
 	const [listWidthPct, setListWidthPct] = useState(30);
 	const [isDragging, setIsDragging] = useState(false);
@@ -26464,12 +26499,13 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	const filteredProcesses = useMemo(() => {
 		return processes.filter((p) => {
 			const pid = p.process_id || p.id || "";
+			if (archivedIds.includes(pid) !== showArchived) return false;
 			const label = p.label || "";
 			if (!search) return true;
 			const q = search.toLowerCase();
 			return pid.toLowerCase().includes(q) || label.toLowerCase().includes(q);
 		});
-	}, [processes, search]);
+	}, [processes, search, archivedIds, showArchived]);
 	const filteredProcessStructure = useMemo(() => {
 		const rows = processStructure.length > 0 ? processStructure : processes.map((process) => ({
 			process_id: process.process_id || process.id || "",
@@ -26481,7 +26517,8 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 			discovery_status: "KNOWN",
 			secondary_relations: []
 		}));
-		if (!search) return rows;
+		const visibleRows = rows.filter((row) => archivedIds.includes(row.process_id) === showArchived);
+		if (!search) return visibleRows;
 		const q = search.toLowerCase();
 		const byId = new Map(rows.map((row) => [row.process_id, row]));
 		const keep = new Set();
@@ -26494,8 +26531,8 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 				current = current.parent_process_id ? byId.get(current.parent_process_id) : null;
 			}
 		}
-		return rows.filter((row) => keep.has(row.process_id));
-	}, [processStructure, processes, search]);
+		return visibleRows.filter((row) => keep.has(row.process_id));
+	}, [processStructure, processes, search, archivedIds, showArchived]);
 	const selectedReference = useMemo(() => {
 		if (!selectedReferencePid) return null;
 		return processStructure.find((row) => row.process_id === selectedReferencePid) || null;
@@ -26946,6 +26983,18 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 				]
 			}) : null,
 			jsx(ConfirmDialog, {
+				open: Boolean(processAction),
+				onClose: () => setProcessAction(null),
+				onConfirm: async () => { if (processAction) await runProcessAction(processAction.action, processAction.pid); },
+				title: processAction?.action === "delete" ? "Excluir processo definitivamente?" : processAction?.action === "restore" ? "Restaurar processo?" : "Arquivar processo?",
+				description: processAction?.action === "delete" ? `Todos os dados locais do processo ${processAction.pid} serão excluídos definitivamente. A operação não poderá ser desfeita.` : `Processo ${processAction?.pid || ""}. O arquivamento não apaga documentos.`,
+				confirmLabel: processAction?.action === "delete" ? "Excluir definitivamente" : processAction?.action === "restore" ? "Restaurar" : "Arquivar",
+				cancelLabel: "Cancelar",
+				busyLabel: "Executando...",
+				doneLabel: "Concluído"
+			}),
+			processActionError ? jsx("div", { role: "alert", className: "text-xs text-destructive", children: processActionError }) : null,
+			jsx(ConfirmDialog, {
 				open: Boolean(summaryConfirmationMovement),
 				onClose: () => setSummaryConfirmationMovement(null),
 				onConfirm: async () => {
@@ -26980,7 +27029,11 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 					subtitle: `Acervo: ${processes.length} processo(s)`
 				}), jsxs("div", {
 					className: "flex items-center gap-2 shrink-0",
-					children: [jsxs(DropdownMenu, {
+					children: [jsx(Button, {
+						variant: "outline", className: "h-7 px-2.5 text-xs",
+						onClick: () => { setShowArchived((v) => !v); setSelectedReferencePid(""); },
+						children: showArchived ? "Ver ativos" : `Arquivados (${archivedIds.length})`
+					}), jsxs(DropdownMenu, {
 						open: modelMenuOpen,
 						onOpenChange: setModelMenuOpen,
 						children: [jsx(DropdownMenuTrigger, {
@@ -27117,7 +27170,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 										className: "font-mono text-base font-bold text-foreground truncate",
 										children: selectedPid
 									})]
-								}), jsx(SegmentedControl, {
+								}), jsx(Button, { variant: "outline", className: "h-7 text-xs", onClick: () => setProcessAction({ action: archivedIds.includes(selectedPid) ? "restore" : "archive", pid: selectedPid }), children: archivedIds.includes(selectedPid) ? "Restaurar" : "Arquivar" }), jsx(Button, { variant: "destructive", className: "h-7 text-xs", onClick: () => setProcessAction({ action: "delete", pid: selectedPid }), children: "Excluir" }), jsx(SegmentedControl, {
 									options: PROCESS_SECTIONS,
 									value: activeSection,
 									onChange: changeProcessSection

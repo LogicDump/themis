@@ -229,37 +229,3 @@ def models_dir() -> Path:
     if custom:
         return Path(custom).resolve()
     return themis_data_root() / "models"
-
-
-def embeddinggemma_onnx_model_path() -> Path:
-    """Retorna o caminho do modelo ONNX INT8 de EmbeddingGemma."""
-    custom = os.environ.get("THEMIS_EMBEDDING_MODEL_PATH")
-    if custom and Path(custom).is_file():
-        return Path(custom).resolve()
-
-    plugin_root = Path(__file__).resolve().parent.parent
-    candidates = [
-        models_dir() / "embeddinggemma-300m-onnx" / "model_int8.onnx",
-        plugin_root / "models" / "embeddinggemma-300m-onnx" / "model_int8.onnx",
-    ]
-    for cand in candidates:
-        if cand.is_file():
-            return cand.resolve()
-    return candidates[0].resolve()
-
-
-def embeddinggemma_tokenizer_path() -> Path:
-    """Retorna o caminho do tokenizer.json de EmbeddingGemma."""
-    custom = os.environ.get("THEMIS_TOKENIZER_PATH")
-    if custom and Path(custom).is_file():
-        return Path(custom).resolve()
-
-    plugin_root = Path(__file__).resolve().parent.parent
-    candidates = [
-        models_dir() / "embeddinggemma-300m-onnx" / "tokenizer.json",
-        plugin_root / "models" / "embeddinggemma-300m-onnx" / "tokenizer.json",
-    ]
-    for cand in candidates:
-        if cand.is_file():
-            return cand.resolve()
-    return candidates[0].resolve()

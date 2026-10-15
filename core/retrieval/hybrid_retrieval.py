@@ -7,8 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from core.retrieval.ollama_embed import generate_embedding, generate_embedding_with_meta
-from core.retrieval.vector_store import EMBEDDING_MODEL_NAME, VectorStore, cosine_similarity
+from core.retrieval.embeddinggemma2_litert import MODEL as EMBEDDING_MODEL_NAME, embed_many
+from core.retrieval.vector_store import VectorStore, cosine_similarity, is_exact_space_match, unpack_vector
 from core.runtime_paths import index_db_path, process_db_path
 
 
@@ -77,30 +77,58 @@ def ensure_process_embeddings(
     backend: str | None = None,
 ) -> None:
     indexed_ids = vector_store.get_indexed_page_ids(process_id, EMBEDDING_MODEL_NAME)
-    for p in pages:
-        if p["page_id"] not in indexed_ids:
-            text = (p.get("content") or "").strip()
-            if not text:
-                continue
-            vec, meta = generate_embedding_with_meta(
-                text,
-                is_query=False,
-                model=EMBEDDING_MODEL_NAME,
-                ollama_url=ollama_url,
-                backend=backend,
-            )
-            if vec:
-                vector_store.save_embedding(
-                    page_id=p["page_id"],
-                    document_id=p["document_id"],
-                    process_id=process_id,
-                    page_number=p["page_number"],
-                    vector=vec,
-                    model=meta.get("model", EMBEDDING_MODEL_NAME),
-                    backend=meta.get("backend", "onnx"),
-                    model_version=meta.get("model_version", "v1"),
-                    quantization=meta.get("quantization", "int8"),
-                )
+    pending = [page for page in pages if page["page_id"] not in indexed_ids and (page.get("content") or "").strip()]
+    if not pending:
+        return
+    existing = vector_store.get_index_metadata(process_id, EMBEDDING_MODEL_NAME)
+    pinned_backend = existing["backend"] if existing else backend
+    vectors, signature = embed_many(
+        [page["content"] for page in pending], required_backend=pinned_backend,
+    )
+    if existing and not is_exact_space_match(existing, signature):
+        raise RuntimeError("Índice EG2 incompatível com a geração de embeddings")
+    if any(vector is None for vector in vectors):
+        raise RuntimeError("Falha na geração dos embeddings EG2")
+    for page, vector in zip(pending, vectors):
+        vector_store.save_embedding(
+            page_id=page["page_id"], document_id=page["document_id"],
+            process_id=process_id, page_number=page["page_number"], vector=vector,
+            model=signature["model"], backend=signature["backend"],
+            model_version=signature["model_version"], quantization=signature["quantization"],
+        )
+
+
+def _read_eg2_index(vector_db: Path, process_id: str):
+    """Read vector state without initializing/migrating any live database."""
+    if not vector_db.is_file():
+        return None, {}
+    db = sqlite3.connect(f"file:{vector_db.as_posix()}?mode=ro", uri=True)
+    db.row_factory = sqlite3.Row
+    try:
+        tables = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        if not {"vector_index_metadata", "page_embeddings"}.issubset(tables):
+            return None, {}
+        row = db.execute(
+            """SELECT model,backend,model_version,quantization,dim
+               FROM vector_index_metadata WHERE process_id=? AND model=?""",
+            (process_id, EMBEDDING_MODEL_NAME),
+        ).fetchone()
+        if row is None:
+            return None, {}
+        signature = dict(row)
+        vectors = {}
+        for item in db.execute(
+            """SELECT page_id,model,backend,model_version,quantization,dim,vector_blob
+               FROM page_embeddings WHERE process_id=? AND model=?""",
+            (process_id, EMBEDDING_MODEL_NAME),
+        ):
+            if is_exact_space_match(dict(item), signature):
+                vectors[item["page_id"]] = unpack_vector(item["vector_blob"], item["dim"])
+        return signature, vectors
+    finally:
+        db.close()
 
 
 def search_hybrid(
@@ -141,9 +169,9 @@ def search_hybrid(
             themis_vec = target_db.parent / "themis_vectors.db"
             juridico_vec = target_db.parent / "juridico_vectors.db"
             vec_path = themis_vec if themis_vec.exists() else (juridico_vec if juridico_vec.exists() else themis_vec)
-    vector_store = VectorStore(vec_path)
+    idx_meta, stored_vectors = _read_eg2_index(vec_path, process_id)
 
-    conn = sqlite3.connect(str(target_db))
+    conn = sqlite3.connect(f"file:{target_db.as_posix()}?mode=ro", uri=True)
     try:
         conn.row_factory = sqlite3.Row
         pages = load_process_pages(conn, process_id)
@@ -174,30 +202,18 @@ def search_hybrid(
     lex_ranks = {p["page_id"]: rank for rank, p in enumerate(sorted_lex, start=1)}
 
     # 2. Semantic Scoring (EmbeddingGemma)
-    from core.retrieval.embeddinggemma2_litert import MODEL as V2_MODEL, embed_query
-    idx_meta = vector_store.get_index_metadata(process_id, V2_MODEL)
-    index_model = V2_MODEL if idx_meta else EMBEDDING_MODEL_NAME
-    if idx_meta:
-        query_vec, query_meta = embed_query(clean_query, required_backend=idx_meta["backend"])
-    else:
-        ensure_process_embeddings(process_id, pages, vector_store, ollama_url=ollama_url)
-        query_vec, query_meta = generate_embedding_with_meta(
-            clean_query, is_query=True, model=EMBEDDING_MODEL_NAME, ollama_url=ollama_url
-        )
-        idx_meta = vector_store.get_index_metadata(process_id, EMBEDDING_MODEL_NAME)
-    stored_vectors = {v["page_id"]: v["vector"] for v in vector_store.get_process_vectors(process_id, index_model)}
+    from core.retrieval.embeddinggemma2_litert import embed_query
+    # Searching never initializes indexes or invokes EG1. Without EG2, use lexical evidence.
+    query_vec, query_meta = (
+        embed_query(clean_query, required_backend=idx_meta["backend"])
+        if idx_meta else (None, None)
+    )
+    # Vectors were loaded with the exact persisted EG2 signature in read-only mode.
 
     # Validar correspondência exata de espaço vetorial entre a query e o índice gravado
-    is_compatible = True
+    is_compatible = False
     if query_vec and idx_meta:
-        from core.retrieval.vector_store import is_exact_space_match
-        query_sig = {
-            "model": query_meta.get("model", index_model),
-            "model_version": query_meta.get("model_version", "v1"),
-            "backend": query_meta.get("backend", "onnx"),
-            "quantization": query_meta.get("quantization", "int8"),
-            "dim": len(query_vec),
-        }
+        query_sig = dict(query_meta)
         is_compatible = is_exact_space_match(idx_meta, query_sig)
         if not is_compatible:
             import logging
@@ -221,7 +237,7 @@ def search_hybrid(
 
     # 3. Reciprocal Rank Fusion (RRF k=60)
     rrf_scores: dict[str, float] = {}
-    has_semantic = bool(query_vec and stored_vectors)
+    has_semantic = bool(query_vec and stored_vectors and is_compatible)
 
     for p in pages:
         pid = p["page_id"]

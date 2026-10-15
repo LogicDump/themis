@@ -330,7 +330,7 @@ def run_themis_setup(
     for subdir in (
         "config",
         "models",
-        "models/embeddinggemma-300m-onnx",
+        "models/embeddinggemma-2-text-270m",
         "processos",
     ):
         (data_root / subdir).mkdir(parents=True, exist_ok=True)
@@ -377,7 +377,7 @@ def run_themis_setup(
     else:
         log_fn("  [INFO] Registro de Native Messaging ignorado (--skip-native-host).")
 
-    # 5. Provisionamento do EmbeddingGemma ONNX
+    # 5. Provisionamento do EmbeddingGemma 2 LiteRT
     skip_models = getattr(args, "skip_models", False) if args else False
     models_result = []
     if not skip_models:
@@ -430,7 +430,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     setup_parser = subs.add_parser(
         "setup",
         help="Inicializa persistência, esquemas e modelos do Themis",
-        description="Inicializa o plugin-data/themis, catálogo SQLite, Native Messaging Host e modelos ONNX locais.",
+        description="Inicializa o plugin-data/themis, catálogo SQLite, Native Messaging Host e modelo EG2/LiteRT local.",
     )
     setup_parser.add_argument(
         "--skip-models",
@@ -462,6 +462,9 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     rebuild_parser.add_argument("--discard-ai", action="store_true")
     rebuild_parser.add_argument("--inspect-staging", metavar="TOKEN", help="Audita staging anterior sem modificar dados")
     rebuild_parser.set_defaults(func=run_themis_rebuild)
+
+    from core.process_commands_v1 import register_management_cli
+    register_management_cli(subs)
 
 def run_themis_rebuild(args: argparse.Namespace, *,
                        data_root_override: Path | str | None = None,

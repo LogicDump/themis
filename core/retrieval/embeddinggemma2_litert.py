@@ -29,6 +29,9 @@ _LOCK = threading.RLock()
 _ENGINE = None
 _ENGINE_BACKEND = None
 _ENGINE_PATH = None
+_IDLE_TIMER: threading.Timer | None = None
+_IDLE_GENERATION = 0
+EMBEDDING_IDLE_TTL_SECONDS = 90
 
 
 def model_path() -> Path:
@@ -97,6 +100,48 @@ def _get_engine(required: str | None = None):
                 last_error = exc
                 _LOG.warning("EmbeddingGemma 2: backend %s indisponível: %s", mode, exc)
         raise RuntimeError(f"EmbeddingGemma 2 não iniciou backend solicitado: {last_error}")
+
+
+def cancel_embedding_unload() -> bool:
+    global _IDLE_TIMER, _IDLE_GENERATION
+    with _LOCK:
+        _IDLE_GENERATION += 1
+        old, _IDLE_TIMER = _IDLE_TIMER, None
+        if old is not None:
+            old.cancel()
+        return old is not None
+
+
+def request_embedding_warmup() -> str:
+    # Warmup is deliberately synchronous, so READY always means loaded.
+    cancel_embedding_unload()
+    _get_engine()
+    return "READY"
+
+
+def _unload_if_idle(generation: int) -> None:
+    global _ENGINE, _ENGINE_BACKEND, _ENGINE_PATH, _IDLE_TIMER
+    with _LOCK:
+        if generation != _IDLE_GENERATION or _IDLE_TIMER is None:
+            return
+        _IDLE_TIMER = None
+        previous, _ENGINE = _ENGINE, None
+        _ENGINE_BACKEND, _ENGINE_PATH = None, None
+        if previous is not None:
+            previous.__exit__(None, None, None)
+
+
+def schedule_embedding_unload() -> None:
+    global _IDLE_TIMER, _IDLE_GENERATION
+    with _LOCK:
+        _IDLE_GENERATION += 1
+        if _IDLE_TIMER is not None:
+            _IDLE_TIMER.cancel()
+        timer = threading.Timer(EMBEDDING_IDLE_TTL_SECONDS, _unload_if_idle, (_IDLE_GENERATION,))
+        timer.name = "themis-eg2-idle-unload"
+        timer.daemon = True
+        _IDLE_TIMER = timer
+        timer.start()
 
 
 def active_signature(required: str | None = None) -> dict[str, object]:

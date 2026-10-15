@@ -13,10 +13,8 @@ from core.runtime_paths import index_db_path
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL_NAME = "embeddinggemma:300m"
-EMBEDDING_MODEL_FAMILY = "embeddinggemma"
-EMBEDDING_MODEL_VERSION = "v1"
-EMBEDDING_DIM = 768
+from core.retrieval.embeddinggemma2_litert import MODEL as EMBEDDING_MODEL_NAME, VERSION as EMBEDDING_MODEL_VERSION, DIM as EMBEDDING_DIM
+EMBEDDING_MODEL_FAMILY = "embeddinggemma2"
 
 
 class IncompatibleEmbeddingSpaceError(ValueError):
@@ -192,9 +190,9 @@ class VectorStore:
         page_number: int,
         vector: list[float],
         model: str = EMBEDDING_MODEL_NAME,
-        backend: str = "onnx",
+        backend: str = "litert-cpu",
         model_version: str = EMBEDDING_MODEL_VERSION,
-        quantization: str = "int8",
+        quantization: str = "litertlm-quantized",
     ) -> None:
         if len(vector) != EMBEDDING_DIM:
             raise IncompatibleEmbeddingSpaceError(
@@ -212,7 +210,7 @@ class VectorStore:
         # Validação estrita de isolamento vetorial: exige correspondência exata de model+version+backend+quantization+dim
         existing_metas = self.get_process_index_metadata(process_id)
         for existing in existing_metas:
-            if not is_exact_space_match(existing, incoming_sig):
+            if existing["model"] == model and not is_exact_space_match(existing, incoming_sig):
                 raise IncompatibleEmbeddingSpaceError(
                     f"Isolamento vetorial estrito violado para o processo {process_id}: "
                     f"índice existente gravado com (model='{existing['model']}', version='{existing['model_version']}', backend='{existing['backend']}', quant='{existing['quantization']}', dim={existing['dim']}), "
