@@ -25849,6 +25849,33 @@ function PdfJsViewer({ pdfData, runtimePromise, pageNumber = 1, active = false, 
 		]
 	});
 }
+// Projeta uma arvore de acervo por estado sem alterar relacoes nem arquivos.
+// Ancestrais sem pacote local aparecem somente quando contextualizam processos visiveis.
+function projectArchiveProcessTree(rows, archivedIds, showArchived, search) {
+	const byId = new Map(rows.filter((row) => row.process_id).map((row) => [row.process_id, row]));
+	const archived = new Set(archivedIds);
+	const keep = new Set();
+	const query = String(search || "").trim().toLowerCase();
+	const matches = (row) => (String(row.process_id || "") + " " + String(row.label || "") + " " + String(row.discovery_status || "")).toLowerCase().includes(query);
+	for (const row of rows) {
+		if (!row.process_id || row.materialized === false || archived.has(row.process_id) !== showArchived) continue;
+		let ancestor = row;
+		const chain = [];
+		const visited = new Set();
+		let queryMatches = !query;
+		while (ancestor && !visited.has(ancestor.process_id)) {
+			visited.add(ancestor.process_id);
+			chain.push(ancestor.process_id);
+			if (query && matches(ancestor)) queryMatches = true;
+			ancestor = ancestor.parent_process_id ? byId.get(ancestor.parent_process_id) : null;
+		}
+		if (queryMatches) for (const id of chain) keep.add(id);
+	}
+	return rows.filter((row) => keep.has(row.process_id)).map((row) => ({
+		...row,
+		contextOnly: row.materialized === false || archived.has(row.process_id) !== showArchived
+	}));
+}
 function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }) {
 	const pluginCtxRef = useRef(ctx);
 	pluginCtxRef.current = ctx;
@@ -26533,21 +26560,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 			discovery_status: "KNOWN",
 			secondary_relations: []
 		}));
-		const visibleRows = rows.filter((row) => archivedIds.includes(row.process_id) === showArchived);
-		if (!search) return visibleRows;
-		const q = search.toLowerCase();
-		const byId = new Map(rows.map((row) => [row.process_id, row]));
-		const keep = new Set();
-		for (const row of rows) {
-			const haystack = (String(row.process_id || "") + " " + String(row.label || "") + " " + String(row.discovery_status || "")).toLowerCase();
-			if (!haystack.includes(q)) continue;
-			let current = row;
-			while (current && !keep.has(current.process_id)) {
-				keep.add(current.process_id);
-				current = current.parent_process_id ? byId.get(current.parent_process_id) : null;
-			}
-		}
-		return visibleRows.filter((row) => keep.has(row.process_id));
+		return projectArchiveProcessTree(rows, archivedIds, showArchived, search);
 	}, [processStructure, processes, search, archivedIds, showArchived]);
 	const selectedReference = useMemo(() => {
 		if (!selectedReferencePid) return null;
@@ -27112,7 +27125,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 								className: "flex flex-col gap-1 p-1",
 								children: filteredProcessStructure.map((row) => {
 									const pid = row.process_id;
-									const materialized = row.materialized !== false;
+									const materialized = row.materialized !== false && !row.contextOnly;
 									return jsx("div", {
 										className: materialized ? "" : "opacity-55",
 										style: { paddingLeft: `${Math.max(0, Number(row.depth || 0)) * 14}px` },
