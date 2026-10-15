@@ -1,9 +1,7 @@
 import json
 import sqlite3
 
-from core.documentos.process_movement_linker_v1 import (
-    audit_links, materialize_links, read_provider_timeline, read_unlinked_documentary_movements,
-)
+from core.documentos.process_movement_linker_v1 import audit_links, materialize_links, read_provider_timeline
 
 
 def _db():
@@ -58,35 +56,6 @@ def _add_derived(db, mid, typ, date, protocol=None, document_id=None):
            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (mid, "P", 1, typ, typ, None, date, protocol, 1, 1, 1, "h", json.dumps(payload), "t", "t"),
     )
-
-
-def test_unlinked_documentary_stays_separate_and_retains_source():
-    db = _db()
-    _add_provider(db, "pm1", "Petição Juntada", "2026-09-02", "Nº Protocolo: WPRC.26.70018598-0")
-    _add_provider(db, "pm2", "Conclusos para Decisão", "2026-09-03", "Conclusos para Decisão")
-    _add_derived(db, "dm1", "Petição (Outras)", "02/09/2026 08:23", "WPRC26700185980", "doc1")
-    _add_derived(db, "dm2", "Certidão", "03/09/2026 08:00", document_id="doc2")
-    materialize_links(db, "P")
-    official = read_provider_timeline(db, "P")
-    unlinked = read_unlinked_documentary_movements(db, "P")
-    assert len(official) == 2
-    assert [item["movement_id"] for item in unlinked] == ["dm2"]
-    assert unlinked[0]["documentary_unlinked"] is True
-    assert unlinked[0]["components"][0]["document_id"] == "doc2"
-    assert official[0]["movement_id"] in {"pm1", "pm2"}
-
-
-def test_no_official_chronology_does_not_duplicate_documentary_list():
-    db = _db()
-    _add_derived(db, "dm1", "Decisão", "02/09/2026 08:23", document_id="doc1")
-    assert read_unlinked_documentary_movements(db, "P") == []
-
-
-def test_missing_link_table_is_safe():
-    db = _db()
-    _add_provider(db, "pm1", "Conclusos para Decisão", "2026-09-03", "")
-    _add_derived(db, "dm1", "Certidão", "03/09/2026 08:00", document_id="doc1")
-    assert len(read_unlinked_documentary_movements(db, "P")) == 1
 
 
 def test_exact_protocol_has_priority():

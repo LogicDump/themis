@@ -25873,7 +25873,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	const processInFlightRef = useRef({
 		overview: {},
 		movements: {},
-		unlinked: {},
 		summaries: {},
 		summaryStatus: {},
 		caseSynthesis: {},
@@ -25905,8 +25904,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	});
 	const [overviews, setOverviews] = useState({});
 	const [movements, setMovements] = useState({});
-	const [unlinkedDocumentary, setUnlinkedDocumentary] = useState({});
-	const [unlinkedOpen, setUnlinkedOpen] = useState(false);
 	const [movementOrder, setMovementOrder] = useState(() => ctx.storage.get("workspace.movements.order", "desc"));
 	const [movementSummaries, setMovementSummaries] = useState({});
 	const [summaryLoading, setSummaryLoading] = useState({});
@@ -26169,7 +26166,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 		setLoadingSection(true);
 		requestJson("overview", `/processes/${encodeURIComponent(pid)}/overview`, setOverviews);
 		requestJson("movements", `/processes/${encodeURIComponent(pid)}/movements`, setMovements, normalizeMovementsResponse);
-		requestJson("unlinked", `/processes/${encodeURIComponent(pid)}/documentary-movements/unlinked`, setUnlinkedDocumentary, normalizeMovementsResponse);
 		requestJson("summaries", `/processes/${encodeURIComponent(pid)}/summaries`, setMovementSummaries, (value) => value?.summaries || {});
 		requestJson("summaryStatus", `/processes/${encodeURIComponent(pid)}/summaries/status`, setSummaryStatuses);
 		requestJson("caseSynthesis", `/processes/${encodeURIComponent(pid)}/case-synthesis`, setCaseSyntheses);
@@ -26278,8 +26274,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 					...previous,
 					[pid]: refreshedMovements
 				}));
-				const updatedUnlinked = normalizeMovementsResponse(await ctx.rest(`/processes/${encodeURIComponent(pid)}/documentary-movements/unlinked`));
-				if (active && selectedPidRef.current === pid) setUnlinkedDocumentary((previous) => ({ ...previous, [pid]: updatedUnlinked }));
 				const summaries = await ctx.rest(`/processes/${encodeURIComponent(pid)}/summaries`);
 				if (active && selectedPidRef.current === pid) setMovementSummaries((previous) => ({
 					...previous,
@@ -26700,7 +26694,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 			[selectedPid]: 0,
 			[pid]: AUTOS_INITIAL_BATCH
 		}));
-		setUnlinkedOpen(false);
 		setSelectedPid(pid);
 	};
 	const changeProcessSection = (section) => {
@@ -26881,7 +26874,6 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 	};
 	const currentOverview = overviews[selectedPid] || null;
 	const currentMovements = movements[selectedPid] || [];
-	const unmatchedDocuments = unlinkedDocumentary[selectedPid] || [];
 	const orderedMovements = useMemo(() => [...currentMovements].sort((a, b) => {
 		const aSeq = Number(a.sequence);
 		const bSeq = Number(b.sequence);
@@ -27486,21 +27478,7 @@ function ProcessosView({ ctx, navTarget = null, onNavigateAutos, onNavigatePdf }
 												() => toggleMovementSummary(mov.movement_id),
 												!summaryMovementId || processSummaryJob?.process_id === selectedPid && processSummaryJob?.status === "RUNNING"
 											);
-										}), unmatchedDocuments.length > 0 ? jsxs("div", {
-											className: "mt-3 rounded-md border border-border/40 p-2 space-y-2",
-											children: [jsx(PanelAction, {
-												icon: unlinkedOpen ? "chevron-down" : "chevron-right",
-												onClick: () => setUnlinkedOpen((open) => !open),
-												children: `Peças documentais sem vínculo oficial (${unmatchedDocuments.length})`
-											}), unlinkedOpen ? unmatchedDocuments.map((mov, idx) => renderMovementItem(
-												mov, idx, openAutosAtMovementPage, isMovementExpanded(mov, idx),
-												() => toggleMovementExpanded(mov, idx), movementSummaries[selectedPid]?.[mov.movement_id] || null,
-												Boolean(summaryLoading[mov.movement_id]), summaryErrors[mov.movement_id] || null,
-												() => requestMovementSummary(mov), expandedMovementSummaries[mov.movement_id] ?? true,
-												() => toggleMovementSummary(mov.movement_id),
-												processSummaryJob?.process_id === selectedPid && processSummaryJob?.status === "RUNNING"
-											)) : null]
-										}) : null]
+										})]
 									})]
 								}),
 								jsxs("div", {

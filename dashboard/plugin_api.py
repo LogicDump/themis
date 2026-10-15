@@ -325,14 +325,6 @@ def get_process_movements(process_id: str):
     return val
 
 
-@router.get("/processes/{process_id}/documentary-movements/unlinked")
-def get_unlinked_documentary_movements(process_id: str):
-    value = core_api.unlinked_documentary_movements(process_id)
-    if value is None:
-        raise HTTPException(status_code=404, detail="Process documentary movements not found")
-    return value
-
-
 def _llm_result(value: Any) -> tuple[str, str | None, str | None, Any]:
     """Normalize the Hermes ctx.llm.acomplete result without choosing a model."""
     def usage_json_value(usage: Any) -> Any:
