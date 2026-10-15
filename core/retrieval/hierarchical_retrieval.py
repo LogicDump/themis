@@ -745,35 +745,19 @@ def search_hierarchical_evidence(
                     "autos_path": f"/processes/{process_id}/autos",
                 },
             })
-        # The source of evidence is always pages.content. Direct page retrieval
-        # gets the primary slots, regardless of summary coverage. Reuse a more
-        # precise, cited passage for the same page when available.
+        from core.retrieval.candidate_composition import compose_candidates
+
         direct = search_hybrid(
             process_id, query, max(top_k, 1),
             db_path=db_path, vector_db_path=vector_db_path or db_path,
         )
-        passage_by_page = {hit["page_id"]: hit for hit in results}
         ownership = _direct_page_ownership(db, process_id, [hit["page_id"] for hit in direct])
-        merged: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for hit in direct:
-            page_id = hit["page_id"]
-            preferred = passage_by_page.get(page_id)
-            item = dict(preferred or hit)
-            # Map an unambiguous page owner for the drafting caller.
-            owner = ownership.get(page_id)
-            if owner and not item.get("movement_id"):
-                item.update(owner)
-            merged.append(item)
-            seen.add(page_id)
-        for hit in results:
-            if len(merged) >= top_k:
-                break
-            if hit["page_id"] not in seen:
-                merged.append(hit)
-                seen.add(hit["page_id"])
+        merged = compose_candidates(
+            results, direct, top_k, owners=ownership, query=query,
+            routed_pages=pages, summaries=summary_candidates, process_id=process_id,
+        )
         if merged:
-            return [dict(hit, source_id=i) for i, hit in enumerate(merged[:top_k], 1)]
+            return merged
         db.close()
         return _direct_autos_evidence(
             process_id, query, top_k, db_path=db_path,

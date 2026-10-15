@@ -1,0 +1,76 @@
+{
+  "fixture_kind": "synthetic; contains no original case identifiers or documentary transcript",
+  "process_id": "fixture-rag-dates",
+  "query": "Qual é a data do exame de DNA?",
+  "source_document_id": "fixture-imesc-notice",
+  "pages": [
+    {
+      "page_id": "fixture-request:1",
+      "document_id": "fixture-request",
+      "page_number": 1,
+      "process_folio": 269,
+      "content": "O exame de DNA foi solicitado. Em 08/05/2026 foi deferida a realização do exame de DNA. Essa é a data do deferimento, sem agendamento da coleta.",
+      "movement_id": "fixture-m55",
+      "sequence": 55,
+      "title": "Pedido de reagendamento (fixture)"
+    },
+    {
+      "page_id": "fixture-request:2",
+      "document_id": "fixture-request",
+      "page_number": 2,
+      "process_folio": 270,
+      "content": "A audiência está prevista para 21/05. A data da audiência não é a data do exame de DNA. Foi requerido reagendamento enquanto se aguarda o exame de DNA.",
+      "movement_id": "fixture-m55",
+      "sequence": 55,
+      "title": "Pedido de reagendamento (fixture)"
+    },
+    {
+      "page_id": "fixture-imesc-notice:1",
+      "document_id": "fixture-imesc-notice",
+      "page_number": 1,
+      "process_folio": 374,
+      "content": "Ofício IMESC — documento sintético de teste.\n\n### A coleta foi marcada para 08/09/2026 às\n\n07:00h, para realização da perícia de investigação de paternidade.",
+      "movement_id": "fixture-m68",
+      "sequence": 68,
+      "title": "Ofício IMESC (fixture)"
+    },
+    {
+      "page_id": "fixture-notification:1",
+      "document_id": "fixture-notification",
+      "page_number": 1,
+      "process_folio": 375,
+      "content": "As partes são intimadas da coleta em 08/09/2026 às 07:00h. A data do exame foi comunicada pelo instituto responsável.",
+      "movement_id": "fixture-m69",
+      "sequence": 69,
+      "title": "Ato ordinatório (fixture)"
+    },
+    {
+      "page_id": "fixture-publication:1",
+      "document_id": "fixture-publication",
+      "page_number": 1,
+      "process_folio": 378,
+      "content": "Publicação: o exame de DNA está agendado para 08/09/2026 às 07:00h. Esta comunicação reproduz a data da coleta.",
+      "movement_id": "fixture-m71",
+      "sequence": 71,
+      "title": "Certidão de publicação (fixture)"
+    }
+  ],
+  "summaries": [
+    {
+      "movement_id": "fixture-m55",
+      "summary_text": "Pedido de reagendamento da audiência enquanto se aguarda o exame de DNA."
+    },
+    {
+      "movement_id": "fixture-m68",
+      "summary_text": "Ofício IMESC: coleta marcada para 08/09/2026 às 07:00h."
+    },
+    {
+      "movement_id": "fixture-m69",
+      "summary_text": "Intimação sobre a data do exame de DNA."
+    },
+    {
+      "movement_id": "fixture-m71",
+      "summary_text": "Publicação da data do exame de DNA: 08/09/2026."
+    }
+  ]
+}
