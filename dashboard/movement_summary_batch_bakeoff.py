@@ -49,9 +49,13 @@ SUMMARY_INSTRUCTIONS = (
     "- preserve documentos, valores e pedidos relevantes.\n\n"
     "4. Se for ato simples:\n"
     "- informe diretamente a providência, decisão ou consequência processual.\n\n"
-    "5. Não escreva introduções metalinguísticas.\n"
-    "6. Não invente informações.\n"
-    "7. Produza somente Markdown simples."
+    "5. Antes de redigir, identifique a natureza do ato, o emissor, acontecimentos, pedidos, determinações e consequências relevantes; produza uma síntese, sem inventário intermediário.\n"
+    "6. Distinga alegação da parte, constatação judicial, determinação e fato efetivamente documentado; não apresente alegações como fatos externos comprovados.\n"
+    "7. Diferencie data do documento, data de evento, prazo, agendamento e realização efetiva; não trate o futuro como concluído.\n"
+    "8. Preserve datas, horários, valores, sujeitos e condições essenciais; mantenha corretamente cumulatividade, alternativas, negações e exceções.\n"
+    "9. Resuma acontecimentos e consequências essenciais, sem transcrever todas as instruções acessórias; os detalhes permanecem no documento original.\n"
+    "10. Não escreva introduções metalinguísticas nem invente informações.\n"
+    "11. Produza somente Markdown simples."
 )
 
 
