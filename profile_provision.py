@@ -427,10 +427,15 @@ def migrate_themis_profile(*, runner=None, hermes_exe=None, log_fn=print):
         if not executable:
             raise ProfileProvisionError('Hermes CLI não localizado')
         execute = runner or subprocess.run
+        # Inherit the console streams. Windows' default cp1252 cannot decode
+        # UTF-8 emitted by Hermes, and capture_output also hides install failures.
         result = execute([executable, '-p', PROFILE, *command],
-                         capture_output=True, text=True, check=False, timeout=1800)
+                         check=False, timeout=1800)
         if result.returncode != 0:
-            raise ProfileProvisionError('Instalação incompleta; perfil preservado para retomada')
+            raise ProfileProvisionError(
+                f'Instalador Hermes falhou (código {result.returncode}); '
+                'consulte a saída acima. Perfil preservado para retomada.'
+            )
     post = inspect_themis_profile()
     if not post['ready'] or not _plugin_enabled(named):
         raise ProfileProvisionError('Instalação ainda não está pronta; execute novamente após corrigir pendências')
