@@ -10,7 +10,7 @@ assert(start > 0 && end > start);
 const listeners = new Set();
 let profile = 'default';
 const state = { get: () => profile, subscribe(fn) { listeners.add(fn); fn(profile); return () => listeners.delete(fn); } };
-const host = { state: { profile: state } };
+const host = { state: { profile: { get: () => 'default', subscribe() { throw new Error('wrong socket profile atom'); } }, focusedSessionProfile: state } };
 const active = new Set();
 const calls = [];
 const disposeCallbacks = [];

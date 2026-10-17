@@ -28743,7 +28743,7 @@ var plugin_default = {
 	register(ctx) {
 		void installThemisBundledFonts(ctx);
 		// The Desktop loader is global; only expose Themis in its agent profile.
-		// Register and dispose via the official host profile atom, not DOM hacks.
+		// Follow the focused chat's owner, not the gateway socket home.
 		let unregisterThemis = null;
 		const followProfile = (profile) => {
 			if (profile === "themis") {
@@ -28770,7 +28770,7 @@ var plugin_default = {
 				unregisterThemis = null;
 			}
 		};
-		const unsubscribe = host.state.profile.subscribe(followProfile);
+		const unsubscribe = host.state.focusedSessionProfile.subscribe(followProfile);
 		ctx.onDispose(() => {
 			unsubscribe();
 			unregisterThemis?.();
