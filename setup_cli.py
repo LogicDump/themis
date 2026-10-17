@@ -36,12 +36,8 @@ class ThemisSetupError(RuntimeError):
 
 
 def _resolve_plugin_data_dir() -> Path:
-    """Resolve data root using official Hermes plugin_storage or fallback."""
-    try:
-        from plugins.plugin_storage import plugin_data_dir
-        return Path(plugin_data_dir("themis")).expanduser().resolve()
-    except Exception:
-        return themis_data_root().resolve()
+    """Use the same canonical data-root contract as all Themis Core services."""
+    return themis_data_root()
 
 
 def _is_valid_asset(path: Path, expected_size: int, expected_sha256: str) -> bool:
@@ -424,9 +420,59 @@ def run_themis_migrate(
     return {"status": "ready", "data_root": str(data_root), "migrations": result}
 
 
+def run_themis_profile_status(
+    args: argparse.Namespace | None = None, *, log_fn: Callable[[str], None] = print
+) -> dict[str, Any]:
+    """Read-only profile/backend/version preflight."""
+    try:
+        from .profile_provision import inspect_themis_profile
+    except ImportError:
+        from profile_provision import inspect_themis_profile
+    result = inspect_themis_profile()
+    log_fn(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def run_themis_profile_setup(
+    args: argparse.Namespace | None = None, *, log_fn: Callable[[str], None] = print
+) -> dict[str, Any]:
+    """Only configures the Hermes agent profile; no case DB/model/browser work."""
+    try:
+        from .profile_provision import setup_themis_profile
+    except ImportError:
+        from profile_provision import setup_themis_profile
+    result = setup_themis_profile(log_fn=log_fn)
+    log_fn(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def run_themis_profile_migrate(
+    args: argparse.Namespace | None = None, *, log_fn: Callable[[str], None] = print
+) -> dict[str, Any]:
+    """Apply profile creation, provider merge and Hermes-pinned plugin installation."""
+    try:
+        from .profile_provision import migrate_themis_profile
+    except ImportError:
+        from profile_provision import migrate_themis_profile
+    result = migrate_themis_profile(log_fn=log_fn)
+    log_fn(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
 def register_cli(subparser: argparse.ArgumentParser) -> None:
     """Build the argparse tree for `hermes themis`."""
     subs = subparser.add_subparsers(dest="themis_subcommand")
+    profile_parser = subs.add_parser("profile", help="Gerencia o perfil jurídico do Hermes")
+    profile_subs = profile_parser.add_subparsers(dest="themis_profile_command")
+    profile_subs.add_parser("status", help="Verifica o perfil e as revisões, sem modificar nada").set_defaults(
+        func=run_themis_profile_status
+    )
+    profile_subs.add_parser("setup", help="Cria/configura o perfil jurídico sem migrar dados").set_defaults(
+        func=run_themis_profile_setup
+    )
+    profile_subs.add_parser("migrate", help="Instala perfil Themis com revisão Git fixa").set_defaults(
+        func=run_themis_profile_migrate
+    )
     setup_parser = subs.add_parser(
         "setup",
         help="Inicializa persistência, esquemas e modelos do Themis",
