@@ -19,10 +19,6 @@ Design constraints:
 from __future__ import annotations
 
 import sqlite3
-import os
-import threading
-import time
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -252,53 +248,9 @@ def _materialized_process_ids(data_root: Path) -> list[str]:
     return sorted(ids)
 
 
-_MIGRATION_THREAD_LOCK = threading.RLock()
-_MIGRATION_LOCK_TIMEOUT = 120.0
-
-
-@contextmanager
-def _migration_root_lock(data_root: Path):
-    """Serialize schema upgrades across Hermes profiles and processes."""
-    lock_file = data_root / "config" / "schema-migration.lock"
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
-    with _MIGRATION_THREAD_LOCK, lock_file.open("a+b") as handle:
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"0")
-            handle.flush()
-        deadline = time.monotonic() + _MIGRATION_LOCK_TIMEOUT
-        while True:
-            handle.seek(0)
-            try:
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Migração Themis ocupada em outro perfil/processo") from exc
-                time.sleep(0.1)
-        try:
-            yield
-        finally:
-            handle.seek(0)
-            if os.name == "nt":
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
 def migrate_all(*, root: Path | None = None) -> dict[str, Any]:
-    """Migrate all stores under one shared-root lock, independent of profile."""
+    """Bring all currently materialized Themis databases to the current schema."""
     data_root = (root or themis_data_root()).resolve()
-    with _migration_root_lock(data_root):
-        return _migrate_all_unlocked(data_root)
-
-
-def _migrate_all_unlocked(data_root: Path) -> dict[str, Any]:
     data_root.mkdir(parents=True, exist_ok=True)
     (data_root / "processos").mkdir(parents=True, exist_ok=True)
 

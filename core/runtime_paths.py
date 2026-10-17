@@ -30,22 +30,21 @@ def get_default_hermes_home() -> Path:
 
 
 def default_themis_data_root() -> Path:
-    """One installation-wide data root, independent of the active Hermes profile.
+    """Standalone fallback matching Hermes' per-plugin persistent storage layout."""
+    return get_default_hermes_home() / "plugin-data" / "themis"
 
-    Hermes' plugin_data_dir() is deliberately profile-specific and also creates
-    directories on lookup, so it cannot be used for shared Themis case data.
-    """
-    home = get_default_hermes_home()
+
+def _hermes_plugin_data_root() -> Path | None:
+    """Use Hermes' official resolver when running inside the Hermes plugin runtime."""
+    if is_running_test_context():
+        return None
     try:
-        from hermes_constants import get_default_hermes_root
+        from plugins.plugin_storage import plugin_data_dir
     except ModuleNotFoundError as exc:
-        if exc.name != "hermes_constants":
-            raise
-        # Standalone execution with no Hermes SDK available.
-        root = home.parent.parent if home.parent.name == "profiles" else home
-    else:
-        root = get_default_hermes_root(home=home)
-    return (Path(root) / "plugin-data" / "themis").expanduser().resolve()
+        if exc.name in {"plugins", "plugins.plugin_storage", "hermes_constants"}:
+            return None
+        raise
+    return Path(plugin_data_dir("themis")).expanduser().resolve()
 
 
 _CNJ_RE = re.compile(r"^\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$")
@@ -117,7 +116,7 @@ def themis_data_root() -> Path:
     if value and value.strip():
         root = Path(value).resolve()
     else:
-        root = default_themis_data_root()
+        root = (_hermes_plugin_data_root() or default_themis_data_root()).resolve()
 
     if is_running_test_context():
         try:
