@@ -28742,40 +28742,28 @@ var plugin_default = {
 	name: "Themis",
 	register(ctx) {
 		void installThemisBundledFonts(ctx);
-		// The Desktop loader is global; only expose Themis in its agent profile.
-		// Register and dispose via the official host profile atom, not DOM hacks.
-		let unregisterThemis = null;
-		const followProfile = (profile) => {
-			if (profile === "themis") {
-				if (!unregisterThemis) unregisterThemis = ctx.registerMany([
-					{
-						id: "page",
-						area: ROUTES_AREA,
-						data: { path: "/themis" },
-						render: () => jsx(ThemisShell, { ctx })
-					},
-					{
-						id: "nav",
-						area: SIDEBAR_NAV_AREA,
-						data: { path: "/themis", label: "Themis", codicon: "law" }
-					},
-					{
-						id: "theme",
-						area: THEMES_AREA,
-						data: themisTheme
-					}
-				]);
-			} else {
-				unregisterThemis?.();
-				unregisterThemis = null;
+		ctx.registerMany([
+			{
+				id: "page",
+				area: ROUTES_AREA,
+				data: { path: "/themis" },
+				render: () => jsx(ThemisShell, { ctx })
+			},
+			{
+				id: "nav",
+				area: SIDEBAR_NAV_AREA,
+				data: {
+					path: "/themis",
+					label: "Themis",
+					codicon: "law"
+				}
+			},
+			{
+				id: "theme",
+				area: THEMES_AREA,
+				data: themisTheme
 			}
-		};
-		const unsubscribe = host.state.profile.subscribe(followProfile);
-		ctx.onDispose(() => {
-			unsubscribe();
-			unregisterThemis?.();
-			unregisterThemis = null;
-		});
+		]);
 	}
 };
 //#endregion
